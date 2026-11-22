@@ -407,7 +407,123 @@ const FaMusicLibHost = (function () {
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); }
   };
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST };
+  // ───── 遊戲音樂來源擷取（RIX、Flash）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
+  // 衍生檔預設放在「來源檔所在資料夾的旁邊」的「音樂庫衍生檔」資料夾（不寫進 repo）；面板可指定別的根資料夾。
+  // 來源沒變（大小與修改時間相同）且子曲目已在 → 略過（子曲目記著 derivedSig）。
+  var extractCancelled = false;
+  var DERIVED_DIR_NAME = '音樂庫衍生檔';
+  function stemOf(name) { return String(name || 'track').replace(/\.[^.]+$/, '').replace(/[\\\/:*?"<>|]/g, '_'); }
+  function dirOf(p) { var s = String(p), i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/')); return i >= 0 ? s.slice(0, i) : '.'; }
+  function sepOf(p) { return /\\/.test(String(p)) ? '\\' : '/'; }
+  function derivedDirFor(rec, userRoot) {
+    var stem = stemOf(rec.name);
+    if (userRoot) return joinPath(userRoot, stem);
+    var parent = dirOf(rec.path), beside = dirOf(parent);   // 來源檔所在資料夾的旁邊
+    return joinPath(joinPath(beside, DERIVED_DIR_NAME), stem);
+  }
+  // zlib 解壓（瀏覽器原生 DecompressionStream；SWF 的 CWS 用）
+  async function inflateZlib(u8) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('這個環境沒有 DecompressionStream（無法解 zlib）');
+    var s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  async function writeDerivedFile(dir, name, bytes) {
+    var full = joinPath(dir, name);
+    await api().rawfs.writeFile(full, { base64: bytesToB64(bytes) });
+    return { path: full, sizeBytes: bytes.length };
+  }
+
+  // 擷取一個來源（rec 是 kind 為 rix 或 swf 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
+  async function extractGameSource(rec, opts) {
+    opts = opts || {};
+    var L = getLib(); await L.ready;
+    var fa = window.fa, a = api(), now = Date.now();
+    var sig = FaMusicLibMelody.sigOf(rec);
+    var existing = L.records.filter(function (r) { return r.derivedFrom === rec.key; });
+    if (!opts.force && existing.length && existing.every(function (r) { return r.derivedSig === sig; })) {
+      return { skipped: true, reason: '來源沒變，沿用上次的子曲目', children: existing.map(function (r) { return r.key; }), skippedParts: [], method: existing[0].derivedMethod, dir: dirOf(existing[0].path) };
+    }
+    var r;
+    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗（讀取階段）：' + String((e && e.message) || e)); }
+    if (!r || r.base64 == null) throw new Error('讀檔失敗（讀取階段）：讀不到這個檔案的內容');
+    var u8 = b64ToBytes(r.base64);
+    var dir = derivedDirFor(rec, opts.userRoot), stem = stemOf(rec.name);
+    var outs = [], method = '', skippedParts = [];
+    var emit = opts.onStage || function () {};
+    var cancelled = function () { return extractCancelled; };
+    if (rec.kind === 'rix') {
+      emit('解析 RIX');
+      var px;
+      try { px = FaMusicLibRix.parseRix(u8); } catch (e) { throw new Error('RIX 解析失敗：' + String((e && e.message) || e)); }
+      method = 'RIX（OPL2 暫存器序列）→ MIDI（GM 音色近似）';
+      var song = FaMidi.validate(px.song);
+      emit('寫出 MIDI');
+      outs.push({ kind: 'mid', name: stem + '.mid', bytes: FaMidi.write(song), method: method, durationSec: px.stats.seconds, title: stem });
+      if (cancelled()) throw Object.assign(new Error('已取消'), { cancelled: true });
+      emit('合成音訊（既有 GM 合成器）');
+      var buf;
+      try { buf = await FaMidiPlay.renderOffline(song, fa._midiSources(), { tail: 1.5 }); } catch (e) { throw new Error('合成失敗（合成階段）：' + String((e && e.message) || e)); }
+      emit('編碼 mp3');
+      var mp3 = await fa._encodeMp3(buf, 160);
+      outs.push({ kind: 'mp3', name: stem + '.mp3', bytes: new Uint8Array(await mp3.arrayBuffer()), method: method, durationSec: buf.duration, title: stem });
+      outs.push({ kind: 'wav', name: stem + '.wav', bytes: new Uint8Array(await _faEncodeWav(buf).arrayBuffer()), method: method, durationSec: buf.duration, title: stem });
+    } else if (rec.kind === 'swf') {
+      emit('解析 Flash');
+      var sw;
+      try {
+        sw = await FaMusicLibSwf.parseSwf(u8, {
+          inflate: inflateZlib,
+          lzmaDecode: function (hdr) { if (typeof FaMatrixLzma === 'undefined') throw new Error('沒有 LZMA 解碼器（FaMatrixLzma 未嵌入）'); return FaMatrixLzma.lzmaDecode(hdr); }
+        });
+      } catch (e) { throw new Error('SWF 解析失敗：' + String((e && e.message) || e)); }
+      method = 'Flash（SWF）音訊標籤解出（' + (String.fromCharCode(u8[0], u8[1], u8[2]) === 'FWS' ? '未壓縮' : '已解壓') + '）';
+      sw.sounds.forEach(function (s, i) {
+        var ext = s.kind === 'mid' ? 'mid' : s.kind === 'mp3' ? 'mp3' : 'wav';
+        var tag = s.source === 'stream' ? '串流' : ('聲音' + s.id);
+        outs.push({ kind: ext, name: stem + '_' + (i + 1) + '_' + tag + '.' + ext, bytes: s.bytes, method: method + '，' + s.format, durationSec: s.durationSec, title: stem + ' ' + tag });
+      });
+      skippedParts = sw.skipped.map(function (x) { return (x.id >= 0 ? '聲音' + x.id : '串流') + '：' + x.reason; });
+      if (!outs.length) throw new Error('SWF 內沒有可擷取的音訊' + (skippedParts.length ? '（' + skippedParts.join('；') + '）' : ''));
+    } else {
+      throw new Error('這個種類不支援擷取：' + rec.kind);
+    }
+    // 寫檔 → 子曲目記錄（record 與普通檔案同形，只多 derivedFrom／derivedSig）
+    var recs = [];
+    for (var i = 0; i < outs.length; i++) {
+      if (cancelled()) throw Object.assign(new Error('已取消'), { cancelled: true });
+      emit('寫檔 ' + (i + 1) + '/' + outs.length);
+      var w = await writeDerivedFile(dir, outs[i].name, outs[i].bytes);
+      var c = FaMusicLib.buildDerivedRecord(rec, { index: i, kind: outs[i].kind, path: w.path, sizeBytes: w.sizeBytes, method: outs[i].method, durationSec: outs[i].durationSec, title: outs[i].title }, now);
+      c.derivedSig = sig;
+      recs.push(c);
+    }
+    FaMusicLib.replaceDerived(L, rec.key, recs);
+    await L.save();
+    return { skipped: false, children: recs.map(function (x) { return x.key; }), skippedParts: skippedParts, method: method, dir: dir };
+  }
+  // 批次擷取（勾選的 rix／swf，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
+  async function extractSources(recs, opts) {
+    opts = opts || {};
+    extractCancelled = false;
+    var results = [];
+    for (var i = 0; i < recs.length; i++) {
+      var rec = recs[i], t0 = Date.now();
+      if (extractCancelled) { results.push({ name: rec.name, status: 'cancelled', reason: '', stage: null, elapsedMs: 0 }); continue; }
+      var stage = null;
+      try {
+        var out = await extractGameSource(rec, Object.assign({}, opts, { onStage: function (s) { stage = s; if (opts.onEvent) opts.onEvent({ key: rec.key, stage: s }); } }));
+        results.push({ name: rec.name, kind: rec.kind, status: out.skipped ? 'skipped' : 'done', reason: out.reason || '', stage: stage, children: out.children.length, skippedParts: out.skippedParts, method: out.method, dir: out.dir, elapsedMs: Date.now() - t0 });
+      } catch (e) {
+        var cancelledNow = !!(e && e.cancelled) || extractCancelled;
+        results.push({ name: rec.name, kind: rec.kind, status: cancelledNow ? 'cancelled' : 'failed', reason: String((e && e.message) || e), stage: stage, children: 0, elapsedMs: Date.now() - t0 });
+      }
+    }
+    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0 };
+    results.forEach(function (x) { summary[x.status] = (summary[x.status] || 0) + 1; });
+    return { results: results, summary: summary };
+  }
+
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } } };
 
   var methods = {
     _mlLib() { return getLib(); },

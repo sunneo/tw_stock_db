@@ -242,6 +242,41 @@
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
+    // 擷取遊戲音樂來源（RIX、Flash）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
+    var xBtn = h('button', null, '擷取（RIX／Flash）'), xCancel = h('button', null, '取消擷取');
+    var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
+    try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
+    xCancel.disabled = true;
+    exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
+    if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; }
+    var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
+    xBtn.onclick = function () {
+      if (!host.extract) return;
+      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash（先加檔案，或勾選要擷取的來源）'; return; }
+      var root = xRoot.value.trim();
+      try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
+      xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
+      host.extract.run(recs, {
+        userRoot: root || null,
+        onEvent: function (ev) { expStat.textContent = '擷取中（' + ev.stage + '）'; }
+      }).then(function (res) {
+        xBtn.disabled = false; xCancel.disabled = true;
+        var s = res.summary || {};
+        expStat.textContent = '擷取完成：完成 ' + (s.done || 0) + '、沿用 ' + (s.skipped || 0) + '、失敗 ' + (s.failed || 0) + '、取消 ' + (s.cancelled || 0);
+        (res.results || []).forEach(function (x) {
+          var d;
+          if (x.status === 'done') d = '→ 子曲目 ' + x.children + ' 個：' + x.method + (x.skippedParts && x.skippedParts.length ? '；略過：' + x.skippedParts.join('；') : '') + '　（' + x.dir + '）';
+          else if (x.status === 'skipped') d = '來源沒變，沿用上次的子曲目';
+          else d = (x.stage ? '［' + x.stage + '］' : '') + x.reason;
+          var line = h('div', x.status === 'failed' ? 'bad' : null, '[' + (STATUS_X[x.status] || x.status) + '] ' + x.name + ' ' + d);
+          expList.appendChild(line);
+        });
+        render();
+      }, function (e) { xBtn.disabled = false; xCancel.disabled = true; expStat.textContent = '擷取出錯：' + String((e && e.message) || e); });
+    };
+    xCancel.onclick = function () { if (host.extract) host.extract.cancel(); expStat.textContent = '取消擷取中（目前這個來源的下一步停止）…'; };
+
     // 哼歌找歌：旋律索引（逐首，可暫停續跑、取消）＋錄哼歌或選音檔找相似（找不到時可用 MIDI 演奏查到的旋律）
     var MEL = host.melody || null, melHum = null, melFound = null;
     var melBox = h('div', 'fml-lyr');

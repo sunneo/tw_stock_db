@@ -21,8 +21,8 @@
     nes: { category: 'game', label: '遊戲音樂來源，待擷取' },
     pce: { category: 'game', label: '遊戲音樂來源，待擷取' },
     sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
-    rix: { category: 'game', label: '遊戲音樂來源，待擷取' },
-    swf: { category: 'game', label: '遊戲音樂來源，待擷取' }
+    rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
+    swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' }
   };
   var EXT_ALIAS = { midi: 'mid' };
 
@@ -694,14 +694,16 @@
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
-  var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
+  var ROM_EXT = { nes: 1, pce: 1, sfc: 1 };
+  var EXTRACT_EXT = { rix: 1, swf: 1 };
 
   // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
   function planExport(name, format) {
     var ext = String(name || '').split('.').pop().toLowerCase();
     if (EXPORT_FORMATS.indexOf(format) < 0) return { ok: false, reason: '不支援的輸出格式：' + format };
-    if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔沒有擷取器（本輪只做音訊、影片、MIDI）' };
+    if (EXTRACT_EXT[ext]) return { ok: false, reason: ext.toUpperCase() + ' 要先按「擷取」產生 MIDI／mp3 子曲目，再批次輸出子曲目' };
+    if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔的音樂需要模擬器驅動，本輪沒有擷取器' };
     var cls = SOURCE_CLASS[ext];
     if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
     var key = cls + '>' + format;
@@ -768,7 +770,33 @@
     return { results: results, summary: summary };
   }
 
+  // ───────────────────────── 擷取的子曲目（RIX／Flash 擷取出來的 MIDI、mp3、wav）
+  // 子曲目的格式與普通檔案一樣（kind 是 mid／mp3／wav），之後的檔名搜尋、歌詞、哼歌索引、批次輸出都不分辨來源。
+  // 只記下來源：derivedFrom（來源記錄的 key）、derivedIndex（第幾個）、derivedMethod（擷取方式）。
+  function buildDerivedRecord(parent, out, now) {
+    var path = String(out.path), name = basename(path), kind = out.kind;
+    var k = KINDS[kind] || { category: 'audio', label: kind };
+    return {
+      key: 'derived|' + parent.key + '|' + out.index, sourceId: parent.sourceId, sourceType: parent.sourceType, sourceLabel: parent.sourceLabel,
+      path: path, name: name, ext: extOf(name), kind: kind, category: k.category, label: k.label,
+      pending: false, via: 'extract',
+      title: out.title || stripExt(name), titleSource: 'derived', artist: null,
+      album: parent.album || null, albumSource: parent.album ? 'folder' : null,
+      durationSec: out.durationSec == null ? null : out.durationSec, durationApprox: false,
+      sizeBytes: out.sizeBytes || 0, mtimeMs: now, status: 'ok', scannedAt: now,
+      lyrics: null, lyricStatus: 'none', lyricError: null,
+      meta: { format: 'derived', tracks: null, trackName: null, notes: null },
+      derivedFrom: parent.key, derivedIndex: out.index, derivedMethod: out.method || ''
+    };
+  }
+  // 換掉某個來源的子曲目（重新擷取時先把舊的拿掉，避免重複）
+  function replaceDerived(lib, parentKey, newRecs) {
+    lib.records = lib.records.filter(function (r) { return r.derivedFrom !== parentKey; }).concat(newRecs || []);
+    return lib.records.length;
+  }
+
   return {
+    buildDerivedRecord: buildDerivedRecord, replaceDerived: replaceDerived,
     minutesToSec: minutesToSec, sliceWindow: sliceWindow, outputName: outputName, planExport: planExport, runExportBatch: runExportBatch,
     EXPORT_ROUTES: EXPORT_ROUTES, EXPORT_FORMATS: EXPORT_FORMATS, EXPORT_MAX_ATTEMPTS: EXPORT_MAX_ATTEMPTS,
     VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,

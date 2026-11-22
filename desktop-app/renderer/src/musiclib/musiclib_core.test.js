@@ -62,14 +62,32 @@ t('辨識種類：副檔名與檔頭', function () {
   assert.equal(M.identifyKind('flash.swf', cat(['CWS', 9])).kind, 'swf');
 });
 
-t('遊戲音樂來源：只登記辨識成待擷取', function () {
+t('遊戲音樂來源：NES／PCE／SFC 只登記待擷取；RIX 與 Flash 是可擷取的種類', function () {
   var nes = M.identifyKind('zelda.nes', cat(['NES\u001a', 1, 2]));
   assert.equal(nes.kind, 'nes'); assert.equal(nes.category, 'game'); assert.equal(nes.pending, true);
   assert.equal(nes.label, '遊戲音樂來源，待擷取');
-  ['pce', 'sfc', 'rix', 'swf'].forEach(function (ext) {
+  ['pce', 'sfc'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
     assert.equal(r.kind, ext); assert.equal(r.pending, true);
   });
+  ['rix', 'swf'].forEach(function (ext) {
+    var r = M.identifyKind('x.' + ext, null);
+    assert.equal(r.kind, ext); assert.equal(r.category, 'extract'); assert.equal(r.pending, false, ext + ' 可擷取，不算待擷取');
+  });
+  assert.equal(M.planExport('x.rix', 'mp3').ok, false);
+  assert.ok(/擷取/.test(M.planExport('x.swf', 'mid').reason), '說明要先擷取');
+});
+
+t('子曲目記錄：從擷取的輸出建立普通的 mid／mp3 記錄，並記下來源與擷取方式；重新擷取會換掉舊的', function () {
+  var parent = { key: 'src1|/games/MUSIC_01.RIX', sourceId: 'src1', sourceType: 'folder', sourceLabel: 'games', album: 'games' };
+  var rec = M.buildDerivedRecord(parent, { index: 0, kind: 'mid', path: '/out/MUSIC_01.mid', sizeBytes: 120, method: 'RIX→MIDI' }, 5);
+  assert.equal(rec.kind, 'mid'); assert.equal(rec.category, 'audio'); assert.equal(rec.pending, false);
+  assert.equal(rec.derivedFrom, parent.key); assert.equal(rec.derivedMethod, 'RIX→MIDI');
+  assert.equal(rec.name, 'MUSIC_01.mid'); assert.equal(rec.album, 'games');
+  var lib = { records: [{ key: 'a', derivedFrom: parent.key }, { key: 'b' }] };
+  M.replaceDerived(lib, parent.key, [rec, M.buildDerivedRecord(parent, { index: 1, kind: 'mp3', path: '/out/MUSIC_01.mp3', sizeBytes: 9, method: 'x' }, 5)]);
+  assert.equal(lib.records.filter(function (r) { return r.derivedFrom === parent.key; }).length, 2, '舊的被換掉');
+  assert.ok(lib.records.some(function (r) { return r.key === 'b'; }), '其他記錄保留');
 });
 
 t('無法辨識的檔案回傳 null', function () {
