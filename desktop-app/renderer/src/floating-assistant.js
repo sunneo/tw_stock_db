@@ -11610,7 +11610,7 @@ const holder = {};
 return holder;
 })();
 const FA_STUDIO_SEED_COUNTS = {"algo2":{"total":15,"train":15,"holdout":0,"file":"renderer/src/uml/domain_algo2.test.js"},"avaudio":{"total":2,"train":1,"holdout":1,"file":"renderer/src/uml/domain_avpsycho.test.js"},"avbits":{"total":23,"train":16,"holdout":7,"file":"renderer/src/uml/domain_avbits.test.js"},"avimage":{"total":12,"train":5,"holdout":7,"file":"renderer/src/uml/domain_avimage.test.js"},"binfmt":{"total":27,"train":0,"holdout":27,"file":"renderer/src/uml/domain_fresh_holdout_v3.test.js","shared_with":["inflate","tarx","bmpx","png","gif","pcx","jpeg","binfmt","fieldcount"]},"bmpx":{"total":27,"train":0,"holdout":27,"file":"renderer/src/uml/domain_fresh_holdout_v3.test.js","shared_with":["inflate","tarx","bmpx","png","gif","pcx","jpeg","binfmt","fieldcount"]},"ds":{"total":40,"train":29,"holdout":11,"file":"renderer/src/uml/domain_ds.test.js"},"dsp":{"total":18,"train":18,"holdout":0,"file":"renderer/src/uml/seeds/domain_dsp.json","counted":"json"},"fieldcount":{"total":27,"train":0,"holdout":27,"file":"renderer/src/uml/domain_fresh_holdout_v3.test.js","shared_with":["inflate","tarx","bmpx","png","gif","pcx","jpeg","binfmt","fieldcount"]},"inflate":{"total":14,"train":10,"holdout":4,"file":"renderer/src/uml/domain_inflate.test.js"},"tarx":{"total":14,"train":10,"holdout":4,"file":"renderer/src/uml/domain_tarx.test.js"},"png":{"total":8,"train":6,"holdout":2,"file":"renderer/src/uml/domain_png.test.js"},"gif":{"total":9,"train":7,"holdout":2,"file":"renderer/src/uml/domain_gif.test.js"},"pcx":{"total":9,"train":7,"holdout":2,"file":"renderer/src/uml/domain_pcx.test.js"},"jpeg":{"total":7,"train":5,"holdout":2,"file":"renderer/src/uml/domain_jpeg.test.js"},"fs":{"total":40,"train":31,"holdout":9,"file":"renderer/src/uml/domain_fs.test.js"},"graph2":{"total":17,"train":13,"holdout":4,"file":"renderer/src/uml/domain_graph2.test.js"},"graph3":{"total":34,"train":19,"holdout":15,"file":"renderer/src/uml/domain_graph3.test.js"},"h264cabac":{"total":16,"train":8,"holdout":8,"file":"renderer/src/uml/domain_h264cabac.test.js"},"h264dec":{"total":3,"train":2,"holdout":1,"file":"renderer/src/uml/domain_h264totalzeros.test.js"},"h264motion":{"total":16,"train":8,"holdout":8,"file":"renderer/src/uml/domain_h264motion.test.js"},"h264pb":{"total":14,"train":7,"holdout":7,"file":"renderer/src/uml/domain_h264pb.test.js"},"linuxfmt":{"total":10,"train":6,"holdout":4,"file":"renderer/src/uml/domain_linuxfmt.test.js"},"linuxreal":{"total":24,"train":19,"holdout":5,"file":"renderer/src/uml/domain_linuxreal.test.js"},"linuxsem":{"total":37,"train":27,"holdout":10,"file":"renderer/src/uml/domain_linuxsem.test.js"},"linuxtext":{"total":19,"train":14,"holdout":5,"file":"renderer/src/uml/domain_linuxtext.test.js"},"lzma":{"total":10,"train":7,"holdout":3,"file":"renderer/src/uml/domain_lzma.test.js"},"os":{"total":24,"train":17,"holdout":7,"file":"renderer/src/uml/domain_os.test.js"},"par":{"total":18,"train":13,"holdout":5,"file":"renderer/src/uml/domain_par.test.js"},"par2":{"total":9,"train":6,"holdout":3,"file":"renderer/src/uml/domain_par2.test.js"},"par3":{"total":16,"train":11,"holdout":5,"file":"renderer/src/uml/domain_par3.test.js"},"sync":{"total":12,"train":8,"holdout":4,"file":"renderer/src/uml/domain_sync.test.js"},"sync2":{"total":22,"train":15,"holdout":7,"file":"renderer/src/uml/domain_sync2.test.js"},"twofile":{"total":14,"train":10,"holdout":4,"file":"renderer/src/uml/domain_twofile.test.js"}};
-const FA_STUDIO_LORA_DATA = {"datasets":[{"name":"app_snapshot_tools","rows":428,"counted_by":"各表筆數加總","file":"lora-train/data/app_snapshot_tools.json","bytes":164838},{"name":"coverage_when2call","rows":1266,"counted_by":"rows","file":"lora-train/data/coverage_when2call.json","bytes":7905},{"name":"real_tools_all","rows":322,"counted_by":"total","file":"lora-train/data/real_tools_all.json","bytes":498949},{"name":"ref_facts","rows":180,"counted_by":"各表筆數加總","file":"lora-train/data/ref_facts.json","bytes":8146}],"generators":["lora-train/gen/gen_agent.js","lora-train/gen/gen_blockly_matrix.js","lora-train/gen/gen_code_split.js","lora-train/gen/gen_colu.js","lora-train/gen/gen_colu_full.js","lora-train/gen/gen_fn_template.js","lora-train/gen/gen_git_heldout.js","lora-train/gen/gen_natural.js","lora-train/gen/gen_reading.js","lora-train/gen/gen_think_stack.js","lora-train/gen/gen_tool_routing.js","lora-train/gen/gen_tool_routing_full.js","lora-train/gen/gen_uml_design.js","lora-train/gen/gen_uml_edit.js","lora-train/gen/gen_uml_multi.js","lora-train/gen/gen_when2call.js","lora-train/gen/gen_wiring.js","lora-train/gen/merge_dataset.js","lora-train/gen/w2c_common.js"]}; // 領域包種子題數（建置時由 scripts/domain-seed-counts.js 從 domain_*.test.js 算出；打包後沒有測試檔）
+const FA_STUDIO_LORA_DATA = {"datasets":[{"name":"app_snapshot_tools","rows":428,"counted_by":"各表筆數加總","file":"lora-train/data/app_snapshot_tools.json","bytes":171929},{"name":"coverage_when2call","rows":1266,"counted_by":"rows","file":"lora-train/data/coverage_when2call.json","bytes":8298},{"name":"real_tools_all","rows":322,"counted_by":"total","file":"lora-train/data/real_tools_all.json","bytes":509839},{"name":"ref_facts","rows":180,"counted_by":"各表筆數加總","file":"lora-train/data/ref_facts.json","bytes":8487}],"generators":["lora-train/gen/gen_agent.js","lora-train/gen/gen_blockly_matrix.js","lora-train/gen/gen_code_split.js","lora-train/gen/gen_colu.js","lora-train/gen/gen_colu_full.js","lora-train/gen/gen_fn_template.js","lora-train/gen/gen_git_heldout.js","lora-train/gen/gen_natural.js","lora-train/gen/gen_reading.js","lora-train/gen/gen_think_stack.js","lora-train/gen/gen_tool_routing.js","lora-train/gen/gen_tool_routing_full.js","lora-train/gen/gen_uml_design.js","lora-train/gen/gen_uml_edit.js","lora-train/gen/gen_uml_multi.js","lora-train/gen/gen_when2call.js","lora-train/gen/gen_wiring.js","lora-train/gen/merge_dataset.js","lora-train/gen/w2c_common.js"]}; // 領域包種子題數（建置時由 scripts/domain-seed-counts.js 從 domain_*.test.js 算出；打包後沒有測試檔）
 const FA_STUDIO_LAYOUT_SRC = "/* Studio 視窗版面核心（UMD，純函式，不碰 DOM）。設計見 DESIGN.TODO.offline-training-studio.md §4：\n * 左右兩個分頁區，分頁可搬移／關閉／重新開啟，分隔線可拖曳（有上下限、雙擊還原），每區可最大化／還原，窄於 640px 上下堆疊。\n * 版面狀態 L = { panes:{left:[tabId…], right:[…]}, active:{left, right}, closed:[tabId…], split:0.45, max:null|'left'|'right' }\n * 偏好存主程式 localStorage（iframe 沒有儲存空間），所以所有輸入都當不可信：normalize 會丟掉未知分頁、補回遺失的、保證兩區至少各一個。 */\n(function (root, factory) {\n    if (typeof module === 'object' && module.exports) module.exports = factory();\n    else root.FaStudioLayout = factory();\n})(typeof self !== 'undefined' ? self : this, function () {\n    'use strict';\n    const TABS = [\n        { id: 'assets', title: '資產清單', icon: '📦' },\n        { id: 'lora', title: 'LoRA 登錄', icon: '🧩' },\n        { id: 'ingest', title: '資料匯入', icon: '📥' },\n        { id: 'datasets', title: '資料集', icon: '🗂️' },\n        { id: 'domains', title: '領域', icon: '🧬' },\n        { id: 'eval', title: '評量', icon: '📊' },\n        { id: 'train', title: '訓練', icon: '🏋️' },\n        { id: 'pipeline', title: '流程', icon: '🧭' },\n        { id: 'teacher', title: '老師', icon: '🎓' },\n        { id: 'log', title: '紀錄', icon: '📜' },\n    ];\n    const IDS = TABS.map((t) => t.id);\n    const DEFAULT = { panes: { left: ['assets', 'lora', 'ingest', 'datasets', 'domains', 'eval'], right: ['train', 'pipeline', 'teacher', 'log'] }, active: { left: 'assets', right: 'train' }, closed: [], split: 0.45, max: null };\n    const SPLIT_MIN = 0.2, SPLIT_MAX = 0.8, STACK_BELOW = 640;\n    const clone = (o) => JSON.parse(JSON.stringify(o));\n    const clamp = (v, a, b) => Math.min(b, Math.max(a, v));\n\n    function defaults() { return clone(DEFAULT); }\n    // 正規化：未知分頁丟掉、重複只留第一個、沒出現在任何地方的（也不在 closed）補回預設所在側、兩區至少一個分頁\n    function normalize(input) {\n        const L = defaults(); if (!input || typeof input !== 'object') return L;\n        const seen = new Set(), panes = { left: [], right: [] }, closed = [];\n        ['left', 'right'].forEach((side) => { const a = input.panes && Array.isArray(input.panes[side]) ? input.panes[side] : []; a.forEach((id) => { if (IDS.indexOf(id) >= 0 && !seen.has(id)) { seen.add(id); panes[side].push(id); } }); });\n        (Array.isArray(input.closed) ? input.closed : []).forEach((id) => { if (IDS.indexOf(id) >= 0 && !seen.has(id)) { seen.add(id); closed.push(id); } });\n        IDS.forEach((id) => { if (!seen.has(id)) { seen.add(id); (DEFAULT.panes.left.indexOf(id) >= 0 ? panes.left : panes.right).push(id); } });\n        ['left', 'right'].forEach((side, i) => { if (!panes[side].length) { const other = side === 'left' ? 'right' : 'left'; if (panes[other].length > 1) panes[side].push(panes[other].pop()); else if (closed.length) panes[side].push(closed.shift()); } });\n        L.panes = panes; L.closed = closed;\n        ['left', 'right'].forEach((side) => { const a = input.active && input.active[side]; L.active[side] = panes[side].indexOf(a) >= 0 ? a : (panes[side][0] || null); });\n        const sp = Number(input.split); L.split = Number.isFinite(sp) ? clamp(sp, SPLIT_MIN, SPLIT_MAX) : DEFAULT.split;\n        L.max = input.max === 'left' || input.max === 'right' ? input.max : null;\n        if (L.max && !panes[L.max].length) L.max = null;\n        return L;\n    }\n    const sideOf = (L, id) => (L.panes.left.indexOf(id) >= 0 ? 'left' : (L.panes.right.indexOf(id) >= 0 ? 'right' : null));\n    const total = (L) => L.panes.left.length + L.panes.right.length;\n    // 搬移：兩區各至少一個分頁（來源只剩這一個時拒絕，除非搬進同一側重新排序）\n    function moveTab(L, id, side, index) {\n        const from = sideOf(L, id); if (!from) return { ok: false, error: '分頁不在任何一區（先用「+」開啟）' };\n        if (side !== 'left' && side !== 'right') return { ok: false, error: '目標只能是 left／right' };\n        if (from !== side && L.panes[from].length <= 1) return { ok: false, error: '每一區至少要保留一個分頁' };\n        const N = clone(L); N.panes[from] = N.panes[from].filter((x) => x !== id);\n        const at = index === undefined || index < 0 || index > N.panes[side].length ? N.panes[side].length : index;\n        N.panes[side].splice(at, 0, id); N.active[side] = id;\n        if (from !== side) N.active[from] = N.panes[from].indexOf(N.active[from]) >= 0 ? N.active[from] : N.panes[from][0];\n        return { ok: true, layout: N };\n    }\n    function closeTab(L, id) {\n        const side = sideOf(L, id); if (!side) return { ok: false, error: '分頁已經關閉' };\n        if (L.panes[side].length <= 1) return { ok: false, error: '每一區至少要保留一個分頁' };\n        const N = clone(L); N.panes[side] = N.panes[side].filter((x) => x !== id); N.closed.push(id);\n        if (N.active[side] === id) N.active[side] = N.panes[side][Math.min(L.panes[side].indexOf(id), N.panes[side].length - 1)];\n        return { ok: true, layout: N };\n    }\n    function openTab(L, id, side) {\n        if (IDS.indexOf(id) < 0) return { ok: false, error: '沒有這個分頁' };\n        if (sideOf(L, id)) { const N = clone(L); N.active[sideOf(L, id)] = id; return { ok: true, layout: N }; }\n        const s = side === 'left' || side === 'right' ? side : (DEFAULT.panes.left.indexOf(id) >= 0 ? 'left' : 'right');\n        const N = clone(L); N.closed = N.closed.filter((x) => x !== id); N.panes[s].push(id); N.active[s] = id; return { ok: true, layout: N };\n    }\n    function activate(L, id) { const s = sideOf(L, id); if (!s) return L; const N = clone(L); N.active[s] = id; return N; }\n    // 分隔線：以比例（0–1）記，拖曳時夾在上下限；雙擊還原\n    const setSplit = (L, v) => { const N = clone(L), x = Number(v); N.split = Number.isFinite(x) ? clamp(x, SPLIT_MIN, SPLIT_MAX) : DEFAULT.split; return N; };\n    const resetSplit = (L) => { const N = clone(L); N.split = DEFAULT.split; return N; };\n    const toggleMax = (L, side) => { const N = clone(L); N.max = N.max === side ? null : (side === 'left' || side === 'right' ? side : null); return N; };\n    const orientation = (widthPx) => (widthPx < STACK_BELOW ? 'stack' : 'side');\n    // 滑鼠位置 → 比例；horizontal＝左右（用 x），否則上下（用 y）\n    const ratioFromPointer = (pos, start, size) => (size > 0 ? clamp((pos - start) / size, SPLIT_MIN, SPLIT_MAX) : DEFAULT.split);\n    return { TABS, IDS, DEFAULT, SPLIT_MIN, SPLIT_MAX, STACK_BELOW, defaults, normalize, sideOf, total, moveTab, closeTab, openTab, activate, setSplit, resetSplit, toggleMax, orientation, ratioFromPointer };\n});\n";
 const FA_STUDIO_LORA_MANAGE_SRC = "'use strict';\n/* LoRA 管理（純函式＋畫面字串，不碰檔案、網路、登錄表本體）。設計見 DESIGN.TODO.offline-training-studio.md §21。\n *   CARD_FORMAT／validateModelCard(card)     model_card.json 的欄位檢查（格式 fa-lora-card，版本 1）\n *   summarizeCard(card)                       model card → 顯示用摘要（評量：基底、微調、差距、判定；缺資料寫「無資料」）\n *   budgetOf(status)                          登錄表的容量（rank 用量與剩餘）\n *   rowsFromStatus(status)                    登錄表 status() → 每列：載入中、推論中計數、釘選、最後使用、按鈕可不可按與原因\n *   cardFromRegistered(entry)                 登錄表的 model card（能力標籤、觸發字、相容性、評量贏與輸清單）\n *   renderLoraManageHTML(model)               列表、登錄表卡片與 model_card.json 卡片的 HTML（所有外部字串先跳脫）\n * 欄位與責任分工見 §21.2：描述檔（註冊表）由 lora-slot-js 提供；model_card.json 由 lora-manager-2 產生，放在資產裡。\n */\n(function (root, factory) {\n    if (typeof module === 'object' && module.exports) module.exports = factory();\n    else root.FaStudioLoraManage = factory();\n}(typeof self !== 'undefined' ? self : this, function () {\n    const CARD_FORMAT = 'fa-lora-card', CARD_VERSION = 1;\n    const METRIC_KEYS = { split_legal_rate: '拆題合法率', fc_format_rate: 'function call 格式合法率' };\n    const SMALL_N = 30;\n\n    const isStr = (x) => typeof x === 'string' && x.length > 0;\n    const isNum01 = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 1;\n    const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\n\n    // ---- model card 檢查 ----\n    function validateModelCard(card) {\n        const errors = [], warnings = [];\n        if (!card || typeof card !== 'object') return { ok: false, errors: ['model card 不是物件'], warnings };\n        if (card.format !== CARD_FORMAT) errors.push('format 必須是 ' + CARD_FORMAT);\n        if (card.version !== CARD_VERSION) errors.push('version 必須是 ' + CARD_VERSION);\n        if (!isStr(card.id)) errors.push('缺 id');\n        if (!isStr(card.name)) errors.push('缺 name');\n        if (!isStr(card.intro)) warnings.push('沒有介紹（intro）');\n        if (!card.base || !isStr(card.base.name)) errors.push('缺 base.name（基底模型）');\n        if (!isStr(card.created) || Number.isNaN(Date.parse(card.created))) errors.push('created 必須是可解析的日期');\n        if (!Array.isArray(card.capabilities)) errors.push('capabilities 必須是陣列');\n        else card.capabilities.forEach((c, i) => { if (!c || !isStr(c.id) || !isStr(c.label)) errors.push('capabilities[' + i + '] 要有 id 與 label'); });\n        if (!Array.isArray(card.known_limits)) errors.push('known_limits 必須是陣列（沒有限制也要給空陣列）');\n        else if (!card.known_limits.length) warnings.push('known_limits 是空的：請確認真的沒有已知限制');\n        const ev = card.eval;\n        if (!ev || typeof ev !== 'object') warnings.push('沒有評量數字（eval）');\n        else Object.keys(METRIC_KEYS).forEach((k) => {\n            const m = ev[k]; if (!m) return;\n            if (!isNum01(m.base) || !isNum01(m.tuned)) errors.push('eval.' + k + '：base 與 tuned 必須是 0 到 1 之間的數字');\n            if (!Number.isInteger(m.n) || m.n < 0) errors.push('eval.' + k + '：n 必須是非負整數');\n        });\n        if (card.training && card.training.rows !== undefined && !Number.isInteger(card.training.rows)) errors.push('training.rows 必須是整數');\n        return { ok: errors.length === 0, errors, warnings };\n    }\n\n    // ---- 評量摘要：差距用百分點；缺的指標寫無資料 ----\n    function summarizeCard(card) {\n        const v = validateModelCard(card);\n        const metrics = Object.keys(METRIC_KEYS).map((k) => {\n            const m = card && card.eval ? card.eval[k] : null;\n            if (!m || !isNum01(m.base) || !isNum01(m.tuned)) return { key: k, label: METRIC_KEYS[k], available: false, reason: '沒有這項評量數字' };\n            const delta = Math.round((m.tuned - m.base) * 1000) / 10;\n            const verdict = delta > 0 ? '進步' : delta < 0 ? '退步' : '持平';\n            const warn = m.n < SMALL_N ? '樣本數 ' + m.n + ' 題偏少，數字只供參考' : '';\n            return { key: k, label: METRIC_KEYS[k], available: true, base: Math.round(m.base * 1000) / 10, tuned: Math.round(m.tuned * 1000) / 10, deltaPts: delta, verdict, n: m.n, warn };\n        });\n        return {\n            ok: v.ok, errors: v.errors, warnings: v.warnings,\n            id: card && card.id || '', name: card && card.name || '', intro: card && card.intro || '', version: card && card.version_tag || '未標註',\n            created: card && card.created || '', base: card && card.base ? card.base.name : '', rank: card && card.applicable ? card.applicable.rank : null,\n            capabilities: card && Array.isArray(card.capabilities) ? card.capabilities : [], limits: card && Array.isArray(card.known_limits) ? card.known_limits : [],\n            training: card && card.training ? { rows: card.training.rows, domains: card.training.domains || [], sources: card.training.sources || '' } : null,\n            metrics\n        };\n    }\n\n    // ---- 登錄表（lora_registry_core 的 status() 形狀，§21.5）----\n    // 真實模型：容量以 rank 計（slotCapacity，已用 usedRank，剩 freeRank），不是編號槽。\n    // 權威規則在登錄表本身（pin、推論中計數、容量、相容性）；這裡只把它的狀態換成畫面列與按鈕提示。\n    function sizeText(b) {\n        if (!Number.isFinite(b)) return '未知';\n        const u = ['位元組', 'KB', 'MB', 'GB']; let x = b, i = 0; while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }\n        return (i === 0 ? String(Math.round(x)) : x.toFixed(1)) + ' ' + u[i];\n    }\n    const timeText = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '從未使用');\n\n    function budgetOf(status) {\n        const s = status || {};\n        return { slotCapacity: s.slotCapacity, usedRank: s.usedRank, freeRank: s.freeRank, maxActive: s.maxActive, usedBytes: s.usedBytes, budget: s.budget, text: 'rank ' + (s.usedRank === undefined ? '?' : s.usedRank) + ' / ' + (s.slotCapacity === undefined ? '?' : s.slotCapacity) + '，剩 ' + (s.freeRank === undefined ? '?' : s.freeRank) };\n    }\n\n    // 每個已註冊的 LoRA 一列：是否載入、推論中計數、釘選、最後使用時間、按鈕能不能按（與原因）\n    function rowsFromStatus(status) {\n        const s = status || {}, slots = Array.isArray(s.slots) ? s.slots : [], reg = Array.isArray(s.registered) ? s.registered : [];\n        const live = new Map(slots.map((x) => [x.id, x]));\n        return reg.map((r) => {\n            const sl = live.get(r.id) || null, loaded = !!sl, pinned = !!r.pinned, inUse = sl && Number.isFinite(sl.inUse) ? sl.inUse : 0;\n            const reject = r.compat === 'reject' ? (Array.isArray(r.compatReasons) && r.compatReasons.length ? r.compatReasons.join('；') : '相容性檢查不通過') : '';\n            const actions = {\n                load: loaded ? { ok: false, reason: '已經載入' } : reject ? { ok: false, reason: reject } : r.enabled === false ? { ok: false, reason: '已停用：請先啟用' } : { ok: true },\n                unload: !loaded ? { ok: false, reason: '目前沒有載入' } : pinned ? { ok: false, reason: '已釘選：先取消釘選才能卸載' } : inUse > 0 ? { ok: false, reason: '推論中（計數 ' + inUse + '）' } : { ok: true },\n                remove: loaded ? { ok: false, reason: '載入中不能移除：請先卸載' } : { ok: true },\n                replace: loaded ? { ok: false, reason: '已經載入' } : reject ? { ok: false, reason: reject } : { ok: true, note: '替換會重建推論 session（桌面約 2 秒；網頁版重新併權重，數秒到數十秒）' },\n                pin: { ok: true, label: pinned ? '取消釘選' : '釘選' },\n                enable: { ok: true, label: r.enabled === false ? '啟用' : '停用' }\n            };\n            return {\n                id: r.id, name: r.name || r.id, version: r.version || '未標註', base: r.base || '未標註', rank: r.rank, size: sizeText(r.size),\n                sizeBytes: r.size, loaded, pinned, inUse, slot: null, lastUsed: timeText(sl ? sl.lastUsed : NaN),\n                source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],\n                domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',\n                gate: r.gate && typeof r.gate === 'object' ? r.gate : null, evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,\n                evalBlocked: r.eval && Array.isArray(r.eval.blocked) ? r.eval.blocked : null,\n                evalNegs: r.eval && r.eval.negs && typeof r.eval.negs === 'object' && Object.keys(r.eval.negs).length ? r.eval.negs : null,\n                // 自動選用與否（與登錄表 select() 的規則一致）：有評量未過就只能手動選\n                autoSelect: !(r.eval && Array.isArray(r.eval.blocked) && r.eval.blocked.length),\n                location: r.location || '', created: timeText(Number(r.added)), actions,\n                slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null\n            };\n        });\n    }\n\n    // 替換進行中（status.replacing = {out, in}，完成或失敗後為 null）→ 畫面的替換中文字；沒有就回空字串\n    function busyText(status) {\n        const r = status && status.replacing;\n        return r && r.out && r.in ? '替換中：' + r.out + ' → ' + r.in + '（完成前，列表的載入狀態可能暫時不準）' : '';\n    }\n\n    // 登錄表的 model card（卡片用）：能力標籤、觸發字、相容性與原因、評量的贏與輸清單\n    function cardFromRegistered(r) {\n        const row = rowsFromStatus({ registered: [r] })[0];\n        return Object.assign({}, row, { hasRegistryCard: true });\n    }\n\n    // 卡片揭露：已知限制裡提到退步、未量、沒有量、不可用於的，要在最上面標出來（不能藏在清單底下）\n    // 「沒有保證」「偏向」「範圍外」是 decompose-r4-v2 等卡片的實際用語（範圍外沒量、負例偏少可能偏向判 ok），也要標出來\n    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|沒有保證|偏向|範圍外|不可用於|不能用於|不可以用於|不可用|不可以/;\n    function disclosuresOf(limits) { return (Array.isArray(limits) ? limits : []).filter((x) => DISCLOSURE_RE.test(String(x))); }\n    // 評量未過：登錄不會自動選用（只能手動選），原因列在卡片頂端\n    const evalBlockBanner = (bl) => (Array.isArray(bl) && bl.length ? '<div class=\"warn\"><b>評量未過（不自動選用，可手動選）：</b><ul>' + bl.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '');\n    const discBanner = (limits) => { const d = disclosuresOf(limits); return d.length ? '<div class=\"warn\"><b>卡片揭露（' + d.length + ' 項）：</b><ul>' + d.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; };\n\n    // 評量數字的一行文字（只用 card 的 split_legal_rate／fc_format_rate；沒有的寫無資料）\n    function evalLinesHTML(ev) {\n        if (!ev) return '<div class=\"na\">無資料（沒有評量數字）</div>';\n        const lines = Object.keys(METRIC_KEYS).map((k) => { const m = ev[k]; return m && isNum01(m.base) && isNum01(m.tuned) ? '<div>' + esc(METRIC_KEYS[k]) + '：' + esc(Math.round(m.base * 1000) / 10) + '% → ' + esc(Math.round(m.tuned * 1000) / 10) + '%（n=' + esc(m.n) + '）</div>' : null; }).filter(Boolean);\n        return lines.length ? lines.join('') : '<div class=\"na\">無資料（沒有評量數字）</div>';\n    }\n\n    // 版本比較的表（diffSummaries 的結果）：有差異的列加粗\n    function renderCompareHTML(diff) {\n        if (!diff) return '<div class=\"na\">無資料（沒有可比較的版本）</div>';\n        const rows = diff.rows.map((r) => '<tr' + (r.changed ? ' class=\"on\"' : '') + '><td>' + esc(r.field) + '</td><td>' + esc(r.a) + '</td><td>' + esc(r.b) + '</td><td>' + (r.changed ? '<b>有差異</b>' : '相同') + '</td></tr>').join('');\n        const lim = (diff.limitsAdded.length || diff.limitsRemoved.length)\n            ? '<div>已知限制：新增 ' + esc(diff.limitsAdded.join('；') || '無') + '；移除 ' + esc(diff.limitsRemoved.join('；') || '無') + '</div>' : '<div>已知限制：相同</div>';\n        return '<div class=\"card\"><b>版本比較' + (diff.same ? '（沒有差異）' : '') + '</b><table><tr><th>項目</th><th>A</th><th>B</th><th>結果</th></tr>' + rows + '</table>' + lim + '</div>';\n    }\n\n    // ---- HTML ----\n    function cardHTML(s) {\n        const v = s.ok ? '' : '<div class=\"err\">model card 有 ' + s.errors.length + ' 處需要修正：' + esc(s.errors.join('；')) + '</div>';\n        const caps = s.capabilities.length ? '<ul>' + s.capabilities.map((c) => '<li><b>' + esc(c.label) + '</b>' + (c.desc ? '：' + esc(c.desc) : '') + '</li>').join('') + '</ul>' : '<div class=\"na\">無資料（沒有列出能力）</div>';\n        const mets = s.metrics.map((m) => m.available\n            ? '<tr><td>' + esc(m.label) + '</td><td>' + esc(m.base) + '%</td><td>' + esc(m.tuned) + '%</td><td>' + (m.deltaPts > 0 ? '+' : '') + esc(m.deltaPts) + ' 點（' + esc(m.verdict) + '）</td><td>' + esc(m.n) + ' 題' + (m.warn ? '<div class=\"warn\">' + esc(m.warn) + '</div>' : '') + '</td></tr>'\n            : '<tr><td>' + esc(m.label) + '</td><td colspan=\"4\"><span class=\"na\">無資料（' + esc(m.reason) + '）</span></td></tr>').join('');\n        const lim = s.limits.length ? '<ul>' + s.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '<div class=\"na\">無資料（card 沒有列已知限制）</div>';\n        const tr = s.training ? '<div>訓練列數：' + esc(s.training.rows) + '；領域：' + esc(s.training.domains.map((d) => d.domain + ' ' + d.rows).join('、') || '無資料') + '</div><div>來源摘要：' + esc(s.training.sources || '無資料') + '</div>' : '<div class=\"na\">無資料（沒有訓練資料摘要）</div>';\n        return '<div class=\"card\"><div class=\"ttl\">' + esc(s.name) + '</div>' + v + discBanner(s.limits) +\n            '<div class=\"intro\">' + esc(s.intro || '無資料（沒有介紹）') + '</div>' +\n            '<div class=\"kv\">版本 ' + esc(s.version) + '・基底 ' + esc(s.base) + (s.rank !== null ? '・rank ' + esc(s.rank) : '') + '・建立 ' + esc(s.created) + '</div>' +\n            '<h5>具備的能力</h5>' + caps +\n            '<h5>評量（基底 vs 微調）</h5><table><tr><th>項目</th><th>基底</th><th>微調</th><th>差距</th><th>樣本</th></tr>' + mets + '</table>' +\n            '<h5>訓練資料摘要</h5>' + tr + '<h5>已知限制</h5>' + lim + '</div>';\n    }\n\n    function registryCardHTML(r) {\n        const chips = (xs) => (xs && xs.length ? xs.map((x) => '<span class=\"chip\">' + esc(x) + '</span>').join('') : '<span class=\"na\">無資料</span>');\n        const comp = (r.gate && !r.gate.pass ? '<div class=\"warn\">未通過把關：' + esc(r.gate.reason) + '</div>' : '')\n            + (r.compat === 'reject' ? '<div class=\"err\">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : '')\n            + (r.compatWarnings && r.compatWarnings.length ? '<div class=\"warn\">相容性提醒：' + esc(r.compatWarnings.join('；')) + '</div>' : '')\n            + (r.compat === 'warn' && r.compatReasons.length ? '<div class=\"warn\">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');\n        const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class=\"na\">無資料（沒有評量結果）</div>');\n        const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';\n        // 負例（標準答案 ok=false）答對數：退化答案的證據，寫出分子與分母（例如 0/39）\n        const negLines = r.evalNegs ? Object.keys(r.evalNegs).map((g) => { const x = r.evalNegs[g]; return '<div>' + esc(g) + '：負例答對 ' + esc(x.tuned) + '/' + esc(x.n) + (x.base !== null && x.base !== undefined ? '（基底 ' + esc(x.base) + '/' + esc(x.n) + '）' : '') + '</div>'; }).join('') : '';\n        const negBlock = negLines ? '<h5>負例</h5>' + negLines : '';\n        return '<div class=\"card\"><div class=\"ttl\">' + esc(r.name) + '</div>' + evalBlockBanner(r.evalBlocked) + discBanner(r.limits) + '<div class=\"intro\">' + esc(r.description || '無資料（沒有說明）') + '</div>' +\n            '<div class=\"kv\">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +\n            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + negBlock + lim + '</div>';\n    }\n\n    function renderLoraManageHTML(model) {\n        const m = model || {};\n        const bud = m.budget ? '<div class=\"kv\">容量：' + esc(m.budget.text) + (m.budget.maxActive !== undefined ? '・同時載入上限 ' + esc(m.budget.maxActive) : '') + '</div>' : '';\n        const busy = m.busy ? '<div class=\"warn\">替換中：' + esc(m.busy) + '</div>' : '';\n        const btn = (name, label, a, id) => '<button class=\"act\" data-lora-action=\"' + esc(name) + '\" data-id=\"' + esc(id) + '\"' + (a && a.ok ? '' : ' disabled title=\"' + esc(a && a.reason) + '\"') + '>' + esc(label) + '</button>';\n        const rows = (m.rows || []).map((r) => {\n            const state = r.loaded ? '<span class=\"badge b-done\">載入中（推論中 ' + esc(r.inUse) + '）</span>' : '<span class=\"na\">未載入</span>';\n            const flags = (r.pinned ? '<span class=\"badge\">釘選</span> ' : '') + (r.enabled ? '' : '<span class=\"badge\">停用</span> ') + (r.compat !== 'ok' ? '<span class=\"badge b-fail\">相容 ' + esc(r.compat) + '</span>' : '')\n                + (r.autoSelect === false ? '<span class=\"badge b-fail\" title=\"' + esc((r.evalBlocked || []).join('；')) + '\">評量未過（僅手動選）</span>' : '');\n            return '<tr class=\"' + (r.loaded ? 'on' : '') + '\"><td><b>' + esc(r.name) + '</b><div class=\"id\">' + esc(r.id) + '</div>' + flags + '</td><td>' + esc(r.base) + '・rank ' + esc(r.rank) + '</td><td>' + esc(r.size) + '</td><td>' + esc(r.version) + '</td><td>' + state + '</td><td>' + esc(r.lastUsed) + '</td><td>' +\n                '<button class=\"act\" data-lora-action=\"card\" data-id=\"' + esc(r.id) + '\">介紹</button> ' +\n                btn('load', '載入', r.actions.load, r.id) + ' ' + btn('unload', '卸載', r.actions.unload, r.id) + ' ' + btn('pin', r.actions.pin.label, r.actions.pin, r.id) + ' ' + btn('enable', r.actions.enable.label, r.actions.enable, r.id) + ' ' + btn('replace', '替換', r.actions.replace, r.id) + ' ' + btn('remove', '移除', r.actions.remove, r.id) + '</td></tr>';\n        }).join('');\n        const table = rows ? '<table><tr><th>LoRA</th><th>基底</th><th>大小</th><th>版本</th><th>狀態</th><th>最後使用</th><th>操作</th></tr>' + rows + '</table>' : '<div class=\"na\">無資料（還沒有註冊的 LoRA）</div>';\n        const regCard = m.registryCard ? registryCardHTML(m.registryCard) : '';\n        const card = m.card ? cardHTML(m.card) : '';\n        return '<div class=\"lora-manage\"><div class=\"ttl\">LoRA 管理</div>' + bud + busy + table + regCard + card + '</div>';\n    }\n\n    // 內建 LoRA 卡片（DESIGN §33 批 3）：總開關、六顆卡片（用途、評量、限制、已下載大小、啟用、下載／刪除重下）、被把關擋下的原因、下載失敗的原因。\n    // v 來自 studio_server_core 的 GET /api/builtin：{ok, available, master, source, note, entries:[…], message}。所有外部字串跳脫。\n    function builtinCardsHTML(v) {\n        const head = '<div class=\"grp\">內建 LoRA（預設使用）</div>';\n        if (!v) return '';\n        if (v.available === false) return head + '<div class=\"na\">' + esc(v.message || '只有桌面版啟用') + '</div>';\n        if (!v.ok) return head + '<div class=\"warn\">' + esc(v.message || '抓不到內建清單') + '</div><button class=\"act\" data-builtin-action=\"refresh\">重新抓清單</button>';\n        const note = v.source === 'cache' && v.note ? '<div class=\"warn\">' + esc(v.note) + '</div>' : '';\n        const master = '<label><input type=\"checkbox\" data-builtin-action=\"master\"' + (v.master ? ' checked' : '') + '> 使用內建 LoRA 強化（總開關）</label>';\n        const cards = (v.entries || []).map((e) => {\n            const dl = e.downloaded ? '已下載 ' + sizeText(e.downloadedBytes) + '（可刪除，之後會重新下載）' : '未下載（第一次被路由選到時才下載，約 ' + esc(e.sizeMB) + ' MB）';\n            const prog = e.progress ? '<div class=\"kv\">下載中：第 ' + esc(e.progress.part) + ' ／ ' + esc(e.progress.parts) + ' 片</div>' : '';\n            const blocked = e.gatePass ? '' : '<div class=\"warn\">被把關擋下，不會自動使用：' + esc(e.note) + '</div>';\n            const failed = e.failed ? '<div class=\"err\">上次下載失敗：' + esc(e.failed) + '</div>' : '';\n            const lim = (e.limits || []).length ? '<h5>已知限制</h5><ul>' + e.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';\n            const act = e.downloaded\n                ? '<button class=\"act\" data-builtin-action=\"delete\" data-id=\"' + esc(e.id) + '\">刪除（之後重新下載）</button>'\n                : '<button class=\"act\" data-builtin-action=\"fetch\" data-id=\"' + esc(e.id) + '\"' + (e.progress ? ' disabled' : '') + '>下載</button>';\n            return '<div class=\"card\"><div class=\"ttl\">' + esc(e.name) + '</div><div class=\"intro\">用途：' + esc(e.purpose || '無資料') + '</div>' +\n                '<div class=\"kv\">評量：' + esc(e.evalSummary || '無資料') + '</div>' + blocked + failed + prog +\n                '<div class=\"kv\">' + dl + '</div>' + lim +\n                '<label><input type=\"checkbox\" data-builtin-action=\"enable\" data-id=\"' + esc(e.id) + '\"' + (e.enabled ? ' checked' : '') + (v.master ? '' : ' disabled') + '> 啟用這顆</label> ' + act + '</div>';\n        }).join('');\n        return head + note + '<div class=\"kv\">' + master + '</div>' + cards + '<button class=\"act\" data-builtin-action=\"refresh\">重新抓清單</button>';\n    }\n\n    // LoRA 介紹（model card，§21）：summarizeCard 的結果 → HTML（所有外部字串跳脫；沒有的評量寫「無資料」）\n    function cardIntroHTML(c) {\n        if (!c) return '<div class=\"todo\">沒有介紹資料</div>';\n        const list = (xs, f) => (xs && xs.length ? '<ul>' + xs.map((x) => '<li>' + esc(f(x)) + '</li>').join('') + '</ul>' : '<div class=\"todo\">沒有</div>');\n        const head = esc(c.name || '') + '　版本 ' + esc(c.version || '未標註') + '　基底 ' + esc(c.base || '未標註') + (c.rank !== null && c.rank !== undefined ? '　rank ' + esc(c.rank) : '');\n        const errs = c.errors && c.errors.length ? '<div class=\"warn\">model_card 有問題：' + esc(c.errors.join('；')) + '</div>' : '';\n        const metrics = (c.metrics || []).map((m) => (m.available\n            ? m.label + '：' + m.base + '% → ' + m.tuned + '%（' + m.verdict + '，' + m.deltaPts + ' 個百分點，' + m.n + ' 題）' + (m.warn ? '　⚠ ' + m.warn : '')\n            : m.label + '：無資料（' + m.reason + '）'));\n        return '<div class=\"card\"><b>' + head + '</b>' + discBanner(c.limits)\n            + (c.intro ? '<div>' + esc(c.intro) + '</div>' : '') + errs\n            + '<div class=\"grp\">會附帶的能力</div>' + list(c.capabilities, (k) => (typeof k === 'string' ? k : (k.label || k.id || '') + (k.desc ? '：' + k.desc : '')))\n            + '<div class=\"grp\">已知限制</div>' + list(c.limits, (t) => String(t))\n            + '<div class=\"grp\">評量（基底 → 微調；沒有的寫無資料）</div>' + list(metrics, (x) => x)\n            + '</div>';\n    }\n\n    // 逾時包裝：超過 ms 還沒回應就以錯誤結束（畫面要顯示錯誤，不能一直空白等）\n    function withTimeout(p, ms, what) {\n        let timer = null;\n        const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(String(what || '請求') + '逾時（超過 ' + Math.round(ms / 1000) + ' 秒沒有回應）')), ms); });\n        return Promise.race([Promise.resolve(p), limit]).finally(() => clearTimeout(timer));\n    }\n    // 錯誤文字：哪一步、錯誤訊息、耗時（毫秒）\n    function errorText(step, err, elapsedMs) {\n        const msg = err && err.message ? err.message : String(err === undefined || err === null ? '未知錯誤' : err);\n        return String(step || '步驟') + '失敗：' + msg + '（耗時 ' + Math.max(0, Math.round(Number(elapsedMs) || 0)) + ' 毫秒）';\n    }\n\n    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, builtinCardsHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML, withTimeout, errorText };\n}));\n";
 const FA_STUDIO_PIPELINE_VIEW_SRC = "'use strict';\n/* 流程總覽的畫面產生器（純函式，回 HTML 字串；所有外部字串都先跳脫）。設計見 DESIGN.TODO.offline-training-studio.md §19。\n *   renderPipelineHTML(view, advice)  view＝GET /api/pipeline 的回傳；advice＝GET /api/advice 的回傳（可省）\n * 規則：資料沒有就寫「無資料」（附缺什麼）；功能沒做就寫「尚未實作」（附阻礙），不假裝可用。\n */\n(function (root, factory) {\n    if (typeof module === 'object' && module.exports) module.exports = factory();\n    else root.FaStudioPipelineView = factory();\n}(typeof self !== 'undefined' ? self : this, function () {\n    const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\n    const NA = (why) => '<span class=\"na\">無資料' + (why ? '（' + esc(why) + '）' : '') + '</span>';\n    const NOT_IMPL = (why) => '<span class=\"unimpl\">尚未實作' + (why ? '：' + esc(why) : '') + '</span>';\n    const STATE_CLASS = { '待做': 'todo', '進行中': 'run', '完成': 'done', '失敗': 'fail', '略過': 'skip' };\n\n    function fmtSec(sec) {\n        if (sec === null || sec === undefined || !Number.isFinite(sec)) return null;\n        const s = Math.max(0, Math.round(sec)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;\n        const pad = (x) => (x < 10 ? '0' + x : String(x));\n        return h ? h + ':' + pad(m) + ':' + pad(r) : pad(m) + ':' + pad(r);\n    }\n    function fmtBytes(b) {\n        if (b === null || b === undefined || !Number.isFinite(b)) return null;\n        const units = ['位元組', 'KB', 'MB', 'GB']; let x = b, i = 0;\n        while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }\n        return (i === 0 ? String(Math.round(x)) : x.toFixed(1)) + ' ' + units[i];\n    }\n    const num = (x) => (Number.isFinite(x) ? String(x) : null);\n\n    function stageCard(s) {\n        const cls = STATE_CLASS[s.state] || 'todo';\n        const parts = [];\n        if (s.unimplemented) parts.push(NOT_IMPL(s.reason));\n        else if (s.reason) parts.push('<div class=\"why\">' + esc(s.reason) + '</div>');\n        if (s.products && s.products.length) {\n            const p = s.products[0];\n            parts.push('<div class=\"prod\">產物：' + esc(p.count) + ' 筆・' + esc(p.files) + ' 個檔案・sha256 ' + esc(p.sha256 || '') + '</div>');\n        }\n        const el = fmtSec(s.elapsedMs === null || s.elapsedMs === undefined ? null : s.elapsedMs / 1000);\n        if (el) parts.push('<div class=\"el\">耗時 ' + esc(el) + '</div>');\n        if (s.lookup && s.state === '略過') parts.push('<div class=\"why\">' + esc(s.note || '') + '</div>');\n        return '<div class=\"stg st-' + cls + (s.unimplemented ? ' unimpl' : '') + '\" data-stage=\"' + esc(s.id) + '\">' +\n            '<div class=\"hd\"><span class=\"nm\">' + esc(s.label) + '</span><span class=\"badge b-' + cls + '\">' + esc(s.state) + '</span></div>' + parts.join('') + '</div>';\n    }\n\n    function liveBlock(view) {\n        const L = view.live, memTxt = fmtBytes(view.memory && view.memory.lastBytes);\n        if (!L) return '<div class=\"live\">' + NA('沒有訓練紀錄：請指定訓練資料夾（run）') + '</div>';\n        const pct = L.pct;\n        const bar = pct === null || pct === undefined ? '' : '<div class=\"bar\"><span style=\"width:' + Math.max(0, Math.min(100, pct)) + '%\"></span></div>';\n        const row = (k, v) => '<div class=\"kv\"><span class=\"k\">' + esc(k) + '</span><span class=\"v\">' + (v === null || v === undefined || v === '' ? NA() : v) + '</span></div>';\n        const stepTxt = L.step !== null && L.total !== null ? esc(L.step) + ' / ' + esc(L.total) + '（' + esc(pct) + '%）' : null;\n        const lossTxt = L.loss !== null ? esc(L.loss) + (L.lossFirst !== null ? '（第一次 ' + esc(L.lossFirst) + '）' : '') : null;\n        const secTxt = L.secPerStep !== null ? esc(Number(L.secPerStep).toFixed(2)) + ' 秒／步（' + esc(L.secSource) + '）' : null;\n        const etaTxt = fmtSec(L.etaSec) ? fmtSec(L.etaSec) + '（估）' : null;\n        const memRow = memTxt ? row('記憶體（子行程 RSS）', esc(memTxt) + '，峰值 ' + esc(fmtBytes(view.memory.peakBytes))) : row('記憶體', NA(view.memoryReason || '沒有取樣'));\n        const errTxt = L.logState === '失敗' && L.errorText ? '<div class=\"err\">' + esc(L.errorText) + '</div>' : '';\n        return '<div class=\"live\"><div class=\"ls\">日誌狀態：' + esc(L.logState) + '</div>' + bar +\n            row('步數', stepTxt) + row('loss', lossTxt) + row('每步耗時', secTxt) + row('預估剩餘', etaTxt) + row('已經過', fmtSec(L.elapsedSec)) + memRow + errTxt + '</div>';\n    }\n\n    function exportBlock(view) {\n        const x = view.export; if (!x) return '';\n        const opts = (x.options || []).map((o) => '<tr><td>' + esc(o.format.toUpperCase()) + '</td><td>' + esc(o.quant) + '</td><td>' +\n            (o.available ? '可用' : NOT_IMPL(o.reason)) + '</td></tr>').join('');\n        const head = x.default ? '預設格式：' + esc(x.default.toUpperCase()) + '（' + esc(x.quant) + '，' + (x.env === 'web' ? '網頁' : '桌面本機') + '）' : NOT_IMPL(x.reason);\n        return '<div class=\"export\"><div class=\"ls\">匯出格式</div><div>' + head + '</div><table><tr><th>格式</th><th>量化</th><th>狀態</th></tr>' + opts + '</table></div>';\n    }\n\n    function adviceBlock(advice) {\n        if (!advice) return '<div class=\"advice\">' + NA('還沒有評量輸出；在「評量」跑完後再來看') + '</div>';\n        if (advice.ok === false) return '<div class=\"advice\">' + '<span class=\"err\">' + esc(advice.error || '建議失敗') + '</span></div>';\n        const sug = advice.suggestions || [], ins = advice.insufficient || [];\n        const items = sug.map((s) => '<li class=\"sg sev-' + esc(s.severity) + '\"><div class=\"tx\">' + esc(s.text) + '</div>' +\n            '<div class=\"ev\">依據：' + esc(s.evidence && s.evidence.source) + '</div>' +\n            '<button class=\"act\" data-action=\"' + esc(s.action) + '\" data-target=\"' + esc(s.name) + '\" title=\"' + esc(s.actionHint) + '\">' + esc(s.actionLabel) + '</button></li>').join('');\n        const missing = ins.map((i) => '<li class=\"na\">' + esc(i.name) + '：' + (i.rule === 'position-bias' ? '無資料（' + esc(i.reason) + '）' : esc(i.reason)) + '</li>').join('');\n        return '<div class=\"advice\">' + (sug.length ? '<ul>' + items + '</ul>' : '<div class=\"ok\">目前沒有需要加強的項目（依現有的評量門檻）。</div>') +\n            (ins.length ? '<div class=\"ls\">證據不足，暫不建議</div><ul>' + missing + '</ul>' : '') + '</div>';\n    }\n\n    function renderPipelineHTML(view, advice) {\n        if (!view || view.ok === false) return '<div class=\"err\">' + esc((view && view.error) || '流程總覽讀取失敗') + '</div>';\n        const stages = (view.stages || []).map(stageCard).join('<div class=\"arrow\">→</div>');\n        const src = view.source || {};\n        const srcTxt = '資料來源：' + (src.manifest ? '資產 ' + esc(src.asset) : NA('沒有資產')) + '・訓練紀錄 ' + (src.log ? '已讀取 ' + esc(src.runDir) : NA('沒有 train.log'));\n        return '<div class=\"pipe\"><div class=\"ttl\">' + esc(view.label) + ' 流程</div><div class=\"src\">' + srcTxt + '</div>' +\n            '<div class=\"flow\">' + stages + '</div>' +\n            '<h4>即時狀態</h4>' + liveBlock(view) +\n            exportBlock(view) +\n            '<h4>下一次該加強什麼</h4>' + adviceBlock(advice) + '</div>';\n    }\n\n    return { esc, fmtSec, fmtBytes, renderPipelineHTML, stageCard, liveBlock, adviceBlock, exportBlock };\n}));\n";
@@ -83016,10 +83016,714 @@ if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
 /* DECKHOST-END */
 /* MLCORE-BEGIN */
+const FaMusicLib = (function () {
+const holder = {};
+(function (module, self) {
+/* 本地音樂庫的核心（純函式，UMD）：辨識檔案種類（副檔名＋檔頭）、從路徑推專輯、解析中繼資料（能解析多少算多少，解析不了留空、不丟例外）、
+ * 增量掃描（路徑＋大小＋修改時間都不變就跳過、不重讀位元組）、多關鍵字搜尋（路徑／檔名／專輯／標題／演出者；中文、日文、英文都用子字串比對）。
+ * 不碰 DOM、不碰檔案系統：檔案從哪裡來（桌面版磁碟、瀏覽器 File）由 host 決定，這裡只收「狀態＋讀檔頭的函式」。
+ * 儲存：由 backend 提供 load／save（IndexedDB、磁碟 JSON、記憶體都行），這裡不寫死筆數上限。
+ * 第一階段只做「庫與掃描」：遊戲音樂來源（nes、pce、sfc、rix、swf）只登記辨識成「待擷取」，不做擷取。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLib = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var VERSION = 1;
+  var HEAD_BYTES = 2 * 1024 * 1024; // 讀檔頭的上限（ID3、WAV 檔頭、MIDI 整檔都在這之內；mp4 的 moov 若在檔尾就解析不到，留空）
+
+  // 種類表：副檔名 → 種類。category：audio（音訊）、video（影片）、game（遊戲音樂來源，待擷取）
+  var KINDS = {
+    mid: { category: 'audio', label: 'MIDI 樂譜' },
+    wav: { category: 'audio', label: 'WAV 音訊' },
+    mp3: { category: 'audio', label: 'MP3 音訊' },
+    mp4: { category: 'video', label: 'MP4 影片' },
+    mov: { category: 'video', label: 'MOV 影片' },
+    webm: { category: 'video', label: 'WebM 影片' },
+    nes: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    pce: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    rix: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    swf: { category: 'game', label: '遊戲音樂來源，待擷取' }
+  };
+  var EXT_ALIAS = { midi: 'mid' };
+
+  // ───── 文字小工具 ─────
+  function normalizeText(s) { return String(s == null ? '' : s).normalize('NFKC').toLowerCase().trim(); }
+  function basename(p) { return String(p || '').split(/[\\\/]/).pop(); }
+  function extOf(name) { var m = /\.([^.\\\/]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+  function stripExt(name) { return String(name || '').replace(/\.[^.\\\/]+$/, ''); }
+  function kindFromExt(name) { var e = extOf(name); e = EXT_ALIAS[e] || e; return KINDS[e] ? e : null; }
+
+  // 只看副檔名就能認的檔案（掃描時用來決定要不要先讀檔頭）
+  function isSupportedName(name) { return !!kindFromExt(name); }
+
+  // ───── 種類辨識：先看檔頭（最準），認不出來再看副檔名；檔頭與副檔名不同時以檔頭為準 ─────
+  function ascii(a, o, n) { var s = ''; for (var i = 0; i < n; i++) s += String.fromCharCode(a[o + i] == null ? 0 : a[o + i]); return s; }
+  function sniffKind(a) {
+    if (!a || a.length < 4) return null;
+    if (a[0] === 0x4D && a[1] === 0x54 && a[2] === 0x68 && a[3] === 0x64) return 'mid'; // MThd
+    if (ascii(a, 0, 4) === 'RIFF' && a.length >= 12 && ascii(a, 8, 4) === 'WAVE') return 'wav';
+    if (ascii(a, 0, 3) === 'ID3') return 'mp3';
+    if (a[0] === 0xFF && (a[1] & 0xE0) === 0xE0 && ((a[1] >> 1) & 3) === 1) return 'mp3'; // MPEG 音框同步，第 III 層
+    if (a.length >= 12 && ascii(a, 4, 4) === 'ftyp') return ascii(a, 8, 4) === 'qt  ' ? 'mov' : 'mp4';
+    if (a[0] === 0x1A && a[1] === 0x45 && a[2] === 0xDF && a[3] === 0xA3) return 'webm';
+    if (ascii(a, 0, 4) === 'NES\u001a') return 'nes';
+    var f = ascii(a, 0, 3);
+    if (f === 'FWS' || f === 'CWS' || f === 'ZWS') return 'swf';
+    return null;
+  }
+  // 回傳 { kind, category, label, pending, via }；認不出來回傳 null
+  function identifyKind(name, bytes) {
+    var byExt = kindFromExt(name), byMagic = sniffKind(bytes), kind = byMagic || byExt;
+    if (!kind) return null;
+    var k = KINDS[kind];
+    return { kind: kind, category: k.category, label: k.label, pending: k.category === 'game', via: byMagic ? 'magic' : 'ext' };
+  }
+
+  // ───── 專輯：沒有專輯標籤時，用上一層資料夾名（路徑最後一段之前那一段；碟符不算）─────
+  function albumFromPath(p) {
+    var parts = String(p || '').split(/[\\\/]+/).filter(Boolean);
+    if (parts.length < 2) return '';
+    var parent = parts[parts.length - 2];
+    if (/^[A-Za-z]:$/.test(parent)) return '';
+    return parent;
+  }
+
+  // ───── 位元組讀取（大端／小端）與文字解碼 ─────
+  function u16be(a, o) { return (a[o] << 8) | a[o + 1]; }
+  function u32be(a, o) { return ((a[o] << 24) >>> 0) + (a[o + 1] << 16) + (a[o + 2] << 8) + a[o + 3]; }
+  function u32le(a, o) { return (a[o] | (a[o + 1] << 8) | (a[o + 2] << 16)) + a[o + 3] * 16777216; }
+  function syncsafe(a, o) { return (a[o] << 21) | (a[o + 1] << 14) | (a[o + 2] << 7) | a[o + 3]; }
+  function utf8(body) { try { return new TextDecoder('utf-8', { fatal: true }).decode(body); } catch (e) { return null; } }
+  function latin1(body) { var s = ''; for (var i = 0; i < body.length; i++) s += String.fromCharCode(body[i]); return s; }
+  function utf16(body, le) { var s = ''; for (var i = 0; i + 1 < body.length; i += 2) s += String.fromCharCode(le ? (body[i] | (body[i + 1] << 8)) : ((body[i] << 8) | body[i + 1])); return s; }
+  // ID3 的文字：第一個位元組是編碼（0 Latin-1 或 GBK、1 UTF-16 有 BOM、2 UTF-16BE、3 UTF-8）
+  function decodeId3Text(a, o, n) {
+    if (n <= 1) return null;
+    var enc = a[o], body = a.subarray(o + 1, o + n), s;
+    if (enc === 1) {
+      var le = true, st = 0;
+      if (body[0] === 0xFE && body[1] === 0xFF) { le = false; st = 2; } else if (body[0] === 0xFF && body[1] === 0xFE) { st = 2; }
+      s = utf16(body.subarray(st), le);
+    } else if (enc === 2) s = utf16(body, false);
+    else if (enc === 3) s = utf8(body) || latin1(body);
+    else s = utf8(body) || decodeGbk(body);
+    s = s.split('\u0000')[0].replace(/^﻿/, '').trim();
+    return s || null;
+  }
+  function decodeGbk(body) { try { return new TextDecoder('gbk').decode(body); } catch (e) { return latin1(body); } }
+  function decodeUtf8Loose(body) { return utf8(body) || decodeGbk(body); }
+
+  // ───── MP3：ID3v2（TIT2／TPE1／TALB／TLEN）、ID3v1（尾端 128 位元組）、音框（Xing／Info 精確，否則用位元率估長度）─────
+  var MP3_BR_V1L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+  var MP3_BR_V2L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+  var MP3_SR = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]]; // MPEG1、MPEG2、MPEG2.5
+  function parseId3(a) {
+    var out = {};
+    if (a.length < 10 || ascii(a, 0, 3) !== 'ID3') return out;
+    var major = a[3], flags = a[5], size = syncsafe(a, 6), pos = 10, end = Math.min(a.length, 10 + size);
+    if (flags & 0x40) { var ext = major === 4 ? syncsafe(a, 10) : u32be(a, 10); pos += major === 4 ? ext : 4 + ext; }
+    var idLen = major === 2 ? 3 : 4, hdrLen = major === 2 ? 6 : 10;
+    while (pos + hdrLen <= end) {
+      var id = ascii(a, pos, idLen);
+      if (!/^[A-Z0-9]{3,4}$/.test(id)) break; // 補零區，結束
+      var fsize = major === 2 ? ((a[pos + 3] << 16) | (a[pos + 4] << 8) | a[pos + 5]) : (major === 4 ? syncsafe(a, pos + 4) : u32be(a, pos + 4));
+      var body = pos + hdrLen;
+      if (fsize <= 0 || body + fsize > end) break;
+      var txt = id.charAt(0) === 'T' ? decodeId3Text(a, body, fsize) : null;
+      if (txt) {
+        if (id === 'TIT2' || id === 'TT2') out.title = txt;
+        else if (id === 'TPE1' || id === 'TP1') out.artist = txt;
+        else if (id === 'TALB' || id === 'TAL') out.album = txt;
+        else if (id === 'TLEN') { var ms = Number(txt); if (ms > 0) out.lengthMs = ms; }
+      }
+      pos = body + fsize;
+    }
+    out.audioStart = major === 0 ? 0 : (10 + size + ((flags & 0x10) && major === 4 ? 10 : 0));
+    return out;
+  }
+  function parseId3v1(a, out) {
+    if (a.length < 128 || ascii(a, a.length - 128, 3) !== 'TAG') return;
+    var t = a.length - 128;
+    var clean = function (o, n) { var s = latin1(a.subarray(o, o + n)).split('\u0000')[0].trim(); return s || null; };
+    if (!out.title) out.title = clean(t + 3, 30);
+    if (!out.artist) out.artist = clean(t + 33, 30);
+    if (!out.album) out.album = clean(t + 63, 30);
+  }
+  function mp3Duration(a, start, size, m) {
+    var lim = Math.min(a.length - 4, start + 8192);
+    for (var p = start; p <= lim; p++) {
+      if (!(a[p] === 0xFF && (a[p + 1] & 0xE0) === 0xE0 && ((a[p + 1] >> 1) & 3) === 1)) continue;
+      var verBits = (a[p + 1] >> 3) & 3, b2 = a[p + 2], b3 = a[p + 3];
+      if (verBits === 1) continue; // 保留位
+      var br = (b2 >> 4) & 15, sri = (b2 >> 2) & 3;
+      if (br === 0 || br === 15 || sri === 3) continue; // 自由位元率或非法值，換下一個
+      var isV1 = verBits === 3, bitrate = (isV1 ? MP3_BR_V1L3 : MP3_BR_V2L3)[br] * 1000;
+      var sr = MP3_SR[isV1 ? 0 : (verBits === 2 ? 1 : 2)][sri], spf = isV1 ? 1152 : 576;
+      var mono = ((b3 >> 6) & 3) === 3, side = isV1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+      var xo = p + 4 + side;
+      m.format = { bitrateKbps: bitrate / 1000, sampleRate: sr };
+      if (xo + 8 <= a.length) {
+        var tag = ascii(a, xo, 4);
+        if ((tag === 'Xing' || tag === 'Info') && (u32be(a, xo + 4) & 1)) {
+          m.durationSec = u32be(a, xo + 8) * spf / sr; m.durationApprox = false; return;
+        }
+      }
+      var audioBytes = (size || a.length) - p;
+      m.durationSec = audioBytes * 8 / bitrate; m.durationApprox = true; // 位元率估計（CBR 準；VBR 有誤差）
+      return;
+    }
+  }
+  function parseMp3(a, size, m) {
+    var tags = parseId3(a);
+    ['title', 'artist', 'album'].forEach(function (k) { if (tags[k]) m[k] = tags[k]; });
+    if (tags.lengthMs) { m.durationSec = tags.lengthMs / 1000; m.durationApprox = false; }
+    parseId3v1(a, m);
+    if (m.durationSec == null) mp3Duration(a, tags.audioStart || 0, size, m);
+  }
+
+  // ───── WAV：fmt 區塊（聲道、取樣率、位元深度）、data 區塊大小 ÷ 每秒位元組數 = 長度；LIST/INFO 的標題、演出者、專輯 ─────
+  function parseWav(a, size, m) {
+    var pos = 12, byteRate = null, dataSize = null, info = {};
+    while (pos + 8 <= a.length) {
+      var id = ascii(a, pos, 4), sz = u32le(a, pos + 4), body = pos + 8;
+      if (id === 'fmt ') {
+        m.format = { channels: a[body + 2] | (a[body + 3] << 8), sampleRate: u32le(a, body + 4), bitsPerSample: a[body + 14] | (a[body + 15] << 8) };
+        byteRate = u32le(a, body + 8);
+      } else if (id === 'data') {
+        dataSize = sz === 0xFFFFFFFF && size ? size - body : sz;
+      } else if (id === 'LIST' && ascii(a, body, 4) === 'INFO') {
+        var q = body + 4, qEnd = Math.min(a.length, body + sz);
+        while (q + 8 <= qEnd) {
+          var sid = ascii(a, q, 4), ssz = u32le(a, q + 4), sb = q + 8;
+          var val = decodeUtf8Loose(a.subarray(sb, Math.min(a.length, sb + ssz))).split('\u0000')[0].trim();
+          if (sid === 'INAM') info.title = val; else if (sid === 'IART') info.artist = val; else if (sid === 'IPRD') info.album = val;
+          q = sb + ssz + (ssz & 1);
+        }
+      }
+      if (sz > a.length) break; // 區塊超出已讀範圍：到此為止（data 區塊的大小已拿到）
+      pos = body + sz + (sz & 1);
+    }
+    ['title', 'artist', 'album'].forEach(function (k) { if (info[k]) m[k] = info[k]; });
+    if (byteRate && dataSize != null) m.durationSec = dataSize / byteRate;
+  }
+
+  // ───── MIDI：標頭（格式、軌數、每拍 tick 數）；各軌 tick 數與速度變化（tempo）→ 長度（秒）─────
+  function readVlq(a, p) {
+    var v = 0;
+    for (var i = 0; i < 4; i++) {
+      if (p >= a.length) return null;
+      var b = a[p++];
+      v = v * 128 + (b & 0x7F);
+      if (!(b & 0x80)) return { v: v, next: p };
+    }
+    return null;
+  }
+  function parseMidTrack(a, p, end) {
+    var tick = 0, status = 0, res = { ticks: 0, tempos: [], name: null };
+    while (p < end) {
+      var d = readVlq(a, p); if (!d) break;
+      tick += d.v; p = d.next;
+      if (p >= end) break;
+      if (a[p] & 0x80) { status = a[p]; p++; }
+      if (!status) break;
+      if (status === 0xFF) {
+        var type = a[p++], l = readVlq(a, p); if (!l) break;
+        p = l.next;
+        if (type === 0x51 && l.v === 3) res.tempos.push({ tick: tick, us: (a[p] << 16) | (a[p + 1] << 8) | a[p + 2] });
+        else if (type === 0x03 && res.name == null) res.name = decodeUtf8Loose(a.subarray(p, p + l.v)).split('\u0000')[0].trim() || null;
+        p += l.v;
+        status = 0; // 中繼事件不設定執行狀態
+        if (type === 0x2F) break; // 軌道結束
+      } else if (status === 0xF0 || status === 0xF7) {
+        var l2 = readVlq(a, p); if (!l2) break;
+        p = l2.next + l2.v; status = 0;
+      } else {
+        var hi = status & 0xF0;
+        p += (hi === 0xC0 || hi === 0xD0) ? 1 : 2;
+      }
+    }
+    res.ticks = tick;
+    return res;
+  }
+  function parseMid(a, m) {
+    if (a.length < 14 || ascii(a, 0, 4) !== 'MThd') return;
+    var hlen = u32be(a, 4), div = u16be(a, 12);
+    m.format = { midiFormat: u16be(a, 8) };
+    m.tracks = u16be(a, 10);
+    if (div & 0x8000) return; // SMPTE 時間碼：長度無法從 tick 算，留空
+    var pos = 8 + hlen, tracks = [];
+    while (pos + 8 <= a.length) {
+      var id = ascii(a, pos, 4), len = u32be(a, pos + 4), body = pos + 8;
+      if (id === 'MTrk') tracks.push(parseMidTrack(a, body, Math.min(a.length, body + len)));
+      pos = body + len;
+    }
+    if (!tracks.length) return;
+    var maxTick = 0, tempos = [];
+    tracks.forEach(function (t) { if (t.ticks > maxTick) maxTick = t.ticks; tempos = tempos.concat(t.tempos); });
+    if (tracks[0].name) m.trackName = tracks[0].name;
+    tempos.sort(function (x, y) { return x.tick - y.tick; });
+    var sec = 0, cur = 0, us = 500000; // 預設每拍 120 BPM
+    tempos.forEach(function (t) { sec += (t.tick - cur) * us / div / 1e6; cur = t.tick; us = t.us; });
+    sec += (maxTick - cur) * us / div / 1e6;
+    m.durationSec = sec;
+    m.durationApprox = false;
+  }
+
+  // ───── MP4／MOV：moov → mvhd（時間尺度、總長）。moov 在檔尾而沒讀到時留空 ─────
+  function findBox(a, start, end, type) {
+    var p = start;
+    while (p + 8 <= end) {
+      var sz = u32be(a, p), t = ascii(a, p + 4, 4), hdr = 8;
+      if (sz === 1) { if (p + 16 > end) return null; sz = u32be(a, p + 8) * 4294967296 + u32be(a, p + 12); hdr = 16; }
+      else if (sz === 0) sz = end - p;
+      if (sz < hdr) return null;
+      if (t === type) return { start: p + hdr, end: Math.min(end, p + sz) };
+      p += sz;
+    }
+    return null;
+  }
+  function parseMp4(a, m) {
+    var moov = findBox(a, 0, a.length, 'moov'); if (!moov) return;
+    var mvhd = findBox(a, moov.start, moov.end, 'mvhd'); if (!mvhd) return;
+    var ts, dur;
+    if (a[mvhd.start] === 1) { ts = u32be(a, mvhd.start + 20); dur = u32be(a, mvhd.start + 24) * 4294967296 + u32be(a, mvhd.start + 28); }
+    else { ts = u32be(a, mvhd.start + 12); dur = u32be(a, mvhd.start + 16); }
+    if (ts > 0) { m.durationSec = dur / ts; m.durationApprox = false; }
+  }
+
+  // 解析中繼資料：kind 是種類，bytes 是檔頭（或整檔），size 是整檔大小。任何一步失敗都只記在 notes 裡，不丟例外。
+  function parseMetadata(kind, bytes, size) {
+    var m = { title: null, artist: null, album: null, durationSec: null, durationApprox: false, tracks: null, trackName: null, format: null, notes: [] };
+    if (!bytes || !bytes.length) return m;
+    try {
+      if (kind === 'mp3') parseMp3(bytes, size, m);
+      else if (kind === 'wav') parseWav(bytes, size, m);
+      else if (kind === 'mid') parseMid(bytes, m);
+      else if (kind === 'mp4' || kind === 'mov') parseMp4(bytes, m);
+    } catch (e) {
+      m.notes.push('中繼資料解析失敗，已留空');
+    }
+    return m;
+  }
+
+  // 長度顯示：約 m:ss，超過一小時 h:mm:ss；null 顯示「—」
+  function formatDuration(sec) {
+    if (sec == null || !isFinite(sec)) return '—';
+    var s = Math.round(sec), h = Math.floor(s / 3600), mi = Math.floor((s % 3600) / 60), ss = s % 60;
+    var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+    return h ? h + ':' + p2(mi) + ':' + p2(ss) : mi + ':' + p2(ss);
+  }
+
+  // ───── 記錄（一個檔案一筆）─────
+  // key = 來源 id + 路徑（同一檔案可能被兩個來源加進來）
+  function buildRecord(src, e, id, meta, now) {
+    var path = String(e.path), name = basename(path), album = meta.album || albumFromPath(path) || null;
+    return {
+      key: src.id + '|' + path, sourceId: src.id, sourceType: src.type, sourceLabel: src.label,
+      path: path, name: name, ext: extOf(name), kind: id.kind, category: id.category, label: id.label,
+      pending: id.pending, via: id.via,
+      title: meta.title || stripExt(name), titleSource: meta.title ? 'tag' : 'filename',
+      artist: meta.artist || null,
+      album: album, albumSource: meta.album ? 'tag' : (album ? 'folder' : null),
+      durationSec: meta.durationSec == null ? null : meta.durationSec, durationApprox: !!meta.durationApprox,
+      sizeBytes: e.size, mtimeMs: e.mtimeMs, status: 'ok', scannedAt: now,
+      meta: { format: meta.format, tracks: meta.tracks, trackName: meta.trackName, notes: meta.notes }
+    };
+  }
+
+  // 增量掃描：statEntries 是 [{ path, size, mtimeMs }]（host 只給狀態，不讀內容）；readHead(path, n) 非同步回傳檔頭 Uint8Array 或 null。
+  // 路徑＋大小＋修改時間都一樣、而且目前狀態是 ok 的 → 直接沿用，不呼叫 readHead。
+  // 新增或變更 → 讀檔頭、辨識、解析。這次沒看到、原本有的 → 標成 missing（不刪，之後再出現會重新解析）。
+  async function scanSource(lib, sourceId, statEntries, readHead, opts) {
+    opts = opts || {};
+    var now = opts.now || Date.now(), headBytes = opts.headBytes || HEAD_BYTES;
+    var src = lib.sources.filter(function (s) { return s.id === sourceId; })[0];
+    if (!src) throw new Error('找不到來源：' + sourceId);
+    var old = {};
+    lib.records.forEach(function (r) { if (r.sourceId === sourceId) old[r.path] = r; });
+    var report = { added: 0, changed: 0, unchanged: 0, missing: 0, skipped: 0, skippedPaths: [] };
+    var seen = {}, out = [];
+    for (var i = 0; i < statEntries.length; i++) {
+      var e = statEntries[i], path = String(e.path);
+      if (seen[path]) continue;
+      seen[path] = true;
+      var prev = old[path], sig = e.size + '|' + e.mtimeMs;
+      if (prev && prev.status === 'ok' && prev.sizeBytes === e.size && prev.mtimeMs === e.mtimeMs) { out.push(prev); report.unchanged++; continue; }
+      // 上次辨識不出來、而且大小與修改時間都沒變 → 不重讀檔頭
+      if (!prev && src.skipIndex && src.skipIndex[path] === sig) { report.skipped++; report.skippedPaths.push(path); continue; }
+      var bytes = null;
+      try { bytes = await readHead(path, headBytes); } catch (err) { bytes = null; }
+      var id = identifyKind(path, bytes);
+      if (!id) {
+        report.skipped++; report.skippedPaths.push(path);
+        src.skipIndex = src.skipIndex || {}; src.skipIndex[path] = sig;
+        if (prev) out.push(Object.assign({}, prev, { status: 'missing', scannedAt: now }));
+        continue;
+      }
+      if (src.skipIndex) delete src.skipIndex[path];
+      var meta = parseMetadata(id.kind, bytes, e.size);
+      out.push(buildRecord(src, e, id, meta, now));
+      if (prev) report.changed++; else report.added++;
+    }
+    Object.keys(old).forEach(function (path) {
+      if (seen[path]) return;
+      var r = old[path];
+      if (r.status !== 'missing') { out.push(Object.assign({}, r, { status: 'missing', scannedAt: now })); report.missing++; }
+      else out.push(r);
+    });
+    lib.records = lib.records.filter(function (r) { return r.sourceId !== sourceId; }).concat(out);
+    src.lastScanAt = now;
+    return report;
+  }
+
+  // ───── 搜尋：多關鍵字（空白分隔，全部都要命中），每個關鍵字在任一欄位命中即可；欄位權重 檔名＝標題 3、專輯＝演出者 2、路徑 1；
+  // 檔名完全相同 +5、檔名開頭相同 +2；依分數高到低，同分依路徑排序 ─────
+  function searchRecords(records, query, opts) {
+    opts = opts || {};
+    var words = normalizeText(query).split(/\s+/).filter(Boolean), out = [];
+    (records || []).forEach(function (r) {
+      if (r.status === 'missing' && !opts.includeMissing) return;
+      if (!words.length) { out.push({ record: r, score: 0 }); return; }
+      var name = normalizeText(r.name), score = 0;
+      var fields = [[name, 3], [normalizeText(r.title), 3], [normalizeText(r.album), 2], [normalizeText(r.artist), 2], [normalizeText(r.path), 1]];
+      for (var i = 0; i < words.length; i++) {
+        var w = words[i], best = 0;
+        for (var j = 0; j < fields.length; j++) if (fields[j][0].indexOf(w) >= 0 && fields[j][1] > best) best = fields[j][1];
+        if (!best) return;
+        score += best;
+        if (name === w) score += 5; else if (name.indexOf(w) === 0) score += 2;
+      }
+      out.push({ record: r, score: score });
+    });
+    out.sort(function (x, y) {
+      if (y.score !== x.score) return y.score - x.score;
+      return x.record.path < y.record.path ? -1 : (x.record.path > y.record.path ? 1 : 0);
+    });
+    return out;
+  }
+
+  // ───── 儲存後端：只要求 load() → { sources, records } 或 null、save(data) ─────
+  function createMemoryBackend(initial) {
+    var data = initial ? JSON.parse(JSON.stringify(initial)) : null;
+    return {
+      load: async function () { return data ? JSON.parse(JSON.stringify(data)) : null; },
+      save: async function (d) { data = JSON.parse(JSON.stringify(d)); }
+    };
+  }
+  // io：{ read: async () => 字串或 null, write: async (字串) }，檔案放哪裡（IndexedDB、磁碟、FAP）由 app 決定
+  function createJsonBackend(io) {
+    return {
+      load: async function () {
+        var s = await io.read();
+        if (!s) return null;
+        var d = JSON.parse(s);
+        if (d.version > VERSION) throw new Error('音樂庫檔案是比較新的版本（' + d.version + '），這個 app 只認得到版本 ' + VERSION);
+        return { sources: d.sources || [], records: d.records || [] };
+      },
+      save: async function (d) { await io.write(JSON.stringify({ version: VERSION, sources: d.sources, records: d.records })); }
+    };
+  }
+
+  // 庫：load／save 經過 backend；addSource 登記來源（檔案或資料夾）；scan 做增量掃描；search 搜尋
+  function createLibrary(backend) {
+    var be = backend || createMemoryBackend();
+    var lib = { sources: [], records: [] };
+    lib.load = async function () {
+      var d = await be.load();
+      lib.sources = (d && d.sources) || [];
+      lib.records = (d && d.records) || [];
+      return lib;
+    };
+    lib.save = async function () { await be.save({ sources: lib.sources, records: lib.records }); };
+    lib.addSource = function (type, label) {
+      var existing = lib.sources.filter(function (s) { return s.type === type && s.label === label; })[0];
+      if (existing) return existing.id;
+      var id = 'src' + (lib.sources.length + 1) + '-' + Date.now().toString(36);
+      lib.sources.push({ id: id, type: type, label: label, addedAt: Date.now(), lastScanAt: null });
+      return id;
+    };
+    lib.removeSource = function (id) {
+      lib.sources = lib.sources.filter(function (s) { return s.id !== id; });
+      lib.records = lib.records.filter(function (r) { return r.sourceId !== id; });
+    };
+    lib.scan = function (sourceId, statEntries, readHead, opts) { return scanSource(lib, sourceId, statEntries, readHead, opts); };
+    lib.search = function (query, opts) { return searchRecords(lib.records, query, opts); };
+    return lib;
+  }
+
+  return {
+    VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
+    identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
+    parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
+    scanSource: scanSource, searchRecords: searchRecords,
+    createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary
+  };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMusicLib;
+})();
 /* MLCORE-END */
 /* MLUI-BEGIN */
+const FaMusicLibUI = (function () {
+const holder = {};
+(function (module, self) {
+/* 音樂庫的最小畫面（UMD）：像 library 的清單，不做輸出。
+ *   上方工具列：＋加檔案、＋加資料夾、搜尋框（多關鍵字，檔名／專輯／標題／演出者都查）、筆數統計。
+ *   中間清單：路徑、檔名、專輯、種類、長度；每列有勾選框（多選，給之後的批次輸出預留；這階段不輸出）。
+ *   已消失的檔案用刪除線顯示，搜尋時不出現。
+ * 只依賴：core（musiclib_core.js）與 library（M.createLibrary 的結果，需已 load()）。
+ * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名，拿不到完整路徑）；桌面版可以給 host.pickFiles／pickFolder，
+ * 回傳 null（取消）或 { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }，這樣路徑才是真的磁碟路徑。
+ * 掛載：FaMusicLibUI.mount(container, { library, host }) → { refresh(), destroy() }。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_core.js')); else root.FaMusicLibUI = factory(root.FaMusicLib || (typeof FaMusicLib !== 'undefined' ? FaMusicLib : undefined));
+})(typeof self !== 'undefined' ? self : this, function (M) {
+  'use strict';
+  var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'
+    + '.fml-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
+    + '.fml-bar button{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
+    + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
+    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}'
+    + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
+    + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
+    + '.fml-foot{padding:6px 8px;color:#59636e;font-size:12px;border-top:1px solid #d0d7de}';
+  var COLS = ['路徑', '檔名', '專輯', '種類', '長度'];
+
+  function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+  // 把瀏覽器的 File 清單轉成掃描用的 { label, entries, readHead }。資料夾用 webkitRelativePath，檔案只有檔名。
+  function fromFileList(list, folder) {
+    var files = Array.prototype.slice.call(list || []), map = {};
+    var entries = files.map(function (f) {
+      var p = folder ? (f.webkitRelativePath || f.name) : f.name;
+      map[p] = f;
+      return { path: p, size: f.size, mtimeMs: f.lastModified };
+    });
+    var readHead = function (p, n) {
+      var f = map[p];
+      if (!f) return Promise.resolve(null);
+      return f.slice(0, n).arrayBuffer().then(function (b) { return new Uint8Array(b); });
+    };
+    var label = folder ? String((files[0] && files[0].webkitRelativePath) || '資料夾').split('/')[0] : files.length + ' 個檔案';
+    return { label: label, entries: entries, readHead: readHead };
+  }
+
+  function mount(container, opts) {
+    opts = opts || {};
+    var lib = opts.library, host = opts.host || {};
+    var q = '', msg = '', sel = {};
+    var root = h('div', 'fml');
+    var style = h('style'); style.textContent = CSS; root.appendChild(style);
+
+    var bar = h('div', 'fml-bar');
+    var bFile = h('button', null, '＋加檔案');
+    var bFolder = h('button', null, '＋加資料夾');
+    var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者（空白分隔多個關鍵字）';
+    var stat = h('span', 'fml-st');
+    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(stat);
+
+    var wrap = h('div', 'fml-wrap');
+    var tbl = h('table', 'fml-tbl');
+    var thead = h('thead'), tbody = h('tbody');
+    tbl.appendChild(thead); tbl.appendChild(tbody); wrap.appendChild(tbl);
+    var foot = h('div', 'fml-foot');
+
+    var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
+    var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
+    root.appendChild(bar); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    container.appendChild(root);
+
+    function visibleRows() {
+      if (q.trim()) return lib.search(q).map(function (x) { return x.record; });
+      return lib.records.slice().sort(function (a, b) {
+        return (a.album || '').localeCompare(b.album || '') || a.name.localeCompare(b.name);
+      });
+    }
+    function render() {
+      var rows = visibleRows();
+      thead.innerHTML = '';
+      var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
+      all.checked = rows.length > 0 && rows.every(function (r) { return !!sel[r.key]; });
+      all.onchange = function () { rows.forEach(function (r) { if (all.checked) sel[r.key] = true; else delete sel[r.key]; }); render(); };
+      var th0 = h('th'); th0.appendChild(all); htr.appendChild(th0);
+      COLS.forEach(function (c) { htr.appendChild(h('th', null, c)); });
+      thead.appendChild(htr);
+
+      tbody.innerHTML = '';
+      rows.forEach(function (r) {
+        var tr = h('tr'); if (r.status === 'missing') tr.className = 'gone';
+        var cb = h('input'); cb.type = 'checkbox'; cb.checked = !!sel[r.key];
+        cb.onchange = function () { if (cb.checked) sel[r.key] = true; else delete sel[r.key]; foot.textContent = selText(); };
+        var td0 = h('td'); td0.appendChild(cb); tr.appendChild(td0);
+        tr.appendChild(h('td', null, r.path));
+        tr.appendChild(h('td', null, r.name + (r.status === 'missing' ? '（已消失）' : '')));
+        tr.appendChild(h('td', null, r.album || ''));
+        tr.appendChild(h('td', null, r.label || r.kind));
+        tr.appendChild(h('td', null, M.formatDuration(r.durationSec) + (r.durationApprox ? '≈' : '')));
+        tbody.appendChild(tr);
+      });
+      var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
+      stat.textContent = (q.trim() ? '找到 ' + rows.length + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
+      foot.textContent = selText();
+    }
+    function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 個（批次輸出之後的階段才做）'; }
+
+    async function addFrom(type, src) {
+      if (!src || !src.entries || !src.entries.length) { msg = '沒有可加入的檔案'; render(); return; }
+      var sid = lib.addSource(type, src.label);
+      msg = '掃描中…'; render();
+      try {
+        var rep = await lib.scan(sid, src.entries, src.readHead);
+        await lib.save();
+        msg = '新增 ' + rep.added + '、變更 ' + rep.changed + '、未變 ' + rep.unchanged + '、消失 ' + rep.missing + '、略過 ' + rep.skipped;
+      } catch (e) {
+        msg = '掃描失敗：' + (e && e.message);
+      }
+      render();
+    }
+    async function pick(kind) {
+      var fn = kind === 'folder' ? host.pickFolder : host.pickFiles;
+      if (fn) { var src = await fn(); if (src) addFrom(kind === 'folder' ? 'folder' : 'file', src); return; } // 取消（null）就什麼都不做
+      (kind === 'folder' ? dIn : fIn).click();
+    }
+
+    bFile.onclick = function () { pick('file'); };
+    bFolder.onclick = function () { pick('folder'); };
+    fIn.onchange = function () { var src = fromFileList(fIn.files, false); fIn.value = ''; addFrom('file', src); };
+    dIn.onchange = function () { var src = fromFileList(dIn.files, true); dIn.value = ''; addFrom('folder', src); };
+    search.oninput = function () { q = search.value; render(); };
+
+    render();
+    return {
+      refresh: render,
+      destroy: function () { if (root.parentNode) root.parentNode.removeChild(root); }
+    };
+  }
+
+  return { mount: mount, fromFileList: fromFileList, CSS: CSS };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibUI;
+})();
 /* MLUI-END */
 /* MLHOST-BEGIN */
+/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI）。
+ *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（回傳名稱、類型、大小、修改時間）。
+ *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB，不整檔讀進來）。
+ *   儲存：IndexedDB（資料庫 fa-musiclib）。關掉重開後還在；沒有 IndexedDB 時退回記憶體（重開會不見，畫面會說明）。
+ *   走訪一次讓出一次執行緒（每 200 筆 setTimeout 0），大資料夾不卡畫面。沒有筆數上限。
+ *   網頁版沒有 desktopAPI：資料夾按鈕會說明只能在桌面版使用；加檔案仍可用瀏覽器的檔案選取（畫面本身處理）。 */
+const FaMusicLibHost = (function () {
+  'use strict';
+  var DB_NAME = 'fa-musiclib', STORE = 'kv', KEY = 'library';
+  var lib = null;
+
+  function idbOpen() {
+    return new Promise(function (res, rej) {
+      var rq = indexedDB.open(DB_NAME, 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore(STORE); };
+      rq.onsuccess = function () { res(rq.result); };
+      rq.onerror = function () { rej(rq.error); };
+    });
+  }
+  // fn(store) 回傳一個 IDBRequest；交易完成後才 resolve（讀取結果從 request.result 取）
+  function idbRun(mode, fn) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction(STORE, mode), rq = fn(tx.objectStore(STORE)), out = null;
+        rq.onsuccess = function () { out = rq.result; };
+        tx.oncomplete = function () { db.close(); res(out); };
+        tx.onerror = function () { db.close(); rej(tx.error); };
+        tx.onabort = function () { db.close(); rej(tx.error || new Error('IndexedDB 交易中止')); };
+      });
+    });
+  }
+  var io = {
+    read: function () { return idbRun('readonly', function (st) { return st.get(KEY); }).then(function (v) { return v == null ? null : v; }); },
+    write: function (s) { return idbRun('readwrite', function (st) { return st.put(s, KEY); }).then(function () { /* 寫入完成 */ }); }
+  };
+
+  function getLib() {
+    if (lib) return lib;
+    var hasIdb = typeof indexedDB !== 'undefined';
+    lib = FaMusicLib.createLibrary(hasIdb ? FaMusicLib.createJsonBackend(io) : FaMusicLib.createMemoryBackend());
+    lib.persistent = hasIdb;
+    lib.ready = lib.load().catch(function (e) { lib.loadError = e; });
+    return lib;
+  }
+
+  function api() { return (typeof window !== 'undefined' && window.desktopAPI) || null; }
+  function hasDesktopFs() { var a = api(); return !!(a && a.roots && a.roots.browse && a.rawfs && a.rawfs.readdir && a.rawfs.readHead); }
+  function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+  function basename(p) { return String(p || '').split(/[\\\/]/).filter(Boolean).pop() || String(p || ''); }
+  function b64ToBytes(b64) { var bin = atob(b64 || ''), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+
+  // 遞迴走訪（用堆疊，不遞迴呼叫）：只收認得的音訊／影片／遊戲來源副檔名；每 200 筆讓出一次執行緒。
+  async function walkFolder(root) {
+    var a = api(), sep = /\\/.test(root) ? '\\' : '/', stack = [root], out = [], n = 0;
+    while (stack.length) {
+      var dir = stack.pop(), list;
+      try { list = await a.rawfs.readdir(dir); } catch (_) { continue; } // 沒權限或已被刪：略過這個資料夾
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i], full = dir + (/[\\\/]$/.test(dir) ? '' : sep) + e.name;
+        if (e.isDirectory) stack.push(full);
+        else if (e.isFile && FaMusicLib.isSupportedName(e.name)) out.push({ path: full, size: e.size || 0, mtimeMs: e.mtimeMs || 0 });
+        if (++n % 200 === 0) await tick();
+      }
+    }
+    return out;
+  }
+
+  // 按「加資料夾」：先選資料夾，再走訪；回傳畫面要的 { label, entries, readHead }，取消回傳 null
+  async function pickFolder() {
+    if (!hasDesktopFs()) { if (typeof alert === 'function') alert('資料夾加入只能在桌面版使用；網頁版請用「加檔案」。'); return null; }
+    var p = await api().roots.browse();
+    if (!p) return null;
+    var entries = await walkFolder(p);
+    return {
+      label: basename(p),
+      entries: entries,
+      readHead: function (path, n) { return api().rawfs.readHead(path, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+    };
+  }
+
+  var PICK_HOST = { pickFolder: pickFolder };
+
+  var methods = {
+    _mlLib() { return getLib(); },
+    // 把 ```fa-musiclib 區塊換成音樂庫畫面（每次對話重新渲染時都會掛一次）
+    _mlMount(mdDiv) {
+      if (typeof FaMusicLibUI === 'undefined' || !FaMusicLibUI || !FaMusicLibUI.mount) return;
+      mdDiv.querySelectorAll('pre > code.language-fa-musiclib').forEach(function (code) {
+        var wrap = document.createElement('div');
+        code.parentElement.replaceWith(wrap);
+        var L = getLib();
+        var panel = FaMusicLibUI.mount(wrap, { library: L, host: PICK_HOST });
+        L.ready.then(function () { panel.refresh(); });
+        if (!L.persistent) { var note = document.createElement('div'); note.style.cssText = 'font-size:12px;color:#9a6700;padding:4px 8px'; note.textContent = '注意：這個環境沒有 IndexedDB，音樂庫只存在記憶體，重新開啟會不見。'; wrap.appendChild(note); }
+        if (L.loadError) { var er = document.createElement('div'); er.style.cssText = 'font-size:12px;color:#cf222e;padding:4px 8px'; er.textContent = '讀取音樂庫失敗：' + (L.loadError.message || L.loadError); wrap.appendChild(er); }
+      });
+    },
+    // 對話裡開音樂庫面板（一則 assistant 訊息，裡面掛畫面）
+    _mlOpen() {
+      var id = 'm' + Date.now().toString(36);
+      this._pushAssistantMessage('🎵 音樂庫：加檔案、加資料夾，掃描後可以用檔名、專輯、標題、演出者搜尋（資料存在這台電腦）。\n\n```fa-musiclib\n' + JSON.stringify({ id: id }) + '\n```', null);
+      try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* 顯示失敗不影響資料 */ }
+    },
+    _registerMusicLibCommand() {
+      var self = this;
+      this.register_slash_command('/musiclib', '', '音樂庫：加檔案或資料夾、掃描、用檔名／專輯／標題／演出者搜尋；資料存在本機，重新開啟還在。', async function (argsText, run) {
+        (run || self)._mlOpen();
+      });
+    }
+  };
+
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder };
+})();
+
 /* MLHOST-END */
 /* KIHOST-BEGIN */
 /* Knowledge Inventory 的 app 轉接層（掛到 FloatingAssistant.prototype）：.keeplookup 放哪裡（IndexedDB／磁碟／FAP）、搬家、

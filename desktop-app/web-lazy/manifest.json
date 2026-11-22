@@ -103,7 +103,7 @@
     "FA_STUDIO_HOST_FILES"
    ],
    "size": 888363,
-   "md5": "7a48e413cc358f5d2f403b15598b5400"
+   "md5": "2b2c045882a46e3b2a38a65ecb34a4d4"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1924,10 +1924,34 @@
    ],
    "size": 827937,
    "md5": "d91259d807516725177b08c41a40f18e"
+  },
+  "mlcore": {
+   "file": "chunks/mlcore.js",
+   "names": [
+    "FaMusicLib"
+   ],
+   "size": 11595,
+   "md5": "3fd247dbf9b84219a15f848169d1f945"
+  },
+  "mlui": {
+   "file": "chunks/mlui.js",
+   "names": [
+    "FaMusicLibUI"
+   ],
+   "size": 5042,
+   "md5": "3daec712ab96e06af80468a022e08830"
+  },
+  "mlhost": {
+   "file": "chunks/mlhost.js",
+   "names": [
+    "FaMusicLibHost"
+   ],
+   "size": 3644,
+   "md5": "9c739dde595831cb0565c336ce35f755"
   }
  },
  "core": {
-  "size": 6919505,
-  "md5": "aa3e108dbf575b11f7919634ca391af6"
+  "size": 6919763,
+  "md5": "a7624bf1ede7541b1c7277a92fef444a"
  }
 }
