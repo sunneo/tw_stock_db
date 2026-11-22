@@ -188,6 +188,20 @@ ipcMain.handle("fa:judge:run", async (_evt, { lang, source, problem, timeoutMs }
     }));
   });
 
+  // 音樂庫掃描只需要檔頭：讀前 bytes 個位元組（不整檔讀進來）。上限只是保護單次 IPC 的大小，不是音樂庫的筆數上限。
+  ipcMain.handle("fa:rawfs:readHead", async (_evt, { path: p, bytes } = {}) => {
+    const target = path.resolve(rawFsPath(p));
+    const n = Math.max(0, Math.min(Number(bytes) || 0, 8 * 1024 * 1024));
+    const fh = await fs.open(target, "r");
+    try {
+      const buf = Buffer.alloc(n);
+      const { bytesRead } = await fh.read(buf, 0, n, 0);
+      return { path: target, base64: buf.subarray(0, bytesRead).toString("base64"), bytesRead };
+    } finally {
+      await fh.close();
+    }
+  });
+
   ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
     const target = path.resolve(rawFsPath(p));
     const buf = await fs.readFile(target);

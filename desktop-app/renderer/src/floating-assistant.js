@@ -83015,6 +83015,12 @@ const FaDeckTools = (function () {
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
 /* DECKHOST-END */
+/* MLCORE-BEGIN */
+/* MLCORE-END */
+/* MLUI-BEGIN */
+/* MLUI-END */
+/* MLHOST-BEGIN */
+/* MLHOST-END */
 /* KIHOST-BEGIN */
 /* Knowledge Inventory 的 app 轉接層（掛到 FloatingAssistant.prototype）：.keeplookup 放哪裡（IndexedDB／磁碟／FAP）、搬家、
  * 把各種檔案讀成帶行號的文字、預處理（BM25 全文索引＋語意向量）、問答（每個回答都帶出處）、模型整理（接 LLM 橋接，線上不行自動改離線）、
@@ -84404,7 +84410,7 @@ class FloatingAssistant {
         // /edit-html：網頁編輯器（HTML 編輯＋預覽＋模擬後端、AI 對話修改）的好記名字；跟 /webedit 是同一個
         this.register_slash_command('/edit-html', '[起手式｜一句話描述]', '網頁編輯器（HTML 編輯器）：/webedit 的別名。不帶參數＝接著開最近一份；/edit-html todo 從起手式開始；/edit-html 做一個記帳網站 由 AI 做出第一版。',
             async (argsText, run) => { const base = this.slashCommands.get('/webedit'); if (!base) return; return base.handler(argsText, run); });
-        this._registerKnowledgeCommand();
+        this._registerKnowledgeCommand(); this._registerMusicLibCommand();
         this._registerEditCommands();
         this._registerComputerCommands && this._registerComputerCommands();
         this._cuListen && this._cuListen();
@@ -143108,6 +143114,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
                     try { this._mountEditEditors(mdDiv); } catch (e) { console.warn('SVG／圖片／3D 編輯器掛載失敗', e); }
                     try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }
+                    try { this._mlMount(mdDiv); } catch (e) { console.warn('音樂庫面板掛載失敗', e); }
                     try { this._mountWidgets(mdDiv); } catch (e) { console.warn('專屬視窗掛載失敗', e); }
                 } catch (_) {
                     mdDiv.textContent = answerText;
@@ -145009,7 +145016,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
 }
 
 // /media-presentation：簡報播放器的主機轉接層（renderer/src/deck/deck_host.js）
-Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods);
+Object.assign(FloatingAssistant.prototype, FaDeckHost.methods, FaDeckTools.methods, FaKnowledgeHost.methods, FaMusicLibHost.methods);
 // /edit-svg、/edit-picture、/edit-3d-model（renderer/src/edit/，設計見 DESIGN.edit-svg.md、DESIGN.edit-picture.md、DESIGN.edit-3d.md）
 Object.assign(FloatingAssistant.prototype, FaEditHost.methods);
 if (typeof FaEnvHost !== 'undefined') Object.assign(FloatingAssistant.prototype, FaEnvHost.methods);   // 環境基準線：依環境決定預設值、模型跑完就卸載、記憶體不足降級（見 DESIGN.env-baseline.md）

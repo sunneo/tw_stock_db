@@ -89,6 +89,7 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     copyChunked: (src, dst, partBytes) => ipcRenderer.invoke("fa:rawfs:copyChunked", { src, dst, partBytes }),
     find: (path, pattern, maxDepth, maxResults) => ipcRenderer.invoke("fa:rawfs:find", { path, pattern, maxDepth, maxResults }),
     listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
+    readHead: (path, bytes) => ipcRenderer.invoke("fa:rawfs:readHead", { path, bytes }), // 音樂庫掃描用：只讀檔頭
   },
   // SQLite（main.js的fa:sql:call，sqlite-engine.js）：op＝open／exec／query／schema／pragma／status／cancel／close…，協定見該檔案。
   sql: {

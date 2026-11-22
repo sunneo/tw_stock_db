@@ -106,3 +106,38 @@
 - mp3 沒有 Xing 標頭時長度為位元率估計（CBR 準，VBR 有誤差，標 `≈`）；mid 的 SMPTE 時間碼不算長度。
 - 搜尋不做簡繁轉換、不做假名互通、不做詞幹化。
 - 遊戲音樂來源（nes、pce、sfc、rix、swf）只辨識，不擷取；哼歌比對、歌詞轉錄、批次輸出、YouTube 都未做。
+
+## 第二階段：接進桌面版（2026-11-22）
+
+狀態：已接進主程式，真桌面版（Electron，獨立 user-data-dir）評測兩次通過；網頁版未測。
+
+### 接線點
+
+- 指令：`/musiclib`（`floating-assistant.js` 的 `_registerMusicLibCommand`，在建構子裡與 `/knowledge` 並排註冊）。對話裡出現一則訊息，裡面掛音樂庫畫面（`fa-musiclib` 區塊，由 `_mlMount` 掛載；與知識庫面板同一種做法）。
+- 畫面：`renderer/src/musiclib/musiclib_ui.js`（`FaMusicLibUI.mount(容器, { library, host })`）。
+- app 轉接層：`renderer/src/musiclib/musiclib_host.js`（嵌入為 `const FaMusicLibHost`，定義 `_mlLib`、`_mlMount`、`_mlOpen`、`_registerMusicLibCommand`）。
+  - 加資料夾：`desktopAPI.roots.browse()`（桌面版既有的資料夾瀏覽器）→ `desktopAPI.rawfs.readdir` 遞迴走訪（堆疊，不遞迴呼叫；每 200 筆 `setTimeout 0` 讓出執行緒；沒有深度與筆數上限）。
+  - 讀檔頭：新增 IPC `fa:rawfs:readHead`（`main-ext.js`；`preload.js` 的 `rawfs.readHead`），只讀前 N 位元組（呼叫端上限 2 MB，IPC 端硬上限 8 MB），不整檔讀進來。
+  - 儲存：IndexedDB 資料庫 `fa-musiclib`，鍵 `library`，內容是 `createJsonBackend` 的 JSON 字串。沒有 IndexedDB 時退回記憶體，畫面會顯示提醒。
+  - 加檔案：沿用畫面的瀏覽器 `<input type=file>`（拿不到完整路徑）。
+- 嵌入：`scripts/embed-code-ui.js` 登記 `musiclib_core.js`（MLCORE）、`musiclib_ui.js`（MLUI），另有 `embedMusicLibHost()`（MLHOST）。`floating-assistant.js` 的標記區塊 `MLCORE`／`MLUI`／`MLHOST` 由嵌入腳本填入。
+- 提交的 `floating-assistant.js` 只含手改的接線（標記與四行），內嵌產生區塊留給管理者重產（同一檔案的工作目錄版本已含產生內容）。
+
+### 真機評測（2026-11-22）
+
+- 評估檔：`scripts/eval/musiclib.eval.js`（`FA_DEBUG_EVAL_FILE`）。測試資料：`scratchpad/musictest` 的兩個資料夾，含中文、日文檔名，子資料夾，一個 txt（應略過）。
+- 指令（PowerShell，Windows；HANDOFF 第 4 節的 systemd-run／xvfb 是 Linux 寫法，這裡沒用）：`FA_DEBUG_EVAL_FILE`、`FA_DISABLE_MAIN_OVERLAY=1`、`FA_BROWSER_CONTROL_PORT=18931`（不是 17923），`--user-data-dir` 指向獨立空目錄。
+- 第一次（空庫）：加入 2 個資料夾，掃到 6 個音訊／MIDI（txt 略過）；搜尋「晴天」「autumn」「葉惠美」「夜曲」「さくら」「周杰倫 晴天」命中正確，「周杰倫 autumn」無結果（正確）；面板 `.fml` 出現 1 個，清單 6 列，搜尋框輸入「晴天」後剩 1 列。
+- 第二次（同一 user-data-dir，重開 app）：啟動時庫已有 6 筆、2 個來源（**重開後資料還在**）；重掃兩個資料夾全部 `unchanged`，沒有重讀檔頭。
+- 每項評測都跑 1 次，兩次都通過，沒有重跑。
+- 兩次的程序都自己結束（`WaitForExit` 回 True）。
+
+### 沒驗證、沒做到的
+
+- **資料夾瀏覽器按鈕沒有實際點過**：`roots.browse` 在 contextBridge 物件上無法被評估檔改寫（`patched: false`），所以評測改用同一條路徑的其餘部分（`walkFolder`＋`readHead` 的 IPC）。真正的選取對話框要人工點一次確認。
+- 畫面的加檔案、勾選、多選行為只做了開面板、清單列數與搜尋框輸入，沒有逐一點按驗證。
+- 評測輸出的中文在主控台被亂碼化（Windows 代碼頁），資料本身以 IndexedDB 與索引比對結果為準；沒有用截圖確認畫面文字。
+- 網頁版（無 desktopAPI）沒有測；資料夾按鈕在網頁版會提示只能用桌面版。
+- 只有 Windows；HANDOFF 的 Linux 評測做法沒有套用。
+- 沒有 GPU，本階段不需要。
+- 沒有發布、沒有推送；建置產物（`renderer/floating-assistant.js`、`.min.js`、`web-lazy/`、`update-manifest.json`）未提交。
