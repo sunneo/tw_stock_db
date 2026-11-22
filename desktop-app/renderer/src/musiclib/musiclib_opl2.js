@@ -16,7 +16,9 @@
   var KSL_DB = [0, 3, 1.5, 6];                   // KSL 每級的衰減係數（dB，依八度放大）
   var TWO_PI = Math.PI * 2;
 
-  function rateTau(r) { return r === 0 ? Infinity : 0.002 * Math.pow(2, (15 - r) / 1.5); }   // 秒，越大越慢
+  // 包絡速率索引 rk = 4×速率 + 按鍵縮放（KSR 開為 keyScale，關為 keyScale÷4）；rk 每加 4 時間減半。rk=0 不動。
+  function rateTau(rk) { if (rk <= 0) return Infinity; if (rk > 63) rk = 63; return 0.0009 * Math.pow(2, (60 - rk) / 4); }   // 秒，近似
+  function rateIndex(rate, keyScale, ksr) { if (!rate) return 0; var ks = ksr ? keyScale : (keyScale >> 2); return Math.min(63, 4 * rate + ks); }
   function wave(ph, ws) {
     var s = Math.sin(TWO_PI * ph);
     switch (ws) {
@@ -90,23 +92,22 @@
     function stepOp(o, ph, dt, keyScale) {
       var p = op[o]; if (!p) return 0;
       // 包絡推進
-      var ksrEff = p.ksr ? keyScale : (keyScale >> 2);
-      var scale = Math.pow(2, -ksrEff / 4);
       var sus = Math.pow(10, -(p.sl * 3) / 20); if (p.sl === 15) sus = 0;
       var s = st.stage[o], e = st.env[o];
       if (s === 1) {                                // 攻擊
-        var ta = rateTau(p.ar) * 0.3 * scale;
-        if (!isFinite(ta) || ta <= 0) { e = 1; s = 2; }
+        var ta = rateTau(rateIndex(p.ar, keyScale, p.ksr)) * 0.3;
+        if (p.ar === 15) { e = 1; s = 2; }
+        else if (!isFinite(ta) || ta <= 0) { /* AR=0：不攻擊 */ }
         else { e += (1 - e) * (1 - Math.exp(-dt / ta)); if (e > 0.998) { e = 1; s = 2; } }
       } else if (s === 2) {                         // 衰減到持續位準
-        var td = rateTau(p.dr) * scale;
+        var td = rateTau(rateIndex(p.dr, keyScale, p.ksr));
         if (!isFinite(td) || td <= 0) { /* 不衰減 */ }
         else { e = sus + (e - sus) * Math.exp(-dt / td); }
         if (e - sus < 0.002) { e = sus; s = p.egt ? 3 : 4; }
       } else if (s === 3) {                         // 持續（EGT 開，按住期間不動）
         e = sus;
       } else if (s === 4) {                         // 釋放
-        var tr = rateTau(p.rr) * scale;
+        var tr = rateTau(rateIndex(p.rr, keyScale, p.ksr));
         if (isFinite(tr) && tr > 0) e *= Math.exp(-dt / tr); else e = 0;
         if (e < 0.0005) { e = 0; s = 0; }
       }
