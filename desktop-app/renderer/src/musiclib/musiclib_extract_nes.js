@@ -144,6 +144,62 @@
     return pages;
   }
 
+  // ───── APU 重放 NSF（退路：不靠遊戲程式碼，只重放擷取時記下的聲音暫存器寫入）─────
+  // 資料格式（$8100 起）：每畫面一串記錄，記錄 = [代號, 值]；代號 1–24 ＝ 寫入 $4000+(代號−1)；代號 0 ＝ 畫面結束；
+  // 代號 $FF ＝ 資料結束（之後靜音）。INIT（$8000）設定讀取指標；PLAY（$8020）每畫面讀到畫面結束為止。
+  var REPLAY_LOAD = 0x8000, REPLAY_INIT = 0x8000, REPLAY_PLAY = 0x8020, REPLAY_TABLE = 0x100, REPLAY_MAX = 0x7EFA;
+  function apuReplayCode() {
+    var prg = new Uint8Array(REPLAY_TABLE);
+    // INIT：指標 = $8100；RTS
+    prg.set([0xA9, 0x00, 0x85, 0xF8, 0xA9, 0x81, 0x85, 0xF9, 0x60], 0);
+    // PLAY（$8020）：與註解一致的 6502 碼；分支偏移於下方算好
+    var p = REPLAY_PLAY - REPLAY_LOAD, L0 = REPLAY_PLAY + 2;
+    var code = [
+      0xA0, 0x00,                 // +0  LDY #0
+      0xB1, 0xF8,                 // +2  LDA ($F8),Y           L0
+      0xF0, 0x00,                 // +4  BEQ FRAMEEND（偏移待填）
+      0xC9, 0xFF,                 // +6  CMP #$FF
+      0xF0, 0x00,                 // +8  BEQ DONE（偏移待填）
+      0xE6, 0xF8, 0xD0, 0x02, 0xE6, 0xF9,   // +10 消耗代號位元組（INC 指標）
+      0xAA,                       // +16 TAX
+      0xB1, 0xF8,                 // +17 LDA ($F8),Y（值）
+      0xE6, 0xF8, 0xD0, 0x02, 0xE6, 0xF9,   // +19 消耗值位元組
+      0x9D, 0xFF, 0x3F,           // +25 STA $3FFF,X
+      0x4C, L0 & 0xFF, L0 >> 8,   // +28 JMP L0
+      0xE6, 0xF8, 0xD0, 0x02, 0xE6, 0xF9,   // +31 FRAMEEND：消耗 0 位元組
+      0x60,                       // +37 RTS                    DONE
+    ];
+    var frameEnd = 31, done = 37;
+    code[5] = frameEnd - 6;       // BEQ FRAMEEND：分支位元組在 +5，從 +6 算
+    code[9] = done - 10;          // BEQ DONE：從 +10 算
+    prg.set(code, p);
+    return prg;
+  }
+  // 把事件流轉成重放表（從第一次寫聲音開始；超過位址空間就停在畫面邊界）
+  function buildApuReplay(events) {
+    var table = [], started = false, frames = 0, writes = 0, truncated = false, lastEnd = 0;
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      if (e.k === 'apu') {
+        var code = e.addr - 0x3FFF;
+        if (code < 1 || code > 24) continue;
+        if (table.length + 2 > REPLAY_MAX - 1) { truncated = true; break; }
+        table.push(code, e.value & 0xFF); started = true; writes++;
+      } else if (e.k === 'vblank' && started) {
+        if (table.length + 1 > REPLAY_MAX - 1) { truncated = true; break; }
+        table.push(0); frames++; lastEnd = table.length;
+      }
+    }
+    if (!writes) return { ok: false, reason: '擷取期間沒有可重放的聲音暫存器寫入' };
+    table.length = lastEnd;      // 只保留完整畫面（最後的不完整畫面丟掉）
+    table.push(0xFF);
+    var prg = new Uint8Array(REPLAY_TABLE + table.length);
+    prg.set(apuReplayCode().subarray(0, REPLAY_TABLE), 0);
+    prg.set(table, REPLAY_TABLE);
+    var nsf = packNsf({ prg: prg, load: REPLAY_LOAD, init: REPLAY_INIT, play: REPLAY_PLAY, songs: 1, start: 1, name: '' });
+    return { ok: true, nsf: nsf, frames: frames, writes: writes, truncated: truncated };
+  }
+
   // ───── 推導 PLAY／INIT（事件流 → 入口）─────
   // 每個畫面（兩次 vblank 之間）裡，寫聲音暫存器時堆疊上、而且是這個畫面才開始的副程式都算一次。
   // PLAY ＝ 次數夠多的副程式裡，離畫面起點最近（最外層）的那個；畫面中斷處理器本身不算（NSF 要的是 RTS 結尾的副程式）。
@@ -535,6 +591,15 @@
       }
       if (pack) out.nsf = pack;
     }
+    // APU 重放：遊戲程式碼在 NSF 殼裡不一定會因為 INIT／PLAY 而發聲（實測 ARKANOID、Bomberman 2：遊戲狀態沒建立就無聲）。
+    // 重放表直接記下擷取時每畫面寫入的聲音暫存器，播放器照表寫入，聲音與擷取時一致；有擷取到聲音就優先用它。
+    var replay = buildApuReplay(tr.events);
+    if (replay.ok) {
+      out.nsf = replay.nsf; out.init = REPLAY_INIT; out.play = REPLAY_PLAY; out.nsfStage = null; out.nsfReason = null;
+      out.nsfMode = 'apu-replay';
+      out.stats.replayFrames = replay.frames; out.stats.replayWrites = replay.writes;
+      out.nsfNote = 'NSF 採 APU 重放：' + replay.frames + ' 畫面、' + replay.writes + ' 次聲音暫存器寫入' + (replay.truncated ? '（超過 NSF 位址空間，後段未收）' : '') + (out.nsfNote ? '；' + out.nsfNote : '');
+    }
     out.ok = !!out.nsf;
     out.mode = out.nsf && out.song ? 'nsf+midi' : out.nsf ? 'nsf' : out.song ? 'midi' : 'none';
     if (!out.nsf && !out.song) { out.stage = out.nsfStage || '入口'; out.reason = out.nsfReason || out.midiReason; }
@@ -546,6 +611,7 @@
     apuTraceToSong: apuTraceToSong, wav16: wav16, traceRom: traceRom, extractNsf: extractNsf, bankLayout: bankLayout,
     trimToSound: trimToSound, fnvPage: fnvPage, padAt: padAt,
     mmc1New: mmc1New, mmc1Step: mmc1Step, mmc1Pages: mmc1Pages,
+    buildApuReplay: buildApuReplay, REPLAY_INIT: REPLAY_INIT, REPLAY_PLAY: REPLAY_PLAY,
     CORE_MAPPERS: CORE_MAPPERS, NOISE_PERIOD: NOISE_PERIOD, CPU_NTSC: CPU_NTSC, FRAME_NTSC: FRAME_NTSC, AUDIO_RATE: AUDIO_RATE, MAX_FRAMES: MAX_FRAMES
   };
 }));
