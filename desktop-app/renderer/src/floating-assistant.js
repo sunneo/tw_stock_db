@@ -83709,7 +83709,10 @@ const holder = {};
     'mid>mp3': ['parse-mid', 'trim-mid', 'render-synth', 'slice', 'encode-mp3'],
     'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
     // 影片與音訊同一條：extract_audio 用的 _decodeAudioBuffer 會原生解出 mp4/mov/webm 的音軌，不需要 ffmpeg.wasm
-    'video>mp3': ['decode', 'slice', 'encode-mp3']
+    'video>mp3': ['decode', 'slice', 'encode-mp3'],
+    // 音訊（與影片）轉 MIDI：to-song 走既有 FaAudioPipeline（有 Basic Pitch 就用，沒有或失敗就單音音高追蹤並標明）
+    'audio>mid': ['decode', 'slice', 'to-song', 'write-mid'],
+    'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
   var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
@@ -83722,8 +83725,6 @@ const holder = {};
     if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔沒有擷取器（本輪只做音訊、影片、MIDI）' };
     var cls = SOURCE_CLASS[ext];
     if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
-    if (cls === 'audio' && format === 'mid') return { ok: false, reason: '未實作：音訊轉 MIDI 這一輪沒有接上（需要轉譜模型或規則式轉譜，尚未驗證）' };
-    if (cls === 'video' && format === 'mid') return { ok: false, reason: '未實作：影片轉 MIDI 這一輪沒有接上' };
     var key = cls + '>' + format;
     var steps = EXPORT_ROUTES[key];
     if (!steps) return { ok: false, reason: '沒有對應的路線：' + key };
@@ -83804,8 +83805,276 @@ return holder.FaMusicLib;
 })();
 /* MLCORE-END */
 /* MLMEL-BEGIN */
+const FaMusicLibMelody = (function () {
+const holder = {};
+(function (module, self) {
+/* 音樂庫的旋律找歌核心（UMD，純函式，不碰 DOM、麥克風、網路；node 可直接跑單元測試）。
+ *
+ * 流程：
+ *   1. 旋律：從音符清單取主旋律（同時多音取最高音，鼓軌不算）→ melodyNotes / melodyFromSong
+ *   2. 特徵：相對音程序列（與調高無關）＋相鄰音長的 log2 比例（與速度無關）→ contourOf
+ *   3. 比對：對音程序列做「子序列對齊」（query 全部要對上，target 任何位置開始、可跳過多餘的 target 音；
+ *      query 多出的音有懲罰、query 漏音＝target 跳過，代價很小）→ align；回傳分數與命中區段（曲中秒數）
+ *   4. 打擊：只比 onset 間隔比例（節奏）→ rhythmScore，獨立分數
+ *   5. 索引：background 逐首建立，已建且檔案大小／修改時間沒變就跳過，可暫停、續跑、取消；失敗附階段與原因 → runMelodyIndex
+ * 音訊轉音符（單音音高追蹤、Basic Pitch）不在這裡：呼叫端用 FaAudioToMidi.pitchTrack／framesToNotes 取得音符後交進來。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibMelody = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var CHORD_WIN = 0.05;        // 秒：起音差在這之內視為同一群（取最高音）
+  var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
+  var INT_CAP = 2;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
+  var RATIO_CAP = 1;           // 節奏比例差距（log2）超過 1 就當完全不同（= 兩倍）
+  var GAP_QUERY = 1.0;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
+  var SKIP_TARGET = 0.15;      // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對
+  var DEFAULT_MIN_SCORE = 0.35;
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // ───── 1. 旋律 ─────
+  // notes: [{t(秒), d(秒), n(音高), v}]；同群起音只留最高音（音高相同留較長的）
+  function melodyNotes(notes) {
+    var src = (notes || []).filter(function (x) { return x && isFinite(x.t) && isFinite(x.n) && (x.d || 0) > 0; })
+      .map(function (x) { return { t: +x.t, d: +x.d, n: +x.n }; })
+      .sort(function (a, b) { return a.t - b.t || b.n - a.n; });
+    var out = [];
+    for (var i = 0; i < src.length; i++) {
+      var x = src[i], last = out[out.length - 1];
+      if (last && x.t - last.t < CHORD_WIN) {
+        if (x.n > last.n || (x.n === last.n && x.d > last.d)) out[out.length - 1] = x;
+        continue;
+      }
+      out.push(x);
+    }
+    return out;
+  }
+  // 與 FaMidi.ticksToSec 相同的速度表換算（這裡不依賴 midi_core，好讓這個檔可以獨立載入）
+  function ticksToSec(song, tick) {
+    var tp = song.tempos && song.tempos.length ? song.tempos : [{ t: 0, bpm: 120 }], ppq = song.ppq || 480;
+    var sec = 0, last = 0, bpm = tp[0].bpm;
+    for (var i = 1; i < tp.length && tp[i].t < tick; i++) { sec += (tp[i].t - last) / ppq * 60 / bpm; last = tp[i].t; bpm = tp[i].bpm; }
+    return sec + (tick - last) / ppq * 60 / bpm;
+  }
+  // song（FaMidi 曲子，音符時間是 tick）→ 主旋律（秒）：所有非鼓軌音符合併後取旋律
+  function melodyFromSong(song) {
+    var all = [];
+    ((song && song.tracks) || []).forEach(function (tr) {
+      if (tr.drum) return;
+      (tr.notes || []).forEach(function (n) {
+        var t0 = ticksToSec(song, n.t), t1 = ticksToSec(song, n.t + n.d);
+        all.push({ t: t0, d: t1 - t0, n: n.n, v: n.v });
+      });
+    });
+    return melodyNotes(all);
+  }
+
+  // ───── 2. 特徵 ─────
+  // mel: melodyNotes 的輸出。回傳相對音程（半音，有號）與相鄰音長的 log2 比例，以及每個音的起點與長度（用來換算命中時間）
+  function contourOf(mel) {
+    var n = mel.length, intervals = [], ratios = [], times = [], durs = [];
+    for (var i = 0; i < n; i++) { times.push(mel[i].t); durs.push(Math.max(0.02, mel[i].d)); }
+    for (var k = 0; k + 1 < n; k++) {
+      intervals.push(clamp(mel[k + 1].n - mel[k].n, -12, 12));
+      ratios.push(clamp(Math.log2(durs[k + 1] / durs[k]), -2, 2));
+    }
+    return { n: n, intervals: intervals, ratios: ratios, times: times, durs: durs };
+  }
+  // 打擊的 onset 時間（秒）→ 相鄰間隔比例的 log2（只看節奏，與速度無關）
+  function onsetRatios(times) {
+    var t = (times || []).slice().sort(function (a, b) { return a - b; }), iois = [];
+    for (var i = 0; i + 1 < t.length; i++) { var g = t[i + 1] - t[i]; if (g > 0.01) iois.push(g); }
+    var out = [];
+    for (var k = 0; k + 1 < iois.length; k++) out.push(clamp(Math.log2(iois[k + 1] / iois[k]), -2, 2));
+    return out;
+  }
+
+  // ───── 3. 子序列對齊 ─────
+  // q：查詢序列；t：目標序列（任何位置開始）；o.sub(a,b)：替換代價 0..1；o.gapQuery、o.skipTarget：多出／跳過的代價
+  // 回傳 { norm（每個 query 元素的平均代價，0 最好）, start, end（target 的範圍 [start,end)） }
+  function align(q, t, o) {
+    var m = q.length, n = t.length;
+    if (!m || !n) return { norm: 1, start: 0, end: 0 };
+    var gq = o.gapQuery, gt = o.skipTarget, sub = o.sub;
+    var pc = new Float64Array(n + 1), ps = new Int32Array(n + 1), cc = new Float64Array(n + 1), cs = new Int32Array(n + 1), j, i;
+    for (j = 0; j <= n; j++) { pc[j] = 0; ps[j] = j; }
+    for (i = 1; i <= m; i++) {
+      cc[0] = pc[0] + gq; cs[0] = 0;
+      for (j = 1; j <= n; j++) {
+        var best = pc[j - 1] + sub(q[i - 1], t[j - 1]), bs = ps[j - 1];
+        var a = pc[j] + gq; if (a < best) { best = a; bs = ps[j]; }
+        var b = cc[j - 1] + gt; if (b < best) { best = b; bs = cs[j - 1]; }
+        cc[j] = best; cs[j] = bs;
+      }
+      var tc = pc; pc = cc; cc = tc; var ts = ps; ps = cs; cs = ts;
+    }
+    var bj = 0; for (j = 1; j <= n; j++) if (pc[j] < pc[bj] - 1e-12) bj = j;
+    return { norm: pc[bj] / m, start: ps[bj], end: bj };
+  }
+  function pitchOpts() { return { sub: function (a, b) { return Math.min(Math.abs(a - b), INT_CAP) / INT_CAP; }, gapQuery: GAP_QUERY, skipTarget: SKIP_TARGET }; }
+  function rhythmOpts() { return { sub: function (a, b) { return Math.min(Math.abs(a - b), RATIO_CAP) / RATIO_CAP; }, gapQuery: GAP_QUERY, skipTarget: SKIP_TARGET }; }
+  function toScore(norm) { return clamp(1 - norm, 0, 1); }
+  // 對比拉伸：隨機旋律的分數大多落在 0.4～0.6，把 0.5 以下壓成 0，讓「找不到」與「命中」分得開（門檻在合成資料上調過，見單元測試）
+  var CONTRAST_BASE = 0.5;
+  function contrast(raw) { return clamp((raw - CONTRAST_BASE) / (1 - CONTRAST_BASE), 0, 1); }
+
+  // 節奏分數（只比 onset 間隔比例，給打擊聲用）：qTimes、tTimes 是秒
+  function rhythmScore(qTimes, tTimes) {
+    var q = onsetRatios(qTimes), t = onsetRatios(tTimes);
+    if (q.length < 3) return { score: 0, reason: '打擊太少（少於 4 個）' };
+    var r = align(q, t, rhythmOpts());
+    return { score: toScore(r.norm), start: r.start, end: r.end };
+  }
+
+  // ───── 4. 查詢 ─────
+  // query：melodyNotes 的輸出（已取主旋律）；entries：[{ key, name, contour: contourOf(...) }]
+  // opts: { minScore=0.35, limit=10, textHits（Set 或物件，key 命中就加分）, textWeight=0.1, weights={pitch:0.8, rhythm:0.2} }
+  function searchMelody(query, entries, opts) {
+    opts = opts || {};
+    var mel = melodyNotes(query);
+    if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
+    var qc = contourOf(mel), w = Object.assign({ pitch: 0.8, rhythm: 0.2 }, opts.weights || {});
+    var minScore = opts.minScore == null ? DEFAULT_MIN_SCORE : opts.minScore, textWeight = opts.textWeight == null ? 0.1 : opts.textWeight;
+    var po = pitchOpts(), ro = rhythmOpts(), results = [];
+    (entries || []).forEach(function (e) {
+      var c = e.contour; if (!c || c.n < 2) return;
+      var p = align(qc.intervals, c.intervals, po), pitch = toScore(p.norm);
+      var rhythm = qc.ratios.length >= 2 ? toScore(align(qc.ratios, c.ratios, ro).norm) : 0;
+      var text = opts.textHits && (opts.textHits instanceof Set ? opts.textHits.has(e.key) : !!opts.textHits[e.key]) ? textWeight : 0;
+      var raw = w.pitch * pitch + w.rhythm * rhythm + text;
+      var score = contrast(raw);
+      if (score < minScore) return;
+      var si = clamp(p.start, 0, c.n - 1), ei = clamp(p.end, 0, c.n - 1);
+      results.push({
+        key: e.key, name: e.name, score: Math.round(score * 1000) / 1000, pitchScore: Math.round(pitch * 1000) / 1000,
+        rhythmScore: Math.round(rhythm * 1000) / 1000, textBonus: text,
+        startSec: c.times[si], endSec: c.times[ei] + c.durs[ei]
+      });
+    });
+    results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
+    return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length };
+  }
+
+  // ───── 5. 索引（逐首，可暫停續跑、取消；已建且沒變就跳過）─────
+  // rec: { key, path, size, mtimeMs, melody? }；melody = { sig, method, contour, status:'ok'|'failed', reason? }
+  // opts: { extract(rec, ctx) → Promise<{ notes, method }>（失敗丟錯，錯誤訊息附階段）, save(rec)（寫回儲存層）,
+  //         onEvent(ev), isCancelled(), waitIfPaused() → Promise（暫停時等）, retries=3, sleep(ms) }
+  function sigOf(rec) { return String(rec.size || 0) + ':' + String(rec.mtimeMs || 0); }
+  var TRANSIENT_RE = /network|timeout|timed out|逾時|連線|fetch/i;
+  async function runMelodyIndex(recs, opts) {
+    opts = opts || {};
+    var emit = opts.onEvent || function () {}, cancelled = opts.isCancelled || function () { return false; };
+    var wait = opts.waitIfPaused || function () { return Promise.resolve(); };
+    var sleep = opts.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    var retries = opts.retries == null ? 3 : opts.retries;
+    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0 };
+    for (var i = 0; i < recs.length; i++) {
+      var rec = recs[i];
+      if (cancelled()) { summary.cancelled++; continue; }
+      await wait();
+      if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok') { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
+      emit({ key: rec.key, status: 'running' });
+      var attempt = 0, done = false;
+      for (;;) {
+        attempt++;
+        try {
+          var got = await opts.extract(rec, { attempt: attempt });
+          var mel = melodyNotes(got.notes);
+          if (mel.length < MIN_NOTES) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
+          rec.melody = { sig: sigOf(rec), status: 'ok', method: got.method, contour: contourOf(mel) };
+          done = true; break;
+        } catch (err) {
+          var msg = String((err && err.message) || err);
+          if (cancelled()) break;
+          if (TRANSIENT_RE.test(msg) && attempt < retries) { emit({ key: rec.key, status: 'retry', attempt: attempt, reason: msg }); await sleep(1000 * attempt); continue; }
+          rec.melody = { sig: sigOf(rec), status: 'failed', reason: msg };
+          break;
+        }
+      }
+      if (cancelled() && !done) { summary.cancelled++; emit({ key: rec.key, status: 'cancelled' }); continue; }
+      if (opts.save) await opts.save(rec);
+      if (done) { summary.done++; emit({ key: rec.key, status: 'done', method: rec.melody.method }); }
+      else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: rec.melody.reason }); }
+    }
+    return summary;
+  }
+
+  return {
+    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, contourOf: contourOf, onsetRatios: onsetRatios,
+    align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE
+  };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibMelody;
+})();
 /* MLMEL-END */
 /* MLAUD-BEGIN */
+const FaMusicLibAudio = (function () {
+const holder = {};
+(function (module, self) {
+/* 音樂庫的音訊→MIDI 純函式（UMD，不碰 DOM／網路；依賴由呼叫端注入，node 可用真的 audio_pipeline 跑測試）。
+ *   songFromAudio(input, opts) → Promise<{ song, tempo, method, skipped }>
+ *     input: { channels: [Float32Array…], sampleRate }
+ *     opts:  { Pipeline（FaAudioPipeline，要有 run）, transcriber（Basic Pitch 轉譜函式，可省略）, title, modelNote }
+ *   有 transcriber：先用 Basic Pitch；它丟錯就整段改用單音音高追蹤，method 寫明失敗原因。
+ *   沒有 transcriber：單音音高追蹤（audio_pipeline 內建的退路），method 寫「簡易轉譜」。
+ * 這個檔不決定要不要下載模型；模型是否可用由 host 檢查後才傳 transcriber。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibAudio = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var METHOD_PITCH = '簡易轉譜（單音音高追蹤）';
+  var METHOD_BASIC = 'Basic Pitch';
+
+  // 多聲道合成單聲道（平均）
+  function monoOf(channels) {
+    var nc = channels.length, n = nc ? channels[0].length : 0, out = new Float32Array(n);
+    for (var c = 0; c < nc; c++) { var d = channels[c]; for (var i = 0; i < n; i++) out[i] += d[i] / nc; }
+    return out;
+  }
+  // 取前 sec 秒（不超過整段）
+  function sliceChannels(channels, sampleRate, sec) {
+    var n = channels.length ? channels[0].length : 0;
+    var keep = sec == null ? n : Math.min(n, Math.floor(sec * sampleRate));
+    return channels.map(function (d) { return d.subarray(0, keep); });
+  }
+
+  async function runPipeline(P, input, transcriber, title) {
+    var o = { title: title || '從音訊轉出' };
+    if (transcriber) o.transcriber = transcriber;
+    return P.run({ left: input.channels[0], right: input.channels[1] || null, sampleRate: input.sampleRate }, o);
+  }
+
+  async function songFromAudio(input, opts) {
+    opts = opts || {};
+    var P = opts.Pipeline;
+    if (!P || typeof P.run !== 'function') throw new Error('缺少 FaAudioPipeline（音訊轉譜流程）');
+    if (!input || !input.channels || !input.channels.length) throw new Error('沒有音訊樣本');
+    var r, method = METHOD_PITCH, note = opts.modelNote || '';
+    if (opts.transcriber) {
+      try {
+        r = await runPipeline(P, input, opts.transcriber, opts.title);
+        method = METHOD_BASIC;
+      } catch (e) {
+        var why = String((e && e.message) || e);
+        r = await runPipeline(P, input, null, opts.title);
+        method = METHOD_PITCH + '，Basic Pitch 失敗已退回：' + why;
+      }
+    } else {
+      r = await runPipeline(P, input, null, opts.title);
+      method = METHOD_PITCH + (note ? '（' + note + '）' : '');
+    }
+    return { song: r.song, tempo: r.tempo, method: method, skipped: (r.report && r.report.skipped) || [] };
+  }
+
+  return { monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibAudio;
+})();
 /* MLAUD-END */
 /* MLUI-BEGIN */
 const FaMusicLibUI = (function () {
@@ -83886,6 +84155,9 @@ const holder = {};
     var eMin = h('input'); eMin.type = 'number'; eMin.min = '0.1'; eMin.step = '0.5'; eMin.value = '1'; eMin.style.width = '70px';
     var eWhole = h('input'); eWhole.type = 'checkbox';
     var eWholeLbl = h('label', null, '整首'); eWholeLbl.appendChild(eWhole);
+    var eModel = h('input'); eModel.type = 'checkbox';
+    var eModelLbl = h('label', null, '音訊轉 mid 用 Basic Pitch'); eModelLbl.appendChild(eModel);
+    exp.appendChild(eModelLbl);
     var bExp = h('button', null, '批次輸出');
     var bExpCancel = h('button', null, '取消輸出');
     var expStat = h('span', 'fml-st');
@@ -84028,7 +84300,7 @@ const holder = {};
       expStat.textContent = '選擇輸出資料夾…';
       var fmt = eFmt.value;
       host.exportBatch(recs, {
-        format: fmt, minutes: minutes,
+        format: fmt, minutes: minutes, useModel: eModel.checked,
         onEvent: function (ev) {
           if (ev.retry) expStat.textContent = '暫時性失敗，自動重試第 ' + ev.retry + ' 次…';
           else if (ev.stage) expStat.textContent = '輸出中（' + (STAGE_ZH[ev.stage] || ev.stage) + '）';
@@ -84040,7 +84312,7 @@ const holder = {};
         expStat.textContent = '完成 ' + (s.done || 0) + '、失敗 ' + (s.failed || 0) + '、不支援 ' + (s.unsupported || 0) + '、取消 ' + (s.cancelled || 0) + '　→ ' + res.outDir;
         (res.results || []).forEach(function (x) {
           var line = h('div', x.status === 'done' ? null : 'bad', '[' + (STATUS_ZH[x.status] || x.status) + '] ' + x.name + (x.format ? '（' + x.format + '）' : ''));
-          var detail = x.status === 'done' ? '→ ' + (x.output && x.output.path) + '　' + (x.verify && x.verify.detail || '') : (x.reason ? (x.stage ? '［' + (STAGE_ZH[x.stage] || x.stage) + '］' : '') + x.reason : '');
+          var detail = x.status === 'done' ? '→ ' + (x.output && x.output.path) + '　' + (x.verify && x.verify.detail || '') + (x.output && x.output.method ? '　［' + x.output.method + '］' : '') : (x.reason ? (x.stage ? '［' + (STAGE_ZH[x.stage] || x.stage) + '］' : '') + x.reason : '');
           if (x.elapsedMs) detail += '　（' + (x.elapsedMs / 1000).toFixed(1) + ' 秒，嘗試 ' + x.attempts + ' 次）';
           line.appendChild(document.createTextNode(' ' + detail));
           expList.appendChild(line);
@@ -84051,6 +84323,81 @@ const holder = {};
       });
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
+
+    // 哼歌找歌：旋律索引（逐首，可暫停續跑、取消）＋錄哼歌或選音檔找相似（找不到時可用 MIDI 演奏查到的旋律）
+    var MEL = host.melody || null, melHum = null, melFound = null;
+    var melBox = h('div', 'fml-lyr');
+    var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
+    var mRec = h('button', null, '錄哼歌（8 秒）'), mPick = h('button', null, '選音檔找');
+    var mText = h('input'); mText.type = 'text'; mText.placeholder = '歌詞文字（選填，用來加分）'; mText.style.width = '160px';
+    var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = true;
+    var mUseLbl = h('label', null, '用文字加分'); mUseLbl.appendChild(mUseText);
+    var mModel = h('input'); mModel.type = 'checkbox';
+    var mModelLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelLbl.appendChild(mModel);
+    var mFind = h('button', null, '找相似'), mStat = h('span', 'fml-st');
+    var mFile = h('input'); mFile.type = 'file'; mFile.accept = 'audio/*,video/*'; mFile.style.display = 'none';
+    var mRes = h('div', 'fml-foot'), mMidi = h('button', null, '找不到？用 MIDI 演奏這段旋律'); mMidi.style.display = 'none';
+    melBox.appendChild(mIdx); melBox.appendChild(mPause); melBox.appendChild(mIdxCancel);
+    melBox.appendChild(mModelLbl); melBox.appendChild(mRec); melBox.appendChild(mPick); melBox.appendChild(mText); melBox.appendChild(mUseLbl); melBox.appendChild(mFind);
+    melBox.appendChild(mStat); melBox.appendChild(mFile);
+    if (!MEL) { [mIdx, mPause, mIdxCancel, mRec, mPick, mFind].forEach(function (b) { b.disabled = true; }); mStat.textContent = '哼歌找歌不可用（需要桌面版）'; }
+    mPause.disabled = true; mIdxCancel.disabled = true;
+    root.appendChild(melBox); root.appendChild(mRes); root.appendChild(mMidi);
+    function melStatus(s) { mStat.textContent = s; }
+    function idxLine(ev) {
+      var t = { done: '完成', skipped: '已建過、跳過', failed: '失敗', retry: '暫時性失敗重試', running: '建立中', cancelled: '取消' }[ev.status] || ev.status;
+      if (ev.status === 'running') melStatus('旋律索引：建立中…');
+      else if (ev.status === 'failed') melStatus('旋律索引：有一首失敗（' + ev.reason + '）');
+    }
+    mIdx.onclick = function () {
+      if (!MEL || MEL.indexState().running) return;
+      mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…');
+      MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
+        mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true;
+        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled + '（失敗的會寫明原因）');
+      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
+    };
+    mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
+    mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); melStatus('旋律索引：取消中…'); };
+    var melBlob = null, melMethod = '';
+    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; mStat.textContent = '哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'; }
+    mRec.onclick = function () {
+      if (!MEL) return; mRec.disabled = true; melStatus('錄音中（8 秒）…');
+      var blobNow = null;
+      MEL.recordHum(8).then(function (blob) { blobNow = blob; melStatus('轉譜中…'); return MEL.notesFromHum(blob, mModel.checked); })
+        .then(function (r) { showHum(r, blobNow); }, function (e) { melStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); })
+        .then(function () { mRec.disabled = false; });
+    };
+    mPick.onclick = function () { mFile.value = ''; mFile.click(); };
+    mFile.onchange = function () {
+      var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; melStatus('解碼並轉譜 ' + f.name + '…');
+      MEL.notesFromHum(f, mModel.checked).then(function (r) { showHum(r, f); }, function (e) { melStatus('轉譜失敗：' + String((e && e.message) || e)); });
+    };
+    mFind.onclick = function () {
+      if (!MEL) return;
+      if (!melHum) { melStatus('先錄哼歌或選音檔'); return; }
+      mFind.disabled = true; mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
+      MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked, blob: melBlob }).then(function (r) {
+        mFind.disabled = false;
+        if (!r.ok) { melStatus(r.reason); return; }
+        var textNote = mUseText.checked ? (r.textUsed ? '；文字加分用「' + r.textUsed.slice(0, 30) + '」' : '；沒有文字可加分') : '';
+        if (!r.results.length) {
+          var n = MEL.entries().length;
+          melStatus(n ? '找不到相似的歌（' + n + ' 首已建索引' + textNote + '）' : '還沒有旋律索引，請先按「建立旋律索引」');
+          mMidi.style.display = ''; melFound = melHum; return;
+        }
+        melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + '）');
+        var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
+        r.results.forEach(function (x) {
+          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
+          var play = h('button', null, '試聽命中段');
+          play.onclick = function () { MEL.playClip(paths[x.key], x.startSec, x.endSec).catch(function (e) { melStatus('試聽失敗：' + String((e && e.message) || e)); }); };
+          line.appendChild(document.createTextNode(' ')); line.appendChild(play);
+          mRes.appendChild(line);
+        });
+      }, function (e) { mFind.disabled = false; melStatus('找歌失敗：' + String((e && e.message) || e)); });
+    };
+    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
 
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
@@ -84157,15 +84504,19 @@ const FaMusicLibHost = (function () {
     var fa = (typeof window !== 'undefined' && window.fa) || null;
     if (!fa || typeof fa._decodeAudioForWhisperWithFallback !== 'function') throw new Error('找不到 Whisper 轉錄（需要桌面版的 app）');
     var a = api();
-    if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
     var report = typeof opts.report === 'function' ? opts.report : function () {};
-    var sizeMB = Math.max(1, (record.sizeBytes || 0) / 1048576);
-    report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
-    var r;
-    try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
-    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    var sizeMB = Math.max(1, (record.sizeBytes || record.blob && record.blob.size || 0) / 1048576);
+    var blob;
+    if (record.blob) { blob = record.blob; } // 哼歌錄音：已經在記憶體裡，不用讀檔
+    else {
+      if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
+      report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
+      var r;
+      try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+      if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+      blob = new Blob([b64ToBytes(r.base64)]);
+    }
     report('decode', { detail: '解碼音訊' });
-    var blob = new Blob([b64ToBytes(r.base64)]);
     var audio;
     try {
       audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
@@ -84271,6 +84622,13 @@ const FaMusicLibHost = (function () {
         st.buf = rb;
       }
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
+      else if (step === 'to-song') {
+        // 既有 FaAudioPipeline：ctx.useModel 才試 Basic Pitch（沒模型或失敗就單音追蹤，並記在 st.method）
+        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload);
+        st.song = sg.song; st.method = sg.method;
+        st.expectNotes = FaMidi.noteCount(st.song);
+        st.expectSec = st.view.duration;
+      }
       else { throw new Error('未知步驟：' + step); }
     }
     checkCancel();
@@ -84279,7 +84637,7 @@ const FaMusicLibHost = (function () {
     var path = joinPath(ctx.outDir, name);
     ctx.onStage('write');
     var wr = await a.rawfs.writeFile(path, { base64: bytesToB64(st.bytes) });
-    return { path: path, sizeBytes: wr && wr.sizeBytes, format: ctx.item.format, expectSec: st.expectSec, expectNotes: st.expectNotes };
+    return { path: path, sizeBytes: wr && wr.sizeBytes, format: ctx.item.format, expectSec: st.expectSec, expectNotes: st.expectNotes, method: st.method || null };
   }
 
   // 寫完後讀回磁碟檢查：大小一致、mp3 用原生解碼器量長度、mid 用 FaMidi 解析並比對音符數
@@ -84317,12 +84675,161 @@ const FaMusicLibHost = (function () {
       minutes: opts.minutes,
       isCancelled: function () { return exportCancelled; },
       onEvent: opts.onEvent,
-      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; return exportRunStep(ctx); },
+      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
       verify: function (out) { return verifyOutput(out); }
     }).then(function (res) { res.outDir = outDir; return res; });
   }
 
-  var PICK_HOST = { pickFolder: pickFolder };
+  // ───── 旋律找歌：轉接層 ─────
+  // 音訊轉音符一律用既有的 audio_to_midi（FaAudioToMidi.pitchTrack／framesToNotes），不用模型，所以索引標「簡易轉譜」。
+  // Basic Pitch（既有 FaAudioModels／FaAudioRuntime 的載入方式，與 _audioToMidi 相同）。
+  // 模型沒下載過：allowDownload 為 false 就回傳 null（呼叫端退回單音追蹤並標明）；為 true 才用既有 fetchModel 下載。
+  async function basicPitchTranscriber(allowDownload) {
+    var store = FaAudioModels.idbStore(), id = 'basic-pitch';
+    var st = await FaAudioModels.status(id, store);
+    if (!st.complete && !allowDownload) return { transcriber: null, note: 'Basic Pitch 模型還沒下載' };
+    var bytes = await FaAudioModels.fetchModel(id, {
+      fetchFn: function (u, h) { return fetch(u, { headers: h }); }, store: store,
+      sha256: FaAudioModels.webSha256, sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    });
+    var ort = await FaAudioRuntime.loadOrt();
+    var s = await FaAudioRuntime.createSession(ort, bytes, ['wasm'], {});
+    return { transcriber: FaAudioRuntime.makeTranscriber(ort, s.session), note: '' };
+  }
+  // 音訊（已解碼的 AudioBuffer 或 Blob）→ 歌曲：走既有 FaAudioPipeline；useModel 才試 Basic Pitch
+  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload) {
+    var tr = { transcriber: null, note: '' };
+    if (useModel) tr = await basicPitchTranscriber(!!allowDownload);
+    var chans = Array.isArray(channelsBuf) ? channelsBuf : [];
+    var r = await FaMusicLibAudio.songFromAudio({ channels: chans, sampleRate: sr }, {
+      Pipeline: FaAudioPipeline, transcriber: tr.transcriber, title: title,
+      modelNote: useModel ? tr.note : ''
+    });
+    return r;
+  }
+  function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }
+  // 索引用：mid 直接取旋律；音訊先用既有 _decodeAudioBuffer 解碼，再 songFromMedia（可選 Basic Pitch）。失敗丟錯，訊息附階段
+  async function extractMelody(rec, useModel) {
+    var a = api(), fa = window.fa;
+    var r;
+    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    var u8 = b64ToBytes(r.base64);
+    if (/\.midi?$/i.test(rec.name)) {
+      var song = FaMidi.parse(u8);
+      return { notes: FaMusicLibMelody.melodyFromSong(song), method: 'mid' };
+    }
+    var buf;
+    try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
+    var sg;
+    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
+  }
+  // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
+  async function notesFromHum(blob, useModel) {
+    var buf = await window.fa._decodeAudioBuffer(blob);
+    var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
+    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
+  }
+  // 試聽：從音樂庫的檔案讀出來，用 new Audio(objectURL)（與 app 的 TTS 試聽同一寫法），從 startSec 開始，endSec 後停
+  async function playClip(path, startSec, endSec) {
+    var a = api(); var r = await a.rawfs.readFile(path, 'base64');
+    if (!r || r.base64 == null) throw new Error('讀不到這個檔案');
+    var url = URL.createObjectURL(new Blob([b64ToBytes(r.base64)]));
+    var au = new Audio(url);
+    au.onloadedmetadata = function () { try { au.currentTime = Math.max(0, startSec - 0.3); } catch (_) { /* */ } };
+    await au.play();
+    setTimeout(function () { try { au.pause(); } catch (_) { /* */ } URL.revokeObjectURL(url); }, Math.max(1, (endSec - startSec) + 1) * 1000);
+    return au;
+  }
+  // 麥克風錄音：getUserMedia（同 app 其他錄音的寫法），錄 seconds 秒，回傳 Blob
+  async function recordHum(seconds) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('這個環境沒有麥克風權限 API');
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    return new Promise(function (resolve, reject) {
+      var chunks = [], rec;
+      try { rec = new MediaRecorder(stream); } catch (e) { stream.getTracks().forEach(function (t) { t.stop(); }); reject(e); return; }
+      rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+      rec.onstop = function () { stream.getTracks().forEach(function (t) { t.stop(); }); resolve(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); };
+      rec.start();
+      setTimeout(function () { try { rec.stop(); } catch (_) { /* */ } }, Math.max(1, seconds) * 1000);
+    });
+  }
+
+  // 索引狀態：暫停用一個共用的 gate，取消用旗標（同歌詞轉錄的做法，但這裡是逐首序列跑）
+  var melodyState = { running: false, paused: false, cancelled: false, resumeWaiters: [], counts: {} };
+  function melodyGate() { if (!melodyState.paused) return Promise.resolve(); return new Promise(function (r) { melodyState.resumeWaiters.push(r); }); }
+  function melodyResume() { melodyState.paused = false; var w = melodyState.resumeWaiters.splice(0); w.forEach(function (f) { f(); }); }
+
+  // 建立（或續跑）旋律索引：已建且檔案沒變的跳過；結果寫進音樂庫的紀錄（record.melody），再 lib.save()
+  async function buildMelodyIndex(onEvent, useModel) {
+    var L = getLib(); await L.ready;
+    if (melodyState.running) throw new Error('旋律索引已在建立中');
+    melodyState.running = true; melodyState.cancelled = false;
+    var recs = L.records.filter(function (r) { return r.status === 'ok' && !r.pending; });
+    var saveCount = 0;
+    try {
+      var sum = await FaMusicLibMelody.runMelodyIndex(recs, {
+        extract: function (rec) { return extractMelody(rec, !!useModel); },
+        save: async function () { if (++saveCount % 10 === 0) await L.save(); },
+        onEvent: onEvent || function () {},
+        isCancelled: function () { return melodyState.cancelled; },
+        waitIfPaused: melodyGate
+      });
+      await L.save();
+      return sum;
+    } finally { melodyState.running = false; melodyState.paused = false; }
+  }
+  // 查詢用的索引項目（只取建好的）
+  function melodyEntries(L) {
+    return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
+      return { key: r.key, name: r.name, contour: r.melody.contour, method: r.melody.method, path: r.path };
+    });
+  }
+  // 哼歌的文字：先用既有轉錄（whisperTranscribe，同歌詞轉錄的 Whisper 流程）取文字；面板手動填的文字優先
+  async function transcribeHum(blob) {
+    var r = await whisperTranscribe({ blob: blob, name: 'hum.webm', sizeBytes: blob.size }, { report: function () {} });
+    return ((r && r.segments) || []).map(function (s) { return s.text; }).join(' ').trim();
+  }
+  // 找歌：notes（查詢音符）＋可選的文字加分（可關閉）。文字來源：手動填的，或從哼歌錄音轉錄
+  async function searchHum(notes, opts) {
+    var L = getLib(), entries = melodyEntries(L), textHits = null, text = '';
+    opts = opts || {};
+    if (opts.useText) {
+      text = String(opts.textQuery || '').trim();
+      if (!text && opts.blob) text = await transcribeHum(opts.blob);
+      if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
+    }
+    var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
+    res.textUsed = text;
+    return res;
+  }
+  // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
+  function humAsMidi(notes, title) {
+    var fa = window.fa, s = FaMidi.emptySong();
+    s.title = title || '哼歌旋律';
+    var mel = FaMusicLibMelody.melodyNotes(notes);
+    s = FaMidi.addTrack(s, '哼歌旋律', 0, false);
+    var ti = s.tracks.length - 1;
+    mel.forEach(function (x) { s = FaMidi.addNote(s, ti, { t: FaMidi.secToTicks(s, x.t), d: Math.max(1, FaMidi.secToTicks(s, x.t + x.d) - FaMidi.secToTicks(s, x.t)), n: Math.round(x.n), v: 90 }); });
+    return fa._midiPushEditor(FaMidi.validate(s), s.title, '🎵 哼歌找歌找不到，這是你哼的旋律（' + mel.length + ' 個音）。可以按「試聽」。');
+  }
+
+  var MELODY_HOST = {
+    buildIndex: buildMelodyIndex,
+    cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
+    pauseIndex: function () { melodyState.paused = true; },
+    resumeIndex: function () { melodyResume(); },
+    indexState: function () { return { running: melodyState.running, paused: melodyState.paused }; },
+    recordHum: recordHum,
+    notesFromHum: notesFromHum,
+    search: searchHum,
+    humAsMidi: humAsMidi,
+    playClip: playClip,
+    basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
+    entries: function () { return melodyEntries(getLib()); }
+  };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -84357,7 +84864,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },
