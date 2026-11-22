@@ -62,15 +62,15 @@ t('辨識種類：副檔名與檔頭', function () {
   assert.equal(M.identifyKind('flash.swf', cat(['CWS', 9])).kind, 'swf');
 });
 
-t('遊戲音樂來源：NES／PCE／SFC 只登記待擷取；RIX 與 Flash 是可擷取的種類', function () {
+t('遊戲音樂來源：PCE／SFC 只登記待擷取；NES、RIX、Flash 是可擷取的種類', function () {
   var nes = M.identifyKind('zelda.nes', cat(['NES\u001a', 1, 2]));
-  assert.equal(nes.kind, 'nes'); assert.equal(nes.category, 'game'); assert.equal(nes.pending, true);
-  assert.equal(nes.label, '遊戲音樂來源，待擷取');
+  assert.equal(nes.kind, 'nes'); assert.equal(nes.category, 'extract'); assert.equal(nes.pending, false);
+  assert.equal(nes.label, 'NES 遊戲音樂，可擷取');
   ['pce', 'sfc'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
     assert.equal(r.kind, ext); assert.equal(r.pending, true);
   });
-  ['rix', 'swf'].forEach(function (ext) {
+  ['rix', 'swf', 'nes'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
     assert.equal(r.kind, ext); assert.equal(r.category, 'extract'); assert.equal(r.pending, false, ext + ' 可擷取，不算待擷取');
   });
@@ -233,7 +233,7 @@ t('增量掃描：新增、略過未變更、變更、消失（標 missing）', 
   var jazz = lib.records.filter(function (r) { return r.path === 'D:/Music/Jazz/Autumn Leaves.mp3'; })[0];
   assert.equal(jazz.album, 'Jazz'); assert.equal(jazz.albumSource, 'folder'); assert.equal(jazz.title, 'Autumn Leaves');
   var nes = lib.records.filter(function (r) { return r.kind === 'nes'; })[0];
-  assert.equal(nes.pending, true); assert.equal(nes.category, 'game');
+  assert.equal(nes.pending, false); assert.equal(nes.category, 'extract');
 
   // 第二次：完全相同 → 全部略過，不讀檔頭
   var reader2 = makeReader(fx.files);
@@ -644,7 +644,7 @@ t('路由：不支援的組合說明原因，不默默略過', function () {
   assert.deepEqual(a.steps, ['decode', 'slice', 'to-song', 'write-mid']);
   assert.equal(M.planExport('clip.mp4', 'mid').route, 'video>mid');
   var r = M.planExport('mario.nes', 'mp3');
-  assert.equal(r.ok, false); assert.ok(/尚未支援/.test(r.reason) && /擷取器/.test(r.reason));
+  assert.equal(r.ok, false); assert.ok(/擷取/.test(r.reason), '說明要先擷取：' + r.reason);
   assert.equal(M.planExport('x.txt', 'mp3').ok, false);
   assert.equal(M.planExport('a.wav', 'flac').ok, false);
 });

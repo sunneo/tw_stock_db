@@ -1,6 +1,5 @@
-/* NES → NSF 純邏輯的單元測試：node renderer/src/musiclib/musiclib_extract_nes_test.js
- * 手組的位元組與事件流都在程式裡；最後一段是真實 ROM 資料夾的唯讀檢查（只在目錄存在時才跑，不複製進 repo）。
- * 注意：這個測試沒有執行 6502 程式；入口推導用的是事件流（跑 ROM 的執行器還沒接，見 musiclib_extract_nes.js 檔頭）。 */
+/* NES 擷取的純邏輯單元測試（不執行 ROM）：node renderer/src/musiclib/musiclib_extract_nes_test.js
+ * 手組的位元組與事件流都在程式裡；執行 ROM 的測試在 musiclib_extract_nes_run_test.js。最後一段是真實 ROM 資料夾的唯讀檢查（只在目錄存在時才跑，不複製進 repo）。 */
 'use strict';
 var assert = require('assert');
 var fs = require('fs');
@@ -41,8 +40,9 @@ t('iNES：錯誤檔頭、被截斷、NES 2.0、PRG 為 0 都明確回報原因',
   assert.equal(NES.parseInes(bad).ok, false); assert.ok(/不是 iNES/.test(NES.parseInes(bad).reason));
   var cut = inesFile(2, 0, 0, 0).subarray(0, 100);
   assert.ok(/截斷/.test(NES.parseInes(cut).reason));
-  var nes2 = inesFile(1, 0, 0, 0x08);
-  assert.ok(/NES 2.0/.test(NES.parseInes(nes2).reason));
+  var nes2 = inesFile(1, 0, 0, 0x08); nes2[8] = 0x01;   // NES 2.0：mapper 高位元在位元組 8
+  var p2 = NES.parseInes(nes2);
+  assert.equal(p2.ok, true, p2.reason); assert.equal(p2.mapper, 256, 'NES 2.0 的 mapper 多四位元');
   var zero = inesFile(0, 0, 0, 0);
   assert.ok(/PRG 區段為 0/.test(NES.parseInes(zero).reason));
 });
@@ -128,21 +128,22 @@ t('APU → MIDI：週期小於 8 的脈衝被硬體靜音，不產生音符', fu
   assert.equal(out.song.tracks.length, 0);
 });
 
-t('真實 ROM 資料夾（FC roms，若存在）：唯讀；iNES 檔頭解析、mapper 分布、失敗原因，前 20 個失敗的檔名與原因', function () {
+t('真實 ROM 資料夾（FC roms，若存在）：唯讀；檔頭解析與分類（執行與普查在 run_test／census）', function () {
   var dir = 'D:/emu/Roms/FC roms';
   if (!fs.existsSync(dir)) { console.log('    （略過：找不到 ' + dir + '）'); return; }
-  var files = fs.readdirSync(dir).filter(function (f) { return /\.nes$/i.test(f); });
-  var ok = 0, fails = [], mappers = {}, entries = 0;
+  var files = [];
+  (function walk(d) { fs.readdirSync(d, { withFileTypes: true }).forEach(function (e) { var f = path.join(d, e.name); if (e.isDirectory()) walk(f); else files.push(f); }); })(dir);
+  var roms = 0, ok = 0, mappers = {};
   files.forEach(function (f) {
-    var r;
-    try { r = NES.parseInes(fs.readFileSync(path.join(dir, f))); } catch (e) { r = { ok: false, reason: '讀檔失敗：' + e.message }; }
+    var bytes = fs.readFileSync(f);
+    if (NES.classifyFile(path.basename(f), bytes).cls !== 'rom') return;
+    roms++;
+    var r = NES.parseInes(bytes);
     if (r.ok) { ok++; mappers[r.mapper] = (mappers[r.mapper] || 0) + 1; }
-    else fails.push(f + '：' + r.reason);
+    else console.log('    檔頭失敗：' + path.basename(f) + '：' + r.reason);
   });
-  console.log('    FC ROM：共 ' + files.length + ' 個 .nes，iNES 檔頭解析成功 ' + ok + '，失敗 ' + fails.length + '，成功抽出播放入口 ' + entries + '（尚未執行 ROM：jsnes 未取得）');
-  console.log('    mapper 分布：' + Object.keys(mappers).sort(function (a, b) { return a - b; }).map(function (k) { return 'mapper ' + k + ' × ' + mappers[k]; }).join('、'));
-  fails.slice(0, 20).forEach(function (x) { console.log('    失敗：' + x); });
-  assert.ok(files.length > 0, '資料夾裡應該有 .nes');
+  console.log('    iNES ROM ' + roms + ' 個，檔頭解析成功 ' + ok + '；mapper 分布：' + Object.keys(mappers).sort(function (a, b) { return a - b; }).map(function (k) { return 'mapper ' + k + ' × ' + mappers[k]; }).join('、'));
+  assert.ok(files.length > 0, '資料夾裡應該有檔案');
 });
 
 // ───── 執行 ─────

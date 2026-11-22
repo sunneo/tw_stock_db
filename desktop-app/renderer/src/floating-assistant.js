@@ -84459,6 +84459,12 @@ const holder = {};
 return holder.FaMusicLibSwf;
 })();
 /* MLSWF-END */
+/* MLNES-BEGIN */
+/* MLNES-END */
+/* JSNES-BEGIN */
+/* JSNES-END */
+/* MLNESMAP-BEGIN */
+/* MLNESMAP-END */
 /* MXLZ-BEGIN */
 const FaMatrixLzma = (function () {
 const holder = {};

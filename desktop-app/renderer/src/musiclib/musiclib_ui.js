@@ -242,8 +242,8 @@
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
-    // 擷取遊戲音樂來源（RIX、Flash）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
-    var xBtn = h('button', null, '擷取（RIX／Flash）'), xCancel = h('button', null, '取消擷取');
+    // 擷取遊戲音樂來源（RIX、Flash、NES）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
+    var xBtn = h('button', null, '擷取（RIX／Flash／NES）'), xCancel = h('button', null, '取消擷取');
     var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
@@ -252,8 +252,8 @@
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {
       if (!host.extract) return;
-      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
-      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash（先加檔案，或勾選要擷取的來源）'; return; }
+      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf' || r.kind === 'nes') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash／NES（先加檔案，或勾選要擷取的來源）'; return; }
       var root = xRoot.value.trim();
       try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
       xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';

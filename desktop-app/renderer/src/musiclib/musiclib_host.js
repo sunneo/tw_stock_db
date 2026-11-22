@@ -407,7 +407,7 @@ const FaMusicLibHost = (function () {
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); }
   };
-  // ───── 遊戲音樂來源擷取（RIX、Flash）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
+  // ───── 遊戲音樂來源擷取（RIX、Flash、NES）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
   // 衍生檔預設放在「來源檔所在資料夾的旁邊」的「音樂庫衍生檔」資料夾（不寫進 repo）；面板可指定別的根資料夾。
   // 來源沒變（大小與修改時間相同）且子曲目已在 → 略過（子曲目記著 derivedSig）。
   var extractCancelled = false;
@@ -433,7 +433,7 @@ const FaMusicLibHost = (function () {
     return { path: full, sizeBytes: bytes.length };
   }
 
-  // 擷取一個來源（rec 是 kind 為 rix 或 swf 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
+  // 擷取一個來源（rec 是 kind 為 rix、swf 或 nes 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
   async function extractGameSource(rec, opts) {
     opts = opts || {};
     var L = getLib(); await L.ready;
@@ -484,6 +484,38 @@ const FaMusicLibHost = (function () {
       });
       skippedParts = sw.skipped.map(function (x) { return (x.id >= 0 ? '聲音' + x.id : '串流') + '：' + x.reason; });
       if (!outs.length) throw new Error('SWF 內沒有可擷取的音訊' + (skippedParts.length ? '（' + skippedParts.join('；') + '）' : ''));
+    } else if (rec.kind === 'nes') {
+      // NES：用 jsnes 真的執行 ROM，同時錄 APU 寫入（退路 MIDI）、錄 APU 音訊（wav／mp3），能找到入口就產生 NSF
+      emit('執行 ROM（jsnes）');
+      if (typeof FaJsnes === 'undefined' || typeof FaMusicLibNes === 'undefined' || typeof FaMusicLibNesMappers === 'undefined') throw new Error('NES 模組沒有嵌入（FaJsnes／FaMusicLibNes 不存在）');
+      var nr;
+      try {
+        if (FaMusicLibNesMappers && FaMusicLibNesMappers.install) FaMusicLibNesMappers.install(FaJsnes.NES);
+        nr = await FaMusicLibNes.extractNsf(u8, FaJsnes.NES, {
+          name: stem, isCancelled: cancelled,
+          onProgress: function (fr) { if (fr % 900 === 0) emit('執行 ROM（第 ' + fr + ' 個畫面）'); }
+        });
+      } catch (e) { throw new Error('NES 執行失敗（執行階段）：' + String((e && e.message) || e)); }
+      if (nr.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      var modeLabel = nr.mode === 'nsf+midi' ? '有 NSF，並有退路 MIDI' : nr.mode === 'nsf' ? '有 NSF' : nr.mode === 'midi' ? '只有退路 MIDI' : '兩者都沒有';
+      method = 'NES（jsnes 執行 ROM，' + modeLabel + '）' + (nr.nsfNote ? '；' + nr.nsfNote : '');
+      if (nr.nsf) outs.push({ kind: 'nsf', name: stem + '.nsf', bytes: nr.nsf, method: method, durationSec: null, title: stem + ' NSF' });
+      if (nr.song) {
+        var nsong = FaMidi.validate(nr.song);
+        outs.push({ kind: 'mid', name: stem + '_APU.mid', bytes: FaMidi.write(nsong), method: method + '；APU 暫存器→MIDI（退路）', durationSec: nr.stats.seconds, title: stem + ' MIDI' });
+      }
+      if (nr.wav && nr.samples && nr.samples.length) {
+        emit('編碼 mp3');
+        outs.push({ kind: 'wav', name: stem + '_APU.wav', bytes: nr.wav, method: method + '；APU 音訊', durationSec: nr.stats.durationSec, title: stem + ' APU' });
+        var abuf = new AudioBuffer({ length: nr.samples.length, sampleRate: nr.sampleRate, numberOfChannels: 1 });
+        abuf.copyToChannel(nr.samples, 0);
+        var nmp3 = await fa._encodeMp3(abuf, 160);
+        outs.push({ kind: 'mp3', name: stem + '_APU.mp3', bytes: new Uint8Array(await nmp3.arrayBuffer()), method: method + '；APU 音訊', durationSec: nr.stats.durationSec, title: stem + ' APU' });
+      }
+      skippedParts = [];
+      if (!nr.nsf) skippedParts.push('NSF 沒有產生［' + (nr.nsfStage || '?') + '］' + (nr.nsfReason || ''));
+      if (!nr.song) skippedParts.push('退路 MIDI 沒有：' + (nr.midiReason || ''));
+      if (!outs.length) throw new Error('NES 擷取失敗：' + skippedParts.join('；'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
@@ -501,7 +533,7 @@ const FaMusicLibHost = (function () {
     await L.save();
     return { skipped: false, children: recs.map(function (x) { return x.key; }), skippedParts: skippedParts, method: method, dir: dir };
   }
-  // 批次擷取（勾選的 rix／swf，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
+  // 批次擷取（勾選的 rix／swf／nes，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
   async function extractSources(recs, opts) {
     opts = opts || {};
     extractCancelled = false;

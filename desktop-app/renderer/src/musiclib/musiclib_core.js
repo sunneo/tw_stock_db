@@ -18,12 +18,15 @@
     mp4: { category: 'video', label: 'MP4 影片' },
     mov: { category: 'video', label: 'MOV 影片' },
     webm: { category: 'video', label: 'WebM 影片' },
-    nes: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    nes: { category: 'extract', label: 'NES 遊戲音樂，可擷取' },
     pce: { category: 'game', label: '遊戲音樂來源，待擷取' },
     sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
     rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
-    swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' }
+    swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' },
+    // 只由擷取產生的子曲目用（不從掃描辨識）
+    nsf: { category: 'game', label: 'NSF 音樂（擷取產生，需 NSF 播放器）' }
   };
+  var DERIVED_ONLY = { nsf: 1 };
   var EXT_ALIAS = { midi: 'mid' };
 
   // ───── 文字小工具 ─────
@@ -31,7 +34,7 @@
   function basename(p) { return String(p || '').split(/[\\\/]/).pop(); }
   function extOf(name) { var m = /\.([^.\\\/]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
   function stripExt(name) { return String(name || '').replace(/\.[^.\\\/]+$/, ''); }
-  function kindFromExt(name) { var e = extOf(name); e = EXT_ALIAS[e] || e; return KINDS[e] ? e : null; }
+  function kindFromExt(name) { var e = extOf(name); e = EXT_ALIAS[e] || e; return KINDS[e] && !DERIVED_ONLY[e] ? e : null; }
 
   // 只看副檔名就能認的檔案（掃描時用來決定要不要先讀檔頭）
   function isSupportedName(name) { return !!kindFromExt(name); }
@@ -58,6 +61,9 @@
     var k = KINDS[kind];
     return { kind: kind, category: k.category, label: k.label, pending: k.category === 'game', via: byMagic ? 'magic' : 'ext' };
   }
+
+  // 遊戲音樂來源（待擷取，或可擷取但還沒擷取）不是可以直接讀歌詞、哼歌的音訊：歌詞佇列與計數都不算
+  function isSourceOnly(r) { return !!r.pending || r.category === 'extract' || r.category === 'game'; }
 
   // ───── 專輯：沒有專輯標籤時，用上一層資料夾名（路徑最後一段之前那一段；碟符不算）─────
   function albumFromPath(p) {
@@ -564,10 +570,10 @@
       // keys 為空＝全部還沒完成的（none／failed／queued）；遊戲來源（pending）不排進佇列
       enqueue: function (keys) {
         st.cancelRequested = false;
-        var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !r.pending; }).map(function (r) { return r.key; });
+        var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !isSourceOnly(r); }).map(function (r) { return r.key; });
         list.forEach(function (k) {
           var r = find(k);
-          if (!r || r.status !== 'ok' || r.pending || r.lyricStatus === 'done' || st.queue.indexOf(k) >= 0 || st.current === k) return;
+          if (!r || r.status !== 'ok' || isSourceOnly(r) || r.lyricStatus === 'done' || st.queue.indexOf(k) >= 0 || st.current === k) return;
           st.queue.push(k); r.lyricStatus = 'queued'; r.lyricError = null;
         });
         emit(); kick();
@@ -595,7 +601,7 @@
       onChange: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (x) { return x !== fn; }); }; },
       state: function () {
         var c = { none: 0, queued: 0, running: 0, done: 0, failed: 0 };
-        lib.records.forEach(function (r) { if (r.status === 'ok' && !r.pending && c[r.lyricStatus] != null) c[r.lyricStatus]++; });
+        lib.records.forEach(function (r) { if (r.status === 'ok' && !isSourceOnly(r) && c[r.lyricStatus] != null) c[r.lyricStatus]++; });
         return {
           running: st.running, paused: st.paused, current: st.current, progress: st.progress, queued: st.queue.length,
           doneRun: st.doneRun, failedRun: st.failedRun, saveError: st.saveError, counts: c,
@@ -694,15 +700,15 @@
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
-  var ROM_EXT = { nes: 1, pce: 1, sfc: 1 };
-  var EXTRACT_EXT = { rix: 1, swf: 1 };
+  var ROM_EXT = { pce: 1, sfc: 1 };
+  var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1 };
 
   // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
   function planExport(name, format) {
     var ext = String(name || '').split('.').pop().toLowerCase();
     if (EXPORT_FORMATS.indexOf(format) < 0) return { ok: false, reason: '不支援的輸出格式：' + format };
-    if (EXTRACT_EXT[ext]) return { ok: false, reason: ext.toUpperCase() + ' 要先按「擷取」產生 MIDI／mp3 子曲目，再批次輸出子曲目' };
+    if (EXTRACT_EXT[ext]) return { ok: false, reason: ext.toUpperCase() + ' 要先按「擷取」產生子曲目（MIDI／mp3／wav／NSF），再批次輸出子曲目' };
     if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔的音樂需要模擬器驅動，本輪沒有擷取器' };
     var cls = SOURCE_CLASS[ext];
     if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
@@ -799,7 +805,7 @@
     buildDerivedRecord: buildDerivedRecord, replaceDerived: replaceDerived,
     minutesToSec: minutesToSec, sliceWindow: sliceWindow, outputName: outputName, planExport: planExport, runExportBatch: runExportBatch,
     EXPORT_ROUTES: EXPORT_ROUTES, EXPORT_FORMATS: EXPORT_FORMATS, EXPORT_MAX_ATTEMPTS: EXPORT_MAX_ATTEMPTS,
-    VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
+    VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS, isSourceOnly: isSourceOnly,
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
     scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
