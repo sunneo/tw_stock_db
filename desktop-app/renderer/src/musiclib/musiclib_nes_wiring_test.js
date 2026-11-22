@@ -26,13 +26,13 @@ t('種類：NSF 只能由擷取產生，不會被掃描成來源（副檔名 .ns
   assert.equal(M.KINDS.nsf.category, 'game', 'nsf 的種類表項目只給子曲目用');
 });
 
-t('路由：NES 來源要先擷取；PCE／SFC 仍是待擷取（沒有擷取器）', function () {
+t('路由：NES、PCE、SFC 來源都要先擷取（走擷取器），再批次輸出子曲目', function () {
   var nes = M.planExport('mario.nes', 'mid');
   assert.equal(nes.ok, false); assert.ok(/擷取/.test(nes.reason), nes.reason);
   var pce = M.planExport('x.pce', 'mid');
   assert.equal(pce.ok, false); assert.ok(/擷取/.test(pce.reason), pce.reason);
   var sfc = M.planExport('x.sfc', 'mid');
-  assert.equal(sfc.ok, false); assert.ok(/尚未支援/.test(sfc.reason), sfc.reason);
+  assert.equal(sfc.ok, false); assert.ok(/擷取/.test(sfc.reason), sfc.reason);
 });
 
 t('子曲目登記：NSF／MIDI／wav／mp3 都是普通記錄（kind 與類別對得上），記著來源與擷取方式', function () {
