@@ -12,7 +12,7 @@
   var RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
   var VENDOR = RAW + '/vendor-assets/vendor';
   var WORKER_BASE = 'https://dawn-disk-778c.sunneo529.workers.dev';
-  var FA_SHA = '24fa8d40c653021136eb5a654ced9e8987842977';
+  var FA_SHA = 'a46c63982e14994b261d447b49701071d73de097';
   var FA_JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + FA_SHA + '/desktop-app/web-lazy/';
   var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
   var FA_ROOTS = [FA_JSD, FA_RAWB];
