@@ -919,6 +919,8 @@ const FaKnowledgeHost = (function () {
         },
         _registerKnowledgeCommand() {
             const say = (r, t) => r._pushAssistantMessage(t, null);
+            // /knowledge-ui 等於 /knowledge ui（直接開知識庫的 GUI 面板）；查登錄表時才取 /knowledge，所以順序無關
+            this.register_slash_command('/knowledge-ui', '[inline]', '知識庫 GUI 面板（等於 /knowledge ui）。加 inline 則放在對話裡。', (argsText, run0) => (this.slashCommands.get('/knowledge').handler(['ui', String(argsText || '').trim()].filter(Boolean).join(' '), run0)));
             this.register_slash_command('/knowledge', '[問題｜add｜list｜outline｜summary｜detail｜links｜remove｜embed｜organize｜refresh｜where｜migrate｜capacity]',
                 'Knowledge Inventory：你自己放進去的文件、網頁、講義、錄音轉錄的本機知識庫，回答只用裡面的原文，每個回答都標出處（來源、第幾行、章節／頁／時間）。/knowledge 蜘蛛怎麼結網（直接問）；/knowledge add <網址或檔名>、/knowledge list、/knowledge outline <來源>、/knowledge summary <來源>、/knowledge detail <來源> <章節>、/knowledge links、/knowledge remove <來源>、/knowledge embed（啟用語意索引）、/knowledge organize（模型整理）、/knowledge refresh（更新）、/knowledge where、/knowledge migrate idb|file <路徑>|fap <名稱/路徑>、/knowledge capacity <MB｜無限>。',
                 async (argsText, run) => {
