@@ -398,7 +398,7 @@
       if (ytRunning) items.push({ text: 'YouTube 清單處理中', tab: 'yt' });
       if (host.md5 && host.md5.state) {
         var ms = host.md5.state();
-        if (ms.running) items.push({ text: ms.big ? '正在算 ' + ms.current + ' 的 md5（大檔，需要一點時間，已 ' + Math.round((Date.now() - ms.startedAt) / 1000) + ' 秒）' : 'md5 計算中 ' + ms.done + '／' + ms.total, tab: 'src' });
+        if (ms.running) items.push({ text: ms.big ? '正在算 ' + ms.current + ' 的 md5（大檔，需要一點時間，已 ' + Math.round((Date.now() - ms.startedAt) / 1000) + ' 秒）' : '對應中（算 md5）' + ms.done + '／' + ms.total, tab: 'src' });
         else if (ms.pending) items.push({ text: 'md5 尚未算完 ' + ms.pending + ' 個（算完前先不要重整資料夾）', tab: 'src' });
       }
       return items;
