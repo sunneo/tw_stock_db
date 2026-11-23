@@ -103125,7 +103125,16 @@ const holder = {};
         mFind.disabled = false; showFound(r);
       }, function (e) { mFind.disabled = false; hStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
-    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); hStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { hStatus('演奏失敗：' + String((e && e.message) || e)); } };
+    // 把哼歌旋律用 MIDI 播放器演奏：播放卡片直接插在這個按鈕下面（再按一次收起）
+    var humCard = null;
+    mMidi.onclick = function () {
+      if (!MEL || !melFound) return;
+      if (humCard) { if (humCard.parentNode) humCard.parentNode.removeChild(humCard); humCard = null; hStatus('已收起哼歌旋律的播放器'); return; }
+      hStatus('準備 MIDI 播放器…');
+      Promise.resolve(MEL.humAsMidi(melFound, '哼歌旋律')).then(function (res) {
+        if (res && res.node) { humCard = res.node; mMidi.parentNode.insertBefore(humCard, mMidi.nextSibling); hStatus('已用 MIDI 播放器載入哼歌旋律，按卡片上的播放（再按一次這個按鈕收起）'); }
+      }).catch(function (e) { hStatus('演奏失敗：' + String((e && e.message) || e)); });
+    };
     // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
     var YT_LIST_MAX = 200;
     function ytShowItems(job) {
@@ -103752,14 +103761,18 @@ const FaMusicLibHost = (function () {
     return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
-  function humAsMidi(notes, title) {
+  // 回傳 { node }：MIDI 播放卡片，由畫面插在按鈕下面（舊做法是把編輯器訊息塞到對話最下面，音樂庫面板在上面看不到，像是按了沒反應）
+  async function humAsMidi(notes, title) {
     var fa = window.fa, s = FaMidi.emptySong();
+    if (!fa || !fa._midiHost || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
     s.title = title || '哼歌旋律';
     var mel = FaMusicLibMelody.melodyNotes(notes);
     s = FaMidi.addTrack(s, '哼歌旋律', 0, false);
     var ti = s.tracks.length - 1;
     mel.forEach(function (x) { s = FaMidi.addNote(s, ti, { t: FaMidi.secToTicks(s, x.t), d: Math.max(1, FaMidi.secToTicks(s, x.t + x.d) - FaMidi.secToTicks(s, x.t)), n: Math.round(x.n), v: 90 }); });
-    return fa._midiPushEditor(FaMidi.validate(s), s.title, '🎵 哼歌找歌找不到，這是你哼的旋律（' + mel.length + ' 個音）。可以按「試聽」。');
+    if (!mel.length) throw new Error('沒有可演奏的音符');
+    var node = await FaMidiUI.mount({ song: FaMidi.validate(s), title: (s.title || '哼歌旋律') + '（' + mel.length + ' 個音）', host: fa._midiHost(), M: FaMidi });
+    return { node: node };
   }
 
   var MELODY_HOST = {
