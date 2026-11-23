@@ -84296,11 +84296,12 @@ const holder = {};
   var INDEX_VERSION = 3;       // 索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
   var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
-  var INT_CAP = 2;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
+  var INT_CAP = 5;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
   var RATIO_CAP = 1;           // 節奏比例差距（log2）超過 1 就當完全不同（= 兩倍）
-  var GAP_QUERY = 1.0;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
-  var SKIP_TARGET = 0.3;       // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對（0.15→0.3 校準：對照隨機曲子的分數中位數 0.45→0.35）
-  var DEFAULT_MIN_SCORE = 0.4; // 校準見單元測試「合成資料校準」：0.4 時目標召回約 84%、隨機對照約 17% 的查詢會誤中一首（0.35 時誤中過半）
+  var GAP_QUERY = 0.6;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
+  var SKIP_TARGET = 0.45;       // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對（0.15→0.3 校準：對照隨機曲子的分數中位數 0.45→0.35）
+  var DEFAULT_MIN_SCORE = 0.15;  // 真人哼歌分數偏低（實測真實 RIX 曲庫：目標約 0.2～0.4），所以預設只濾掉完全不像的、列出前幾名讓人聽
+  var CONFIDENT_SCORE = 0.5;   // 達到這個分數才算「有把握」；畫面低於它的標成「可能」 // 校準見單元測試「合成資料校準」：0.4 時目標召回約 84%、隨機對照約 17% 的查詢會誤中一首（0.35 時誤中過半）
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
   function round3(x) { return Math.round(x * 1000) / 1000; }
@@ -84549,7 +84550,7 @@ const holder = {};
   // query：音符（秒）；entries：[{ key, name, lines?: [{ label, contour }], contour? }]。沒有 lines 時，contour 當成唯一一條線。
   // 每首取所有線中最高分的那條，回報 hitLine（線的名稱，例如「頻道 1」）與命中的秒數範圍
   // opts: { minScore=0.35, limit=10, textHits（Set 或物件，key 命中就加分）, textWeight=0.1, weights={pitch:0.8, rhythm:0.2} }
-  function searchMelody(query, entries, opts) {
+  function searchOne(query, entries, opts) {
     opts = opts || {};
     var mel = dropOutliers(melodyNotes(query));
     if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
@@ -84578,6 +84579,25 @@ const holder = {};
     });
     results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
     return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length };
+  }
+  // 哼歌的音符轉出來每次略有不同（音高追蹤的門檻、要不要把滑音當新音）。query.alts 放其他版本的音符：
+  // 每首取所有版本中最高的分數（同一次哼歌的不同轉法，不是不同的查詢），再合併排序。
+  function searchMelody(query, entries, opts) {
+    opts = opts || {};
+    var alts = (query && query.alts) || [];
+    var first = searchOne(query, entries, Object.assign({}, opts, { limit: 100000 }));
+    if (!alts.length) { first.results = first.results.slice(0, opts.limit || 10); return first; }
+    var bestBy = {}, ok = first.ok, qn = first.queryNotes;
+    first.results.forEach(function (r) { bestBy[r.key] = r; });
+    alts.forEach(function (alt) {
+      var o = searchOne(alt, entries, Object.assign({}, opts, { limit: 100000 }));
+      if (!o.ok) return; ok = true; if (qn == null) qn = o.queryNotes;
+      o.results.forEach(function (r) { if (!bestBy[r.key] || r.score > bestBy[r.key].score) bestBy[r.key] = r; });
+    });
+    var all = Object.keys(bestBy).map(function (k) { return bestBy[k]; });
+    all.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
+    if (!ok) return first;
+    return { ok: true, results: all.slice(0, opts.limit || 10), queryNotes: qn };
   }
 
   // ───── 5. 索引（逐首，可暫停續跑、取消；已建、沒變、版本相同就跳過）─────
@@ -84670,7 +84690,7 @@ const holder = {};
     var shift = octaveShift(median(hum.map(function (x) { return x.n; })), median(seg0.map(function (x) { return x.n; })));
     var base = c.base + shift;
     var seg = restoreNotes(c, base).slice(hit.noteFrom, hit.noteTo + 1).map(function (x) { return { t: x.t, d: x.d, n: x.n }; });
-    return { cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
+    return { CONFIDENT_SCORE: CONFIDENT_SCORE, cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
   }
 
   return {
@@ -84678,7 +84698,7 @@ const holder = {};
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
-    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, INDEX_VERSION: INDEX_VERSION
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION
   };
 }));
 
@@ -84756,7 +84776,7 @@ const holder = {};
     var mono = monoOf(input.channels), sr = input.sampleRate, step = Math.max(1, Math.round(sr / 11025)), n = Math.floor(mono.length / step), w = new Float32Array(n);
     for (var i = 0; i < n; i++) { var a = 0; for (var k = 0; k < step; k++) a += mono[i * step + k]; w[i] = a / step; }
     var wsr = sr / step;
-    var tr = AM.pitchTrack(w, wsr, { fmin: 70, fmax: 900, thr: 0.12 });
+    var tr = AM.pitchTrack(w, wsr, { fmin: 70, fmax: 900, thr: opts.thr || 0.2 });
     var sorted = Array.prototype.slice.call(tr.rms).filter(function (x) { return x > 0; }).sort(function (x, y) { return x - y; });
     var ref = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
     var gate = Math.max(0.01, ref * (opts.gateRatio || 0.14)), decay = opts.decayRatio || 0.3;
@@ -84767,7 +84787,7 @@ const holder = {};
       if (tr.rms[f] > runPeak) runPeak = tr.rms[f];
       if (tr.rms[f] < runPeak * decay) tr.voiced[f] = 0;   // 衰減尾：不是新音；尾巴後面冒出的小聲音也一併濾掉
     }
-    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.08 });
+    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.05 });
     if (notes.length) {
       var vs = notes.map(function (x) { return x.v; }).sort(function (x, y) { return x - y; }), med = vs[vs.length >> 1];
       notes = notes.filter(function (x) { return x.v >= med * 0.5; });
@@ -84784,6 +84804,17 @@ const holder = {};
         var pv = notes[i - 1], nx = notes[i + 1];
         var blip = x.d < 0.15 && (!pv || Math.abs(x.n - pv.n) >= 3) && (!nx || Math.abs(x.n - nx.n) >= 3);
         if (blip) dropped.blip++; return !blip;
+      });
+    }
+    // 滑音：兩個音中間很短（< glideMax 秒）、音高介於前後音之間（含 1 半音內）的過渡音，是從一個音滑到下一個音的痕跡，不是新音
+    var gmax = opts.glideMax == null ? 0.12 : opts.glideMax; dropped.glide = 0;
+    if (gmax > 0) {
+      notes = notes.filter(function (x, i) {
+        var pv = notes[i - 1], nx = notes[i + 1];
+        if (!pv || !nx || x.d >= gmax) return true;
+        var lo = Math.min(pv.n, nx.n) - 1, hi = Math.max(pv.n, nx.n) + 1;
+        var g = x.n >= lo && x.n <= hi && Math.abs(pv.n - nx.n) >= 1;
+        if (g) dropped.glide++; return !g;
       });
     }
     var tot = orig.length, vOrig = 0, vKept = 0; for (var q = 0; q < tot; q++) { if (orig[q]) vOrig++; if (tr.voiced[q]) vKept++; }
@@ -103493,7 +103524,7 @@ const holder = {};
         hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
-          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
+          var line = h('div', null, '[' + x.score.toFixed(2) + (x.score < FaMusicLibMelody.CONFIDENT_SCORE ? ' 可能' : '') + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
             (x.hit && x.hit.track != null ? '；這首的命中來自' + x.hit.label + ' 的某條旋律線，不是整首音樂' : '；命中的是所有軌合併成的一條旋律線'));
           var play = h('button', null, '原曲這一段');
           play.onclick = function () {
@@ -104043,9 +104074,18 @@ const FaMusicLibHost = (function () {
     var buf = await window.fa._decodeAudioBuffer(blob);
     if (!useModel && typeof FaAudioToMidi !== 'undefined') {
       // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
-      var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
-      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音',
-        diag: '音量基準 ' + hn.ref.toFixed(3) + '、門檻 ' + hn.gate.toFixed(3) + '；有音高的幀 ' + hn.voicedRaw + '→消雜音後 ' + hn.voicedKept + '／共 ' + hn.frames + '；音域 ' + (hn.lo == null ? '無' : hn.lo + '–' + hn.hi) };
+      // 同一次哼歌用幾種門檻轉成音符（音高追蹤的門檻、滑音要不要當新音）：真人哼歌的轉譜每種都有些許不同，
+      // 第一種當主要的（畫面顯示、對照聽用），其餘放 notes.alts，比對時每首取最高分。
+      var variants = [], seen = {}, input = { channels: chansOf(buf), sampleRate: buf.sampleRate }, first = null;
+      [[0.3, 0.12], [0.3, 0], [0.25, 0.12], [0.25, 0], [0.35, 0.12], [0.35, 0]].forEach(function (cfg) {
+        var hn = FaMusicLibAudio.humNotes(input, { AudioToMidi: FaAudioToMidi, thr: cfg[0], glideMax: cfg[1] });
+        if (!first) first = hn;
+        var ns = hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), key = ns.map(function (x) { return x.n; }).join(',');
+        if (seen[key]) return; seen[key] = 1; variants.push(ns);
+      });
+      var main = variants[0]; main.alts = variants.slice(1);
+      return { notes: main, method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音，' + variants.length + ' 種轉法取最像的',
+        diag: '音量基準 ' + first.ref.toFixed(3) + '、門檻 ' + first.gate.toFixed(3) + '；有音高的幀 ' + first.voicedRaw + '→消雜音後 ' + first.voicedKept + '／共 ' + first.frames + '；音域 ' + (first.lo == null ? '無' : first.lo + '–' + first.hi) };
     }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
