@@ -62255,6 +62255,15 @@ const holder = {};
           const key = 'file:' + a.id; if (seen.has(key)) continue; seen.add(key);
           items.push({ label: a.name + '（附件）', item: { type: 'attachment', id: a.id, name: a.name } });
         }
+        // 對話裡產生出來、給使用者下載的檔案（「📎 已產生檔案」那種下載連結）：使用者眼中它就是「對話裡的那個檔案」，
+        // 不能因為它不是播放卡片或附件就在指令的清單裡找不到。檔案本身在檔案庫（id 與附件同一套），所以當附件用。
+        const df = msg._downloadFile;
+        if (df && df.id && df.filename && o.attachRe.test(df.filename)) {
+          const key = 'file:' + df.id; if (!seen.has(key)) {
+            seen.add(key);
+            items.push({ label: df.filename + '（產生的檔案）', item: { type: 'attachment', id: df.id, name: df.filename } });
+          }
+        }
       }
     }
     return items.slice(0, MAX_ITEMS);
