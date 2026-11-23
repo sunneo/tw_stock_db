@@ -40,7 +40,14 @@ ROOT="$(git -C "$APP" rev-parse --show-toplevel)"
 WEB_REPO="${WEB_REPO:-$ROOT/../videos-嗨投資}"
 # 給 node 看的路徑（Git Bash 的 /tmp 之類 node 看不到）
 if command -v cygpath >/dev/null 2>&1; then W() { cygpath -m "$1"; }; else W() { printf '%s' "$1"; }; fi
-say() { printf '\n== %s\n' "$*"; }
+# 每個階段標題前面印上「上一階段用了幾秒」，之後才看得出哪一段慢（2026-11-23）
+PUB_T0=$(date +%s); STAGE_T=$PUB_T0; STAGE_NAME=""
+say() {
+  local now; now=$(date +%s)
+  [ -n "$STAGE_NAME" ] && printf '   （%s用了 %s 秒）\n' "$STAGE_NAME" "$((now - STAGE_T))"
+  STAGE_T=$now; STAGE_NAME="$*"
+  printf '\n== %s\n' "$*"
+}
 run() { if [ "$DRY" = 1 ]; then echo "[dry-run] $*"; else "$@"; fi; }
 with_trailer() { if [ -n "$TRAILER" ]; then printf '%s\n\n%s\n' "$1" "$TRAILER"; else printf '%s\n' "$1"; fi; }
 
@@ -151,17 +158,7 @@ if [ "$WEB" = 1 ]; then
       CODE="$(curl -sI -o /dev/null -w '%{http_code}' "https://raw.githubusercontent.com/sunneo/tw_stock_db/$HEAD_SHA/desktop-app/renderer/floating-assistant.js" || true)"
       node scripts/web-lazy-check.js --remote "$HEAD_SHA" || echo "⚠️ 網頁版區塊檔遠端驗證沒過（CDN 可能還沒更新，稍後重跑 node scripts/web-lazy-check.js --remote $HEAD_SHA）" >&2
       echo "釘住的檔案網址回應：HTTP $CODE（Pages 約 1～2 分鐘後換上新版；要確認頁面實際載入的版本，用 fa._createProgressWidget.toString() 之類檢查）"
-      # 冷載入預熱（2026-11-15）：對新釘的 jsDelivr 網址（核心、boot.json、每個分塊）各發一次 curl，讓使用者第一次造訪就是 HIT。
-      # 網址清單由 scripts/web-warm-urls.js 產生；逾時 20 秒，失敗只警告、不擋發布。
-      WARM_FAIL=0; WARM_TOTAL=0
-      WARM_LIST="$(mktemp)"; node scripts/web-warm-urls.js "$HEAD_SHA" > "$WARM_LIST" 2>/dev/null || true   # 不用 process substitution，sh 也能跑
-      while IFS= read -r WARM_URL; do
-        [ -n "$WARM_URL" ] || continue
-        WARM_TOTAL=$((WARM_TOTAL+1))
-        WARM_CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "$WARM_URL" || true)"
-        [ "$WARM_CODE" = 200 ] || { WARM_FAIL=$((WARM_FAIL+1)); echo "⚠️ jsDelivr 預熱失敗（HTTP ${WARM_CODE:-無回應}）：$WARM_URL" >&2; }
-      done < "$WARM_LIST"; rm -f "$WARM_LIST"
-      echo "jsDelivr 預熱：$WARM_TOTAL 個網址，失敗 $WARM_FAIL 個（只是警告，不影響發布）"
+      WARM_PENDING=1   # 預熱放在「完成」之後做（見檔尾 prewarm_cdn），不擋發布
     fi
   fi
 fi
@@ -170,3 +167,18 @@ fi
 node scripts/cleanup-orphans.js --kill || true
 
 if [ "$DRY" = 1 ]; then say "完成（dry-run，什麼都沒推）：patch v$VERSION、desktop-app $HEAD_SHA"; else say "完成：patch v$VERSION、desktop-app $HEAD_SHA"; fi
+
+# 冷載入預熱（2026-11-15 加、2026-11-23 移到「完成」之後）：對新釘的 jsDelivr 網址各發一次 curl，讓使用者第一次造訪網頁版就是 HIT。
+# 發布早在上面「遠端驗證通過」時就生效了，這段只是加速網頁版第一次載入，所以放在完成標記之後；
+# 同時 12 個請求（原本一個接一個要 2～4 分鐘），整段上限 60 秒，超過就放棄，失敗只警告。
+if [ "${WARM_PENDING:-0}" = 1 ]; then
+  WARM_T0=$(date +%s)
+  WARM_LIST="$(mktemp)"; WARM_OUT="$(mktemp)"; node scripts/web-warm-urls.js "$HEAD_SHA" > "$WARM_LIST" 2>/dev/null || true   # 不用 process substitution，sh 也能跑
+  if command -v timeout >/dev/null 2>&1; then WARM_RUN="timeout 60"; else WARM_RUN=""; fi
+  grep -v '^$' "$WARM_LIST" | $WARM_RUN xargs -P 12 -n 1 sh -c 'c=$(curl -s -o /dev/null --max-time 15 -w "%{http_code}" "$0" || true); [ "$c" = 200 ] || echo "FAIL ${c:-無回應} $0"' > "$WARM_OUT" 2>/dev/null || true
+  WARM_TOTAL=$(grep -c . "$WARM_LIST" || true); WARM_FAIL=$(grep -c '^FAIL' "$WARM_OUT" || true)
+  grep '^FAIL' "$WARM_OUT" | head -3 | sed 's/^FAIL \([^ ]*\) /⚠️ jsDelivr 預熱失敗（HTTP \1）：/' >&2 || true
+  rm -f "$WARM_LIST" "$WARM_OUT"
+  echo "jsDelivr 預熱：$WARM_TOTAL 個網址，失敗 $WARM_FAIL 個（只是警告，不影響發布；用了 $(( $(date +%s) - WARM_T0 )) 秒）"
+fi
+echo "PUBLISH_DONE"
