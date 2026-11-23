@@ -103765,11 +103765,17 @@ const FaMusicLibHost = (function () {
     return out;
   }
 
+  // 記住上一次選的位置（加檔案、加資料夾共用）：下次的資料夾瀏覽器從那裡開始，不必每次從工作區往下找。
+  // localStorage 在無痕視窗或被封鎖時會丟錯，所以讀寫都包起來，記不住就回到預設起點。
+  var LAST_DIR_KEY = 'fa.musiclib.lastDir';
+  function lastDir() { try { return (typeof localStorage !== 'undefined' && localStorage.getItem(LAST_DIR_KEY)) || undefined; } catch (_) { return undefined; } }
+  function rememberDir(p) { try { if (p && typeof localStorage !== 'undefined') localStorage.setItem(LAST_DIR_KEY, String(p)); } catch (_) { /* 記不住就算了 */ } }
   // 按「加資料夾」：先選資料夾，再走訪；回傳畫面要的 { label, entries, readHead }，取消回傳 null
   async function pickFolder() {
     if (!hasDesktopFs()) { if (typeof alert === 'function') alert('資料夾加入只能在桌面版使用；網頁版請用「加檔案」。'); return null; }
-    var p = await api().roots.browse();
+    var p = await api().roots.browse(lastDir());
     if (!p) return null;
+    rememberDir(p);
     var entries = await walkFolder(p);
     return {
       label: basename(p),
@@ -103820,8 +103826,9 @@ const FaMusicLibHost = (function () {
   // 回傳 { label, entries, readHead }；取消回傳 null；不是桌面版回傳 undefined（畫面改用瀏覽器選檔）。
   async function pickFiles() {
     if (!hasDesktopFs()) return undefined;
-    var p = await api().roots.browse();
+    var p = await api().roots.browse(lastDir());
     if (!p) return null;
+    rememberDir(p);
     var list;
     try { list = await api().rawfs.readdir(p); } catch (e) { if (typeof alert === 'function') alert('讀不到這個資料夾：' + String((e && e.message) || e)); return null; }
     var files = list.filter(function (e) { return e.isFile && FaMusicLib.isSupportedName(e.name); }).sort(function (x, y) { return x.name.localeCompare(y.name); });
@@ -104955,7 +104962,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, clipMidiSong: clipMidiSong, pickFolder: pickFolder, pickFiles: pickFiles, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  return { methods: methods, getLib: getLib, clipMidiSong: clipMidiSong, pickFolder: pickFolder, pickFiles: pickFiles, lastDir: lastDir, rememberDir: rememberDir, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     youtubeInputNote: function (text) { return FaMusicLibYoutube.inputNote(FaMusicLibYoutube.parseInput(text)); },
     exportBatch: exportBatch, verifyOutput: verifyOutput,
