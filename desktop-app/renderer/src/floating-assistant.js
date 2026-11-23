@@ -103127,6 +103127,8 @@ const holder = {};
     function lyricCell(r) {
       if (r.pending) return '—（遊戲來源，待擷取）';
       var st = r.lyricStatus || 'none';
+      // 歌詞欄是「語音辨識歌詞」的狀態，要有人聲才有意義：MIDI、遊戲音樂與它們擷取出來的檔案沒有人聲，顯示「—」而不是一直「未轉錄」
+      if (st === 'none' && (r.kind === 'mid' || r.derivedFrom || M.isSourceOnly(r))) return '—（無人聲）';
       if (st === 'running' && queue) { var s = queue.state(); return '轉錄中 ' + (s.progress != null ? Math.round(s.progress * 100) + '%' : ''); }
       if (st === 'done') return '完成（' + ((r.lyrics && r.lyrics.segments) || []).length + ' 段）';
       if (st === 'failed') return '失敗：' + (r.lyricError || '未知原因');
