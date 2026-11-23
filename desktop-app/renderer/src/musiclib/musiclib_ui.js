@@ -40,6 +40,7 @@
     + '.fml{background:#faf9ff}.fml-wrap{background-color:rgba(255,255,255,.94);background-image:url("' + BG_NOTE + '"),url("' + BG_CD + '");background-repeat:no-repeat,no-repeat;background-position:left 18px top 52px,right 16px bottom 14px;background-size:150px,240px}'
     + '.fml-bar{background:#f1eeff;border-bottom-color:#ddd6fb}.fml-tbl th{background:#f1eeff}.fml button:hover:not(:disabled){background:#ece7ff;border-color:#c9bdf7}'
     + '.fml.max .fml-hero{min-height:96px}'
+    + '.fwin-host.fwin-pop>.fml{height:100%;min-height:0;display:flex;flex-direction:column;overflow:auto;border-radius:0}.fwin-host.fwin-pop>.fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none}'
     + '.fml-hero>button{position:absolute;top:8px;z-index:3;width:28px;height:28px;padding:0;border:1px solid #ffffff66;border-radius:6px;background:#00000033;color:#fff;cursor:pointer;font-size:14px;line-height:1}.fml-hero>button:hover{background:#00000066}'
     + '.fml-hero>button:nth-last-of-type(1){right:10px}.fml-hero>button:nth-last-of-type(2){right:44px}.fml-hero>button:nth-last-of-type(3){right:78px}';
   var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'

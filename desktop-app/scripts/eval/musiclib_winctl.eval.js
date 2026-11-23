@@ -23,6 +23,10 @@ try {
     const host = p.parentElement, r = rc(host);
     out.info.maxRect = r; out.info.viewport = { w: innerWidth, h: innerHeight };
     check('按最大化後撐滿視窗', r && r.w >= innerWidth - 4 && r.h >= innerHeight - 4, JSON.stringify(r) + ' vs ' + innerWidth + 'x' + innerHeight);
+    const fr = rc(p), wr = rc(p.querySelector('.fml-wrap')), ft = rc(p.querySelector('.fml-foot'));
+    out.info.fillRect = { fml: fr, wrap: wr, foot: ft };
+    check('最大化後音樂庫內容本身也撐滿（不只外框）：面板高度 >= 視窗 - 8', fr && fr.h >= innerHeight - 8, JSON.stringify(fr));
+    check('最大化後清單區吃掉剩下的高度（清單區下緣貼近視窗底，留給底部狀態列約 30 像素）', wr && wr.y + wr.h >= innerHeight - 60 && wr.h > 400, JSON.stringify(wr));
     btns[0].click(); await sleep(300);
   }
 } catch (e) { check('評測本身沒出錯', false, String((e && e.stack) || e)); }
