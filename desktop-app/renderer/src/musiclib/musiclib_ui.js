@@ -201,7 +201,7 @@
     var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
     var mRec = h('button', null, '錄哼歌（8 秒）'), mPick = h('button', null, '選音檔找');
     var mText = h('input'); mText.type = 'text'; mText.placeholder = '歌詞文字（選填，用來加分）'; mText.style.width = '160px';
-    var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = lsGet('fa.musiclib.melodyUseText', '1') === '1';
+    var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = lsGet('fa.musiclib.melodyUseText', '0') === '1';
     var mUseLbl = h('label', null, '用文字加分'); mUseLbl.appendChild(mUseText);
     var mModel = h('input'); mModel.type = 'checkbox'; mModel.checked = lsGet('fa.musiclib.melodyBasicPitch', '0') === '1';
     var mModelLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelLbl.appendChild(mModel);
@@ -621,16 +621,19 @@
       if (!MEL) return;
       if (!melHum) { melStatus('先錄哼歌或選音檔'); return; }
       mFind.disabled = true; mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
-      MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked, blob: melBlob }).then(function (r) {
-        mFind.disabled = false;
+      // 結果顯示（先出旋律比對的結果；有文字加分時，文字轉錄完成後再更新一次）
+      function showFound(r) {
+        mRes.textContent = ''; mMidi.style.display = 'none';
         if (!r.ok) { melStatus(r.reason); return; }
-        var textNote = mUseText.checked ? (r.textUsed ? '；文字加分用「' + r.textUsed.slice(0, 30) + '」' : '；沒有文字可加分') : '';
+        var timing = '，旋律比對 ' + (r.entryCount != null ? r.entryCount : MEL.entries().length) + ' 首用了 ' + (r.matchMs || 0) + ' 毫秒' + (r.transcribeMs != null ? '，文字轉錄 ' + (r.transcribeMs / 1000).toFixed(1) + ' 秒' : '');
+        var textNote = r.partial ? '；文字轉錄中（語音模型第一次要載入，可能要幾分鐘，目前是只看旋律的結果）'
+          : (mUseText.checked ? (r.textUsed ? '；文字加分用「' + r.textUsed.slice(0, 30) + '」' : (r.textError ? '；文字轉錄失敗：' + r.textError : '；沒有文字可加分')) : '');
         if (!r.results.length) {
           var n = MEL.entries().length;
-          melStatus(n ? '找不到相似的歌（' + n + ' 首已建索引' + textNote + '）' : '還沒有旋律索引，請先按「建立旋律索引」');
+          melStatus((n ? '找不到相似的歌（' + n + ' 首已建索引' + textNote + timing + '）' : '還沒有旋律索引，請先按「建立旋律索引」'));
           mMidi.style.display = ''; melFound = melHum; return;
         }
-        melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + '）');
+        melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
           var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
@@ -639,6 +642,10 @@
           line.appendChild(document.createTextNode(' ')); line.appendChild(play);
           mRes.appendChild(line);
         });
+      }
+      melStatus('比對中…');
+      MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked, blob: melBlob, onPartial: showFound }).then(function (r) {
+        mFind.disabled = false; showFound(r);
       }, function (e) { mFind.disabled = false; melStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
     mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };

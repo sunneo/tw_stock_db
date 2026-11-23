@@ -439,13 +439,20 @@ const FaMusicLibHost = (function () {
   async function searchHum(notes, opts) {
     var L = getLib(), entries = melodyEntries(L), textHits = null, text = '';
     opts = opts || {};
-    if (opts.useText) {
-      text = String(opts.textQuery || '').trim();
-      if (!text && opts.blob) text = await transcribeHum(opts.blob);
-      if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
-    }
+    var t0 = Date.now();
+    // 先只用旋律比對（索引已建好，這一步通常不到一秒）並立刻回報；文字轉錄（要載入語音模型，可能要很久）放在後面
+    var base = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: null, textWeight: 0.15 });
+    base.textUsed = ''; base.matchMs = Date.now() - t0; base.entryCount = entries.length; base.partial = !!opts.useText;
+    var manual = opts.useText ? String(opts.textQuery || '').trim() : '';
+    if (!opts.useText || !base.ok) { base.partial = false; return base; }
+    if (!manual && !opts.blob) { base.partial = false; return base; }
+    if (opts.onPartial) { try { opts.onPartial(base); } catch (_) { /* 畫面出錯不影響搜尋 */ } }
+    text = manual;
+    var t1 = Date.now();
+    if (!text) { try { text = await transcribeHum(opts.blob); } catch (e) { base.partial = false; base.textError = String((e && e.message) || e); return base; } }
+    if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
     var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
-    res.textUsed = text;
+    res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
     return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
