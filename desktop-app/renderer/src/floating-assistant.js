@@ -102688,6 +102688,25 @@ const holder = {};
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_core.js')); else root.FaMusicLibUI = factory(root.FaMusicLib || (typeof FaMusicLib !== 'undefined' ? FaMusicLib : undefined));
 })(typeof self !== 'undefined' ? self : this, function (M) {
   'use strict';
+  // ───── 版面（大音符與光碟）─────
+  // 上方是紫色漸層的標題區，右邊一張慢慢轉的光碟、後面有大大的音符；清單區的背景是淡淡的光碟與音符浮水印（不影響閱讀）。
+  // 圖都是內嵌的 SVG／CSS，不載入任何外部檔案；系統設定「減少動態效果」時光碟不轉。
+  function svgUri(svg) { return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg); }
+  var BG_NOTE = svgUri("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><g fill='#7b5cf0' fill-opacity='.09'><ellipse cx='28' cy='92' rx='17' ry='12' transform='rotate(-20 28 92)'/><ellipse cx='88' cy='82' rx='17' ry='12' transform='rotate(-20 88 82)'/><rect x='41' y='24' width='6' height='66'/><rect x='101' y='14' width='6' height='66'/><path d='M41 24 L107 12 L107 32 L41 44 Z'/></g></svg>");
+  var BG_CD = svgUri("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><g fill='none' stroke='#7b5cf0' stroke-opacity='.11'><circle cx='100' cy='100' r='96' stroke-width='3'/><circle cx='100' cy='100' r='78' stroke-width='1.5'/><circle cx='100' cy='100' r='62' stroke-width='1.5'/><circle cx='100' cy='100' r='46' stroke-width='1.5'/></g><circle cx='100' cy='100' r='30' fill='#7b5cf0' fill-opacity='.08'/><circle cx='100' cy='100' r='9' fill='#fff'/><path d='M40 60 A70 70 0 0 1 90 32' fill='none' stroke='#7b5cf0' stroke-opacity='.16' stroke-width='6' stroke-linecap='round'/></svg>");
+  var LOOK = '.fml-hero{position:relative;overflow:hidden;padding:16px 20px;min-height:84px;color:#fff;background:linear-gradient(120deg,#4f3fc7 0%,#7b5cf0 48%,#c860d8 100%)}'
+    + '.fml-hero .ttl{position:relative;z-index:2}.fml-hero h2{margin:0;font:700 24px system-ui,"Microsoft JhengHei",sans-serif;letter-spacing:.06em;text-shadow:0 2px 8px #0003}'
+    + '.fml-hero p{margin:5px 0 0;font-size:12.5px;opacity:.9}'
+    + '.fml-hero .cd,.fml-hero .cd2{position:absolute;border-radius:50%;pointer-events:none;background:conic-gradient(from 20deg,#ffffff66,#8be9ff99,#ffffff33,#ffb3f099,#ffffff66,#ffe29a99,#ffffff33,#9affb999,#ffffff66);box-shadow:inset 0 0 0 2px #ffffff66,0 6px 24px #0003}'
+    + '.fml-hero .cd{right:-34px;top:-62px;width:230px;height:230px;animation:fml-spin 40s linear infinite}.fml-hero .cd2{right:176px;top:34px;width:96px;height:96px;opacity:.7;animation:fml-spin 26s linear infinite reverse}'
+    + '.fml-hero .cd::after,.fml-hero .cd2::after{content:"";position:absolute;inset:39%;border-radius:50%;background:#6b4fe0;box-shadow:0 0 0 5px #ffffff55,inset 0 0 0 3px #ffffff33}'
+    + '.fml-hero .nt{position:absolute;z-index:1;color:#fff;opacity:.17;line-height:1;pointer-events:none;user-select:none;font-family:"Segoe UI Symbol","Noto Sans Symbols2","Apple Symbols",sans-serif}'
+    + '.fml-hero .n1{font-size:132px;left:42%;bottom:-38px;transform:rotate(-8deg)}.fml-hero .n2{font-size:92px;left:63%;top:-24px;transform:rotate(10deg)}.fml-hero .n3{font-size:110px;left:-14px;bottom:-46px;transform:rotate(-14deg)}'
+    + '@keyframes fml-spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.fml-hero .cd,.fml-hero .cd2{animation:none}}'
+    + '@media (max-width:640px){.fml-hero .cd2{display:none}.fml-hero h2{font-size:20px}}'
+    + '.fml{background:#faf9ff}.fml-wrap{background-color:rgba(255,255,255,.94);background-image:url("' + BG_NOTE + '"),url("' + BG_CD + '");background-repeat:no-repeat,no-repeat;background-position:left 18px top 52px,right 16px bottom 14px;background-size:150px,240px}'
+    + '.fml-bar{background:#f1eeff;border-bottom-color:#ddd6fb}.fml-tbl th{background:#f1eeff}.fml button:hover:not(:disabled){background:#ece7ff;border-color:#c9bdf7}'
+    + '.fml.max .fml-hero{min-height:96px}';
   var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'
     + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
     + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
@@ -102709,7 +102728,7 @@ const holder = {};
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
     + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
     + '.fml button.hon{background:#0969da;color:#fff;border-color:#0969da}'
-    + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
+    + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' + LOOK;
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
   var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律索引'], ['yt', 'YouTube'], ['db', '資料']];
@@ -102922,7 +102941,13 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
+    // 標題區：漸層底、轉動的光碟、大大的音符（純裝飾，不接收滑鼠事件）
+    var hero = h('div', 'fml-hero');
+    ['cd', 'cd2'].forEach(function (c) { var d = h('div', c); d.setAttribute('aria-hidden', 'true'); hero.appendChild(d); });
+    [['n1', '♫'], ['n2', '♪'], ['n3', '♬']].forEach(function (n) { var d = h('div', 'nt ' + n[0], n[1]); d.setAttribute('aria-hidden', 'true'); hero.appendChild(d); });
+    var ttl = h('div', 'ttl'); ttl.appendChild(h('h2', null, '🎵 音樂庫')); ttl.appendChild(h('p', null, '用檔名、歌詞，或哼一段旋律，找到你的歌'));
+    hero.appendChild(ttl);
+    root.appendChild(hero); root.appendChild(bar); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
     container.appendChild(root);
 
     // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
