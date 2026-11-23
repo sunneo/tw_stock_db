@@ -1930,8 +1930,16 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 25625,
-   "md5": "0a28db45d2b5ae690858afaaf68f1dd0"
+   "size": 34101,
+   "md5": "cf3c18b81c6c5f661d3317ac6fa5389f"
+  },
+  "mlmd5": {
+   "file": "chunks/mlmd5.js",
+   "names": [
+    "FaMd5"
+   ],
+   "size": 1883,
+   "md5": "ada7319dc8a312ab2c6139da9f6cc0d7"
   },
   "mlmel": {
    "file": "chunks/mlmel.js",
@@ -1946,16 +1954,16 @@
    "names": [
     "FaMusicLibRix"
    ],
-   "size": 4505,
-   "md5": "cfe6d9b7a2771c43f12a3489a23b7264"
+   "size": 5365,
+   "md5": "82fa02513f51b4082ca56ac510210f4d"
   },
   "mlopl2": {
    "file": "chunks/mlopl2.js",
    "names": [
     "FaOpl2"
    ],
-   "size": 3691,
-   "md5": "9033f69598104e132cf5804df9e6102d"
+   "size": 4523,
+   "md5": "e6d6a407d784d72ab584309ffbc5e1e8"
   },
   "mlchip": {
    "file": "chunks/mlchip.js",
@@ -2098,20 +2106,20 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 26552,
-   "md5": "dde026549185d7838a215d3a3b2f2c7e"
+   "size": 36825,
+   "md5": "84a88facff969c4c33a031b0d7b3840f"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 40209,
-   "md5": "fe43cbad57f3d420b962768f09ff624b"
+   "size": 44157,
+   "md5": "8a20e46ddcaabae066d4211cfbfb6f7b"
   }
  },
  "core": {
-  "size": 6924602,
-  "md5": "58fac464fc30bee0602132a98f8171e6"
+  "size": 6924637,
+  "md5": "77037649364a4263be21a910fc76fd79"
  }
 }
