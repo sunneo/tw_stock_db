@@ -83982,7 +83982,10 @@ const holder = {};
     opts = opts || {};
     var newKeys = opts.newKeys || {}, recs = lib.records || [];
     var olds = recs.filter(function (r) { return r.status === 'missing' && !r.pending; });
-    var cands = recs.filter(function (r) { return newKeys[r.key] && r.status === 'ok' && hasFullMd5(r); });
+    // 候選：這一次新掃到的；另外，本機原有、還沒有旋律索引也沒有歌詞的檔案也算（先匯入、後來才算出 md5 的情況：匯入的紀錄帶著索引卻找不到檔案，
+    // 本機同內容的檔案沒有索引，配上後索引就接到本機這個檔案上）。本機已經有索引或歌詞的不當候選，不蓋掉現有資料。擷取產物與待擷取的不算。
+    var lacksData = function (r) { return !r.derivedFrom && !r.pending && !(r.melody && r.melody.status === 'ok') && !r.lyrics; };
+    var cands = recs.filter(function (r) { return (newKeys[r.key] || lacksData(r)) && r.status === 'ok' && hasFullMd5(r); });
     var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], pendingHash: recs.filter(needsHash).length };
     var oldBy = {}, candBy = {};
     olds.forEach(function (r) { if (hasFullMd5(r)) (oldBy[r.md5] = oldBy[r.md5] || []).push(r); else plan.noMd5.push(r); });
@@ -84619,10 +84622,11 @@ const holder = {};
       var rec = recs[i]; curIndex = i + 1; curName = rec.name;
       if (cancelled()) { summary.cancelled++; continue; }
       await wait();
-      if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
+      if (!opts.force && rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
       var stale = isStaleFormat(rec);
+      var prevMelody = opts.force && rec.melody && rec.melody.status === 'ok' ? rec.melody : null;   // 強制重建：新的做不出來就保留原本能用的索引
       emit({ key: rec.key, status: 'running' });
-      var attempt = 0, done = false;
+      var attempt = 0, done = false, lastFailReason = null;
       for (;;) {
         attempt++;
         try {
@@ -84635,7 +84639,8 @@ const holder = {};
           var msg = String((err && err.message) || err);
           if (cancelled()) break;
           if (TRANSIENT_RE.test(msg) && attempt < retries) { emit({ key: rec.key, status: 'retry', attempt: attempt, reason: msg }); await sleep(1000 * attempt); continue; }
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'failed', reason: msg };
+          rec.melody = prevMelody || { sig: sigOf(rec), version: INDEX_VERSION, status: 'failed', reason: msg };
+          if (prevMelody) lastFailReason = msg;
           break;
         }
       }
@@ -84643,7 +84648,7 @@ const holder = {};
       if (stale) summary.rebuilt++;
       if (opts.save) await opts.save(rec);
       if (done) { summary.done++; emit({ key: rec.key, status: 'done', method: rec.melody.method }); }
-      else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: rec.melody.reason }); }
+      else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: lastFailReason || rec.melody.reason }); }
     }
     return summary;
   }
@@ -103051,6 +103056,9 @@ const holder = {};
     var MEL = host.melody || null, melHum = null, melFound = null;
     var idxBox = h('div', 'fml-bar');
     var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
+    var mForceSel = h('button', null, '強制重建勾選的'), mForceDir = h('button', null, '強制重建資料夾…');
+    mForceSel.title = '先在主畫面清單勾選曲目，再按這裡：不管索引是不是最新都重做；做不出來的保留原本的索引';
+    mForceDir.title = '選一個資料夾：底下（含子資料夾）所有可建索引的曲目都重做；做不出來的保留原本的索引';
     var idxStat = h('span', 'fml-st');
     var idxInfo = h('div', 'fml-foot');
     var idxBar = h('progress'); idxBar.max = 1; idxBar.value = 0; idxBar.style.cssText = 'width:100%;max-width:420px;display:none;vertical-align:middle';
@@ -103065,8 +103073,8 @@ const holder = {};
     }
     var mModelIdx = bpCheckbox();
     var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
-    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
-    if (!MEL) { [mIdx, mModelIdx].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
+    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
+    if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
     tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
 
@@ -103503,6 +103511,26 @@ const holder = {};
         idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; idxStatus(M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; renderWork(); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
     };
+    // 強制重建：指定的幾首（勾選的，或某個資料夾底下的）不管索引是不是最新都重做；排進同一個索引佇列
+    function forceBusy(on) { mIdx.disabled = on; mForceSel.disabled = on; mForceDir.disabled = on; mPause.disabled = !on; mIdxCancel.disabled = !on; melRunning = on; if (!on) { idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; } renderWork(); }
+    function runForce(keys, what) {
+      if (!MEL) return;
+      if (MEL.indexState().running) { idxStatus('旋律索引正在建立中，請等它跑完或先取消'); return; }
+      if (!keys.length) { idxStatus('旋律索引：' + what + '沒有可建索引的曲目（遊戲來源檔、已消失的檔案不建索引）'); return; }
+      forceBusy(true); idxStatus('旋律索引：強制重建 ' + keys.length + ' 首（' + what + '）…');
+      MEL.rebuildKeys(keys, idxLine, mModelIdx.checked).then(function (sum) {
+        forceBusy(false); idxStatus('強制重建完成（' + what + '）：' + M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
+      }, function (e) { forceBusy(false); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
+    }
+    mForceSel.onclick = function () {
+      var picked = Object.keys(sel), keys = lib.records.filter(function (r) { return sel[r.key] && M.melodyEligible(r).ok; }).map(function (r) { return r.key; });
+      if (!picked.length) { idxStatus('旋律索引：主畫面清單還沒有勾選任何曲目；先勾選要重做的，再按「強制重建勾選的」'); return; }
+      runForce(keys, '勾選的 ' + picked.length + ' 首中可建索引的');
+    };
+    mForceDir.onclick = function () {
+      if (!MEL || !MEL.pickDirKeys) return;
+      MEL.pickDirKeys().then(function (r) { if (r) runForce(r.keys, '資料夾 ' + r.path); }, function (e) { idxStatus('選資料夾失敗：' + String((e && e.message) || e)); });
+    };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; idxStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; idxStatus('旋律索引：續跑'); } };
     mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); idxStatus('旋律索引：取消中…'); };
 
@@ -103699,6 +103727,7 @@ const holder = {};
         M.applyImport(lib, plan);
         await lib.save();
         msg = '匯入完成：' + lib.records.length + ' 筆紀錄';
+        if (host.md5) startMd5({});   // 匯入的紀錄若是「找不到檔案」，本機檔案的 md5 算完後會自動接上（同內容、一對一才配）
         dbStat.textContent = msg;
       } catch (e) { msg = '匯入寫入失敗：' + errText(e); dbStat.textContent = msg; }
       render();
@@ -104197,6 +104226,7 @@ const FaMusicLibHost = (function () {
       save: async function () { if (++saveCount % 10 === 0) await L.save(); },
       onEvent: onEvent,
       isCancelled: function () { return melodyState.cancelled; },
+      force: !!batch.force,
       waitIfPaused: melodyGate
     });
     if (batch.keys) Object.keys(batch.keys).forEach(function (k) {
@@ -104229,9 +104259,9 @@ const FaMusicLibHost = (function () {
     return melodyRunLoop({ keys: null, onEvent: onEvent, useModel: useModel });
   }
   // 排入一批指定的影片記錄（YouTube 自動索引）：正在跑就併入佇列（回傳的 Promise 在它跑完時 resolve），否則立刻開始
-  function melodyQueueKeys(keyList, onEvent, useModel) {
+  function melodyQueueKeys(keyList, onEvent, useModel, force) {
     var keys = {}; keyList.forEach(function (k) { keys[k] = true; });
-    var batch = { keys: keys, onEvent: onEvent, useModel: !!useModel };
+    var batch = { keys: keys, onEvent: onEvent, useModel: !!useModel, force: !!force };
     if (melodyState.running) return new Promise(function (resolve, reject) { batch.resolve = resolve; batch.reject = reject; melodyPending.push(batch); });
     return melodyRunLoop(batch);
   }
@@ -104305,6 +104335,17 @@ const FaMusicLibHost = (function () {
 
   var MELODY_HOST = {
     buildIndex: buildMelodyIndex,
+    // 強制重建指定的幾首（不管索引是不是最新）：keyList＝曲目 key；做不出來的保留原本的索引。排進同一個索引佇列
+    rebuildKeys: function (keyList, onEvent, useModel) { return melodyQueueKeys(keyList, onEvent, useModel, true); },
+    // 選一個資料夾（資料夾瀏覽器，從上次的位置開始），回傳路徑與在這個資料夾底下（含子資料夾）的曲目 key；取消回傳 null
+    pickDirKeys: async function () {
+      if (!hasDesktopFs()) return null;
+      var p = await api().roots.browse(lastDir()); if (!p) return null; rememberDir(p);
+      var norm = function (x) { return String(x || '').replace(/\\/g, '/').toLowerCase(); }, base = norm(p).replace(/\/+$/, '') + '/';
+      var L = getLib(); await L.ready;
+      var keys = L.records.filter(function (r) { return norm(r.path).indexOf(base) === 0 && FaMusicLib.melodyEligible(r).ok; }).map(function (r) { return r.key; });
+      return { path: p, keys: keys };
+    },
     cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
     pauseIndex: function () { melodyState.paused = true; },
     resumeIndex: function () { melodyResume(); },
@@ -104676,12 +104717,14 @@ const FaMusicLibHost = (function () {
         }
         await L.save();
         var summary = { hashed: md5State.done, total: todo.length, failures: failures, cancelled: md5State.cancelled, text: '' };
-        if (!md5State.cancelled && Object.keys(opts.newKeys || {}).length) {
+        // 沒有新掃到的檔案也要對應：匯入資料庫後才算出 md5，匯入的「找不到檔案」紀錄要接到本機同內容的檔案上
+        var hasMissingWithMd5 = L.records.some(function (r) { return r.status === 'missing' && !r.pending && FaMusicLib.hasFullMd5(r); });
+        if (!md5State.cancelled && (Object.keys(opts.newKeys || {}).length || hasMissingWithMd5)) {
           var plan = FaMusicLib.planRelocation(L, { newKeys: opts.newKeys || {} });
           var applied = FaMusicLib.applyRelocation(L, plan);
           await L.save();
           summary.plan = plan; summary.applied = applied;
-          summary.text = FaMusicLib.describeRelocation(plan, applied);
+          summary.text = (plan.moves.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
           if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
         } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
         else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
