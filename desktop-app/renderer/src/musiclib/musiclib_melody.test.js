@@ -212,7 +212,7 @@ function songOf(list) {
 }
 function linesOf(key, name, song) {
   var L = MM.songLines(song);
-  return { key: key, name: name, lines: [{ label: '合併', contour: MM.contourOf(L.mix) }].concat(L.tracks.map(function (x) { return { label: x.label, contour: x.contour }; })) };
+  return { key: key, name: name, lines: [{ label: '合併', track: null, mode: 'merged', contour: MM.contourOf(L.mix) }].concat(L.tracks.map(function (x) { return { label: x.label, track: x.track, mode: x.kind, contour: x.contour }; })) };
 }
 
 t('重複音合併：同音高、空隔小於 0.05 秒的連續音併成一個；空隔較大或音高不同不併', function () {
@@ -347,6 +347,99 @@ t('每首線數上限：超過 12 條時，音數多的優先、音域離中段�
   assert.equal(dropCh.length, 3, '被擠掉的應該是 3 條：' + keptCh.join(','));
   var minKept = Math.min.apply(null, keptCh.map(cnt)), maxDrop = Math.max.apply(null, dropCh.map(cnt));
   assert.ok(minKept >= maxDrop, '音數多的先留（保留最少 ' + minKept + '，被擠掉最多 ' + maxDrop + '）');
+});
+
+t('播放時重建的線與索引時逐音一致：每條軌線（最高音／最低音／中聲部／單聲部）與合併線，用同一套拆線規則', function () {
+  var r = rng(91), mel = walkMelody(r, 40), notes = [];
+  mel.forEach(function (x) {
+    notes.push({ t: x.t, d: x.d, n: x.n - 10 - Math.floor(r() * 5) });        // 低音
+    notes.push({ t: x.t, d: x.d, n: x.n });                                    // 旋律（中間）
+    notes.push({ t: x.t, d: x.d, n: x.n + 12 + Math.floor(r() * 5) });        // 高音琶音
+  });
+  var song = songOf([{ notes: notes, channel: 0 }, { notes: walkMelody(rng(7), 30), channel: 1 }]);
+  var L = MM.songLines(song);
+  assert.ok(L.tracks.length >= 4, '應該有三聲部線加單聲部線：' + L.tracks.map(function (x) { return x.label; }).join('、'));
+  L.tracks.forEach(function (x) {
+    var rb = MM.lineOf(song, x.track, x.kind);
+    assert.ok(rb, '播放時重建不到：' + x.label);
+    assert.equal(rb.label, x.label, '標籤一致');
+    assert.deepStrictEqual(rb.notes, x.notes, '逐音一致：' + x.label);
+    assert.deepStrictEqual(rb.contour.intervals, x.contour.intervals, '音程一致：' + x.label);
+  });
+  var mg = MM.lineOf(song, null, 'merged');
+  var expect = L.mix.map(function (x) { return [Math.round(x.t * 1000) / 1000, Math.round(x.d * 1000) / 1000, x.n]; });
+  assert.deepStrictEqual(mg.notes, expect, '合併線逐音一致');
+  assert.equal(MM.lineOf(song, 0, 'lo').label, '頻道 0 最低音');
+  assert.equal(MM.lineOf(song, 9, 'hi'), null, '不存在的軌回傳 null');
+});
+
+t('命中資訊：結果帶出命中的軌（索引）、模式與音符索引範圍；命中的是那條軌，不是合併線；重建的那段音符時間對得上命中時間', function () {
+  var mel = walkMelody(rng(61), 40), other = walkMelody(rng(62), 40);
+  var song = songOf([{ notes: other, channel: 0 }, { notes: mel, channel: 3 }]);   // 第 2 軌（索引 1）、頻道 3 是目標
+  var target = linesOf('A', '目標', song);
+  var q = humVariant(rng(63), mel.slice(5, 25), { drop: 1, wrong: false, extra: false });
+  var res = MM.searchMelody(q, [target, linesOf('B', '別首', songOf([{ notes: walkMelody(rng(64), 40), channel: 0 }]))]);
+  assert.equal(res.results[0].key, 'A', '排第一的是目標');
+  var h = res.results[0].hit;
+  assert.equal(h.track, 1, '命中的是第 2 軌（索引 1）：' + JSON.stringify(h));
+  assert.equal(h.mode, 'one', '單聲部軌的模式是 one');
+  assert.equal(h.label, '頻道 3', '標籤');
+  assert.equal(res.results[0].hitLine, h.label, 'hitLine 與 hit.label 一致');
+  assert.ok(h.noteFrom >= 0 && h.noteTo >= h.noteFrom, '音符索引範圍：' + h.noteFrom + '–' + h.noteTo);
+  var rb = MM.lineOf(song, h.track, h.mode);
+  assert.ok(Math.abs(rb.notes[h.noteFrom][0] - res.results[0].startSec) < 0.002, '範圍起點時間對得上命中開始');
+  var last = rb.notes[h.noteTo];
+  assert.ok(Math.abs(last[0] + last[1] - res.results[0].endSec) < 0.002, '範圍終點時間對得上命中結束');
+});
+
+t('命中資訊：三聲部的軌，命中中聲部時模式是 mid；合併線命中時 track 為 null、mode 為 merged', function () {
+  var r = rng(91), mel = walkMelody(r, 40), notes = [];
+  mel.forEach(function (x) {
+    notes.push({ t: x.t, d: x.d, n: x.n - 10 - Math.floor(r() * 5) });
+    notes.push({ t: x.t, d: x.d, n: x.n });
+    notes.push({ t: x.t, d: x.d, n: x.n + 12 + Math.floor(r() * 5) });
+  });
+  var target = linesOf('A', '目標', songOf([{ notes: notes, channel: 0 }]));
+  var other = linesOf('B', '別首', songOf([{ notes: walkMelody(rng(93), 40), channel: 0 }]));
+  var q = humVariant(rng(92), mel.slice(6, 26), { drop: 1 });
+  var res = MM.searchMelody(q, [target, other]);
+  assert.equal(res.results[0].hit.mode, 'mid', '命中中聲部：' + JSON.stringify(res.results[0].hit));
+  assert.equal(res.results[0].hit.track, 0);
+  var mergedOnly = MM.searchMelody(q, [{ key: 'M', name: 'M', lines: [{ label: '合併（所有軌）', track: null, mode: 'merged', contour: MM.contourOf(MM.songLines(songOf([{ notes: notes, channel: 0 }])).mix) }] }], { minScore: 0 });
+  assert.equal(mergedOnly.results[0].hit.track, null, '合併線：track 為 null');
+  assert.equal(mergedOnly.results[0].hit.mode, 'merged');
+});
+
+t('對照聽的音符：命中段整段以八度平移，中位音高落在哼歌 ±6 半音內；音程與音長不變；哼歌與命中段間隔 0.8 秒；超出音域的音也跟著平移不截斷', function () {
+  var seg = walkMelody(rng(71), 16);
+  var hum = seg.map(function (x) { return { t: x.t * 1.2, d: x.d * 1.2, n: x.n + 5 }; });   // 哼歌：同一段，唱高 5 半音、慢 1.2 倍
+  [19, -25, 0, 30].forEach(function (off) {
+    var hit = seg.map(function (x) { return { t: 10 + x.t, d: x.d, n: x.n + off }; });   // 命中段在原曲的 10 秒起，音域偏移 off
+    var c = MM.compareNotes(hum, hit);
+    assert.equal(c.shift % 12, 0, '平移是八度（12 的倍數）：' + c.shift);
+    assert.ok(Math.abs(c.hitMedian - c.humMedian) <= 6, 'off ' + off + '：命中段中位 ' + c.hitMedian + '，哼歌中位 ' + c.humMedian);
+    var humEnd = Math.max.apply(null, hum.map(function (x) { return x.t + x.d; }));
+    assert.ok(Math.abs(c.hit[0].t - (humEnd + 0.8)) < 1e-9, 'off ' + off + '：間隔 0.8 秒');
+    assert.equal(c.hit.length, hit.length, '音數不變（不截斷）');
+    c.hit.forEach(function (x, k) {
+      assert.equal(x.n - hit[k].n, c.shift, '整段同一個平移量');
+      assert.ok(Math.abs(x.d - hit[k].d) < 1e-12, '音長不變');
+      assert.ok(Math.abs((x.t - c.hit[0].t) - (hit[k].t - hit[0].t)) < 1e-9, '段內時間不變');
+    });
+  });
+});
+
+t('對照聽：哼歌跟命中段的音程，容許哼歌誤差（錯音、漏音、拉伸），大部分音程仍相同', function () {
+  var seg = walkMelody(rng(81), 24);
+  var hum = humVariant(rng(82), seg, { drop: 0, extra: false, noJitter: true });
+  var hit = seg.map(function (x) { return { t: 20 + x.t, d: x.d, n: x.n + 14 }; });
+  var c = MM.compareNotes(hum, hit);
+  var iv = function (ns) { var o = []; for (var i = 0; i + 1 < ns.length; i++) o.push(ns[i + 1].n - ns[i].n); return o; };
+  var a = iv(c.hum), b = iv(c.hit.map(function (x) { return { n: x.n - c.shift }; }));   // 把平移還回去，只比音程
+  var ok = 0; for (var k = 0; k < Math.min(a.length, b.length); k++) if (Math.abs(a[k] - b[k]) <= 2) ok++;
+  assert.ok(ok / Math.min(a.length, b.length) >= 0.75, '音程相同或只差 ≤2 半音的比例：' + ok + '/' + Math.min(a.length, b.length));
+  // 哼歌的音數與段內的音程序列都不因平移而改變
+  assert.equal(c.hum.length, hum.length, '哼歌音數不變');
 });
 
 // ───── 執行 ─────

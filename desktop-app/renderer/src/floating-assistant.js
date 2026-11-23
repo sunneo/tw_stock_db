@@ -84393,8 +84393,12 @@ const holder = {};
   // 每個非鼓軌：單聲部一條；多聲部再加最高音、最低音、中聲部（各自合併重複音後至少 MIN_TRACK_NOTES 個音）。
   // 音程序列近乎相同（相似度 > SIMILAR_TRACK）只留一條；每首線數（含合併線）最多 MAX_LINES 條。
   // 超過上限時的優先順序：音數多 → 音域離中段近 → 軌號小、kind 固定順序；再依序略過與已留下的線重複的。
-  function songLines(song) {
-    var mix = melodyFromSong(song), cand = [];
+  function labelOf(channel, track, mode) {
+    return (channel != null ? '頻道 ' + channel : '軌 ' + track) + KIND_LABEL[mode];
+  }
+  // 每首候選線（還沒去重、沒設上限）。索引（songLines）與播放時重建（lineOf）共用這一套規則，兩邊才會逐音一致
+  function candidatesOf(song) {
+    var cand = [];
     ((song && song.tracks) || []).forEach(function (tr, i) {
       if (tr.drum) return;
       var ns = (tr.notes || []).map(function (n) {
@@ -84411,6 +84415,16 @@ const holder = {};
         cand.push({ track: i, channel: chName, name: name, kind: vr.kind, mel: mel, reg: reg, contour: contourOf(mel) });
       });
     });
+    return cand;
+  }
+  // 音符 → [起點秒, 長度秒, 音高]（秒取到毫秒，與索引存的格式相同）
+  function tuplesOf(mel) { return mel.map(function (x) { return [round3(x.t), round3(x.d), x.n]; }); }
+  // song → { mix: 合併旋律（同 melodyFromSong）, tracks: [{ track, channel, name, kind, label, notes:[[t,d,n]], contour }] }
+  // 每個非鼓軌：單聲部一條；多聲部再加最高音、最低音、中聲部（各自合併重複音後至少 MIN_TRACK_NOTES 個音）。
+  // 音程序列近乎相同（相似度 > SIMILAR_TRACK）只留一條；每首線數（含合併線）最多 MAX_LINES 條。
+  // 超過上限時的優先順序：音數多 → 音域離中段近 → 軌號小、kind 固定順序；再依序略過與已留下的線重複的。
+  function songLines(song) {
+    var mix = melodyFromSong(song), cand = candidatesOf(song);
     cand.sort(function (x, y) {
       return (y.mel.length - x.mel.length) || (Math.abs(x.reg - REG_MID) - Math.abs(y.reg - REG_MID)) ||
         (x.track - y.track) || (KIND_ORDER[x.kind] - KIND_ORDER[y.kind]);
@@ -84424,11 +84438,21 @@ const holder = {};
     return {
       mix: mix,
       tracks: kept.map(function (c) {
-        var label = (c.channel != null ? '頻道 ' + c.channel : '軌 ' + c.track) + KIND_LABEL[c.kind];
-        return { track: c.track, channel: c.channel, name: c.name, kind: c.kind, label: label,
-          notes: c.mel.map(function (x) { return [round3(x.t), round3(x.d), x.n]; }), contour: c.contour };
+        return { track: c.track, channel: c.channel, name: c.name, kind: c.kind, label: labelOf(c.channel, c.track, c.kind),
+          notes: tuplesOf(c.mel), contour: c.contour };
       })
     };
+  }
+  // 播放時重建「命中的那條線」：從同一份解析好的曲子取出（track＝軌索引、mode＝one／hi／lo／mid；合併線 track 傳 null 或 mode 'merged'）。
+  // 回傳 { label, track, mode, notes: [[t,d,n]]（秒）, contour }；找不到（例如那軌太短）回傳 null
+  function lineOf(song, track, mode) {
+    if (track == null || mode === 'merged') {
+      var mix = melodyFromSong(song);
+      return { label: '合併（所有軌）', track: null, mode: 'merged', notes: tuplesOf(mix), contour: contourOf(mix) };
+    }
+    var c = candidatesOf(song).filter(function (x) { return x.track === track && x.kind === mode; })[0];
+    if (!c) return null;
+    return { label: labelOf(c.channel, c.track, c.kind), track: c.track, mode: c.kind, notes: tuplesOf(c.mel), contour: c.contour };
   }
 
   // ───── 2. 特徵 ─────
@@ -84536,7 +84560,7 @@ const holder = {};
       lines.forEach(function (ln) {
         var c = ln.contour; if (!c || c.n < 2) return;
         var s = scoreLine(qc, qItems, c, w, po, ro);
-        if (!best || s.raw > best.raw) { best = s; bestLine = { label: ln.label || '', c: c }; }
+        if (!best || s.raw > best.raw) { best = s; bestLine = { label: ln.label || '', track: ln.track == null ? null : ln.track, mode: ln.mode || 'merged', c: c }; }
       });
       if (!best) return;
       var text = opts.textHits && (opts.textHits instanceof Set ? opts.textHits.has(e.key) : !!opts.textHits[e.key]) ? textWeight : 0;
@@ -84546,7 +84570,8 @@ const holder = {};
       results.push({
         key: e.key, name: e.name, score: Math.round(score * 1000) / 1000, pitchScore: Math.round(best.pitch * 1000) / 1000,
         rhythmScore: Math.round(best.rhythm * 1000) / 1000, textBonus: text, hitLine: bestLine.label,
-        startSec: c2.times[si], endSec: c2.times[ei] + c2.durs[ei]
+        startSec: c2.times[si], endSec: c2.times[ei] + c2.durs[ei],
+        hit: { track: bestLine.track, mode: bestLine.mode, label: bestLine.label, noteFrom: si, noteTo: ei }
       });
     });
     results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
@@ -84601,8 +84626,36 @@ const holder = {};
     return summary;
   }
 
+  // ───── 6. 對照聽 ─────
+  // 哼歌的音符與命中線的音符（都是秒＋音高）→ 兩段：先哼歌，停 COMPARE_GAP 秒，再命中的那段。
+  // 命中段整段一起以八度（12 的倍數）平移，使中位音高落在哼歌中位音高 ±COMPARE_RANGE 半音內；音程、音長與段內時間都不變。
+  var COMPARE_GAP = 0.8, COMPARE_RANGE = 6;
+  function median(a) {
+    var s = a.slice().sort(function (x, y) { return x - y; }), m = s.length;
+    if (!m) return NaN;
+    return m % 2 ? s[(m - 1) / 2] : (s[m / 2 - 1] + s[m / 2]) / 2;
+  }
+  // humNotes、hitNotes：[{t,d,n}]（秒）。回傳 { hum, hit（已平移、排在哼歌之後 COMPARE_GAP 秒）, shift（平移的半音數）, humMedian, hitMedian, hitStart }
+  function compareNotes(humNotes, hitNotes) {
+    var ok = function (x) { return !!x && isFinite(x.t) && isFinite(x.n) && (x.d || 0) > 0; };
+    var copy = function (x) { return { t: +x.t, d: +x.d, n: +x.n }; };
+    var byT = function (a, b) { return a.t - b.t || a.n - b.n; };
+    var hum = (humNotes || []).filter(ok).map(copy).sort(byT), hit = (hitNotes || []).filter(ok).map(copy).sort(byT);
+    if (!hum.length || !hit.length) throw new Error('沒有可對照的音符');
+    var hm = median(hum.map(function (x) { return x.n; })), hmed = median(hit.map(function (x) { return x.n; }));
+    var shift = 12 * Math.round((hm - hmed) / 12);
+    var humEnd = Math.max.apply(null, hum.map(function (x) { return x.t + x.d; }));
+    var start = humEnd + COMPARE_GAP, base = hit[0].t;
+    return {
+      hum: hum,
+      hit: hit.map(function (x) { return { t: start + (x.t - base), d: x.d, n: x.n + shift }; }),
+      shift: shift, humMedian: hm, hitMedian: hmed + shift, hitStart: start
+    };
+  }
+
   return {
-    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, contourOf: contourOf, onsetRatios: onsetRatios,
+    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, lineOf: lineOf, compareNotes: compareNotes, median: median,
+    COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
     MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, INDEX_VERSION: INDEX_VERSION
@@ -103374,8 +103427,9 @@ const holder = {};
         hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
-          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
-          var play = h('button', null, '試聽命中段');
+          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
+            (x.hit && x.hit.track != null ? '；這首的命中來自' + x.hit.label + ' 的某條旋律線，不是整首音樂' : '；命中的是所有軌合併成的一條旋律線'));
+          var play = h('button', null, '原曲這一段');
           play.onclick = function () {
             // MIDI 命中段回傳播放卡片（插在這一列下面，再按一次收起）；音訊檔直接播
             if (line._clip) { if (line._clip.parentNode) line._clip.parentNode.removeChild(line._clip); line._clip = null; return; }
@@ -103383,7 +103437,16 @@ const holder = {};
               if (res && res.node) { line._clip = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); }
             }).catch(function (e) { hStatus('試聽失敗：' + String((e && e.message) || e)); });
           };
+          // 對照聽：臨時的單軌 MIDI（先哼歌、停 0.8 秒、再播命中的那條線，已移到你的音域）；卡片插在這一列下面，再按一次收起
+          var cmpBtn = h('button', null, '對照聽');
+          cmpBtn.onclick = function () {
+            if (line._cmp) { if (line._cmp.parentNode) line._cmp.parentNode.removeChild(line._cmp); line._cmp = null; return; }
+            MEL.compareHitAsMidi(paths[x.key], x.hit, melHum).then(function (res) {
+              if (res && res.node) { line._cmp = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); hStatus('已載入對照聽：先哼歌，停 0.8 秒，再播命中的那條線（已移到你的音域）；再按一次收起'); }
+            }).catch(function (e) { hStatus('對照聽失敗：' + String((e && e.message) || e)); });
+          };
           line.appendChild(document.createTextNode(' ')); line.appendChild(play);
+          line.appendChild(document.createTextNode(' ')); line.appendChild(cmpBtn);
           mRes.appendChild(line);
         });
       }
@@ -104033,7 +104096,8 @@ const FaMusicLibHost = (function () {
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
       // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
       var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
-      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), contour: t.contour }); });
+      lines[0].track = null; lines[0].mode = 'merged';
+      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
       return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
     });
   }
@@ -104077,6 +104141,31 @@ const FaMusicLibHost = (function () {
     return { node: node };
   }
 
+  // 對照聽：命中的那條線（索引記的軌與模式，播放時從原檔重建同一條）＋哼歌，做成一首臨時的單軌 MIDI：
+  // 先哼歌、停 0.8 秒、再命中段（整段以八度移到哼歌音域附近）；同一個音色、速度照實。回傳 { node }，畫面插在結果列下面
+  async function compareHitAsMidi(path, hit, humNotes) {
+    var a = api(), fa = window.fa;
+    if (!fa || !fa._midiHost || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
+    if (!hit) throw new Error('這一筆沒有命中資訊（索引是舊格式，請重建索引）');
+    var r = await a.rawfs.readFile(absPath(path), 'base64');
+    if (!r || r.base64 == null) throw new Error('讀不到這個檔案');
+    var bytes = b64ToBytes(r.base64);
+    if (!(bytes.length > 4 && bytes[0] === 0x4D && bytes[1] === 0x54 && bytes[2] === 0x68 && bytes[3] === 0x64)) throw new Error('對照聽目前只支援 MIDI 檔（音訊檔的索引只存輪廓，沒有可以重建的音符）');
+    var line = FaMusicLibMelody.lineOf(FaMidi.parse(bytes), hit.track, hit.mode);
+    if (!line) throw new Error('索引的那條線在這個檔案裡找不到（檔案可能已改，請重建索引）');
+    var seg = line.notes.slice(hit.noteFrom, hit.noteTo + 1).map(function (x) { return { t: x[0], d: x[1], n: x[2] }; });
+    var cmp = FaMusicLibMelody.compareNotes(humNotes, seg);
+    var s = FaMidi.addTrack(FaMidi.emptySong(), '你哼的 → 命中線', 0, false);
+    s.title = '對照聽';
+    s.tracks[0].notes = cmp.hum.concat(cmp.hit).map(function (x) {
+      var t0 = FaMidi.secToTicks(s, x.t), t1 = FaMidi.secToTicks(s, x.t + x.d);
+      return { t: t0, d: Math.max(1, t1 - t0), n: Math.round(x.n), v: 90 };
+    }).sort(function (x, y) { return x.t - y.t || x.n - y.n; });
+    var title = '你哼的 → 命中的旋律線（' + line.label + '，已移到你的音域）';
+    var node = await FaMidiUI.mount({ song: FaMidi.validate(s), title: title, host: fa._midiHost(), M: FaMidi });
+    return { node: node, shift: cmp.shift, humMedian: cmp.humMedian, hitMedian: cmp.hitMedian };
+  }
+
   var MELODY_HOST = {
     buildIndex: buildMelodyIndex,
     cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
@@ -104087,6 +104176,7 @@ const FaMusicLibHost = (function () {
     notesFromHum: notesFromHum,
     search: searchHum,
     humAsMidi: humAsMidi,
+    compareHitAsMidi: compareHitAsMidi,
     playClip: playClip,
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); },
