@@ -44,10 +44,20 @@
       'body.fa-gui-mode #ai-chat-body .fa-msg-wrap.fa-gui-focus{flex:1 1 auto;min-height:100%;box-sizing:border-box;}' +
       'body.fa-gui-mode #app{position:relative;display:flex !important;flex-direction:column;}' +
       '#fa-gui-input-toggle{background:#21262d;color:#cbd5e1;border:1px solid #30363d;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;}' +
-      'body.fa-gui-mode #ai-chat-body .fa-msg-wrap.fa-gui-focus{max-width:none !important;margin:0 !important;}';
+      'body.fa-gui-mode #ai-chat-body .fa-msg-wrap.fa-gui-focus{max-width:none !important;margin:0 !important;position:relative;}' +
+      /* GUI 本身（視窗外殼 fwin-host）一律撐滿這一則訊息、蓋掉上面的 AI 說明文字。網站同源的 localStorage 可能記著「彈出成小視窗」，
+         那會讓它變成固定位置的小窗、原位留一個虛線佔位框；全螢幕頁不吃那個狀態，一律滿版，佔位框藏起來。 */
+      'body.fa-gui-mode .fa-gui-focus .fwin-host.fwin-host{position:fixed !important;left:0 !important;right:0 !important;bottom:0 !important;top:var(--fa-gui-top,40px) !important;width:auto !important;height:auto !important;max-width:none !important;max-height:none !important;margin:0 !important;border-radius:0 !important;box-shadow:none !important;transform:none !important;z-index:5 !important;overflow:auto;}' +
+      'body.fa-gui-mode .fa-gui-focus .fwin-ph{display:none !important;}' +
+      /* 音樂庫：整個畫面直向排，清單區吃掉剩下的高度 */
+      'body.fa-gui-mode .fa-gui-focus .fml{min-height:100%;display:flex;flex-direction:column;border-radius:0;border:none;}' +
+      'body.fa-gui-mode .fa-gui-focus .fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none;}';
     var st = document.createElement('style');
     st.textContent = css;
     document.head.appendChild(st);
+    // GUI 用 fixed 定位撐滿「頂列以下」的整個視窗：頂列高度量出來放進 CSS 變數（字型、換行會讓它不是固定值）
+    function setTop() { var b = document.getElementById('fa-gui-top'); if (b) document.documentElement.style.setProperty('--fa-gui-top', b.offsetHeight + 'px'); }
+    setTop(); window.addEventListener('resize', setTop); setTimeout(setTop, 300); setTimeout(setTop, 2000);
   })();
 
   // 頂列「⌨ 輸入框」切換：收起時 GUI 滿版，叫出來時底部出現輸入框
