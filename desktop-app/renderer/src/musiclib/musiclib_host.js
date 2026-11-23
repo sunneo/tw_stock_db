@@ -367,9 +367,18 @@ const FaMusicLibHost = (function () {
     var buf = await window.fa._decodeAudioBuffer(blob);
     if (!useModel && typeof FaAudioToMidi !== 'undefined') {
       // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
-      var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
-      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音',
-        diag: '音量基準 ' + hn.ref.toFixed(3) + '、門檻 ' + hn.gate.toFixed(3) + '；有音高的幀 ' + hn.voicedRaw + '→消雜音後 ' + hn.voicedKept + '／共 ' + hn.frames + '；音域 ' + (hn.lo == null ? '無' : hn.lo + '–' + hn.hi) };
+      // 同一次哼歌用幾種門檻轉成音符（音高追蹤的門檻、滑音要不要當新音）：真人哼歌的轉譜每種都有些許不同，
+      // 第一種當主要的（畫面顯示、對照聽用），其餘放 notes.alts，比對時每首取最高分。
+      var variants = [], seen = {}, input = { channels: chansOf(buf), sampleRate: buf.sampleRate }, first = null;
+      [[0.3, 0.12], [0.3, 0], [0.25, 0.12], [0.25, 0], [0.35, 0.12], [0.35, 0]].forEach(function (cfg) {
+        var hn = FaMusicLibAudio.humNotes(input, { AudioToMidi: FaAudioToMidi, thr: cfg[0], glideMax: cfg[1] });
+        if (!first) first = hn;
+        var ns = hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), key = ns.map(function (x) { return x.n; }).join(',');
+        if (seen[key]) return; seen[key] = 1; variants.push(ns);
+      });
+      var main = variants[0]; main.alts = variants.slice(1);
+      return { notes: main, method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音，' + variants.length + ' 種轉法取最像的',
+        diag: '音量基準 ' + first.ref.toFixed(3) + '、門檻 ' + first.gate.toFixed(3) + '；有音高的幀 ' + first.voicedRaw + '→消雜音後 ' + first.voicedKept + '／共 ' + first.frames + '；音域 ' + (first.lo == null ? '無' : first.lo + '–' + first.hi) };
     }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };

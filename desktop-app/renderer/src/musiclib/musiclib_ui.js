@@ -707,7 +707,7 @@
         hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
-          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
+          var line = h('div', null, '[' + x.score.toFixed(2) + (x.score < FaMusicLibMelody.CONFIDENT_SCORE ? ' 可能' : '') + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
             (x.hit && x.hit.track != null ? '；這首的命中來自' + x.hit.label + ' 的某條旋律線，不是整首音樂' : '；命中的是所有軌合併成的一條旋律線'));
           var play = h('button', null, '原曲這一段');
           play.onclick = function () {

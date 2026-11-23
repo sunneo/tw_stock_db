@@ -70,7 +70,8 @@ t('不相關旋律不命中（分數低於門檻，或遠低於目標）', funct
   assert.ok(top.pitchScore - worstOther > 0.15, '目標比最像的無關旋律高出：' + top.pitchScore + ' vs ' + worstOther);
   // 門檻：無關旋律全部低於預設門檻（不會被當成命中）
   var strict = MM.searchMelody(variant(makeMelody(777, 20).slice(0, 20), {}), entriesFrom(others));
-  assert.equal(strict.results.length, 0, '完全無關的哼歌不應出現結果');
+  // 真人哼歌的分數偏低（真實 RIX 曲庫上目標約 0.2～0.4），所以預設門檻放低、一律列出前幾名；無關旋律要低於「有把握」的分數
+  assert.ok(strict.results.every(function (r) { return r.score < MM.CONFIDENT_SCORE; }), '無關的哼歌不應達到有把握的分數：' + JSON.stringify(strict.results.map(function (r) { return r.score; })));
 });
 
 t('排序：分數高的在前；門檻與太短的查詢', function () {
@@ -475,6 +476,18 @@ t('對照聽：舊版索引（沒有 semis）不能對照，回傳「請重建�
 
 t('索引格式版本升為 3（舊版 2 的索引下次建立會自動重建）', function () {
   assert.equal(MM.INDEX_VERSION, 3);
+});
+
+
+t('多種轉法（query.alts）：每首取所有版本中最高的分數；主要版本很差、其中一個替代版本是對的，仍命中', function () {
+  var target = makeMelody(91, 40), others = [];
+  for (var i = 0; i < 6; i++) others.push({ key: 'O' + i, name: 'o' + i, notes: makeMelody(200 + i, 40) });
+  var good = variant(target.slice(0, 14), {}), bad = variant(makeMelody(555, 14), {});
+  bad.alts = [good];
+  var res = MM.searchMelody(bad, entriesFrom([{ key: 'A', name: '目標', notes: target }].concat(others)), { limit: 10 });
+  assert.equal(res.results[0].key, 'A', '替代版本命中目標：' + JSON.stringify(res.results.map(function (r) { return [r.key, r.score]; })));
+  var plain = MM.searchMelody(bad, entriesFrom([{ key: 'A', name: '目標', notes: target }].concat(others)), { limit: 10 });
+  assert.ok(plain.results[0].key === 'A');
 });
 
 // ───── 執行 ─────

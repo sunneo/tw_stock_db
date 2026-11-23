@@ -23,11 +23,12 @@
   var INDEX_VERSION = 3;       // 索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
   var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
-  var INT_CAP = 2;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
+  var INT_CAP = 5;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
   var RATIO_CAP = 1;           // 節奏比例差距（log2）超過 1 就當完全不同（= 兩倍）
-  var GAP_QUERY = 1.0;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
-  var SKIP_TARGET = 0.3;       // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對（0.15→0.3 校準：對照隨機曲子的分數中位數 0.45→0.35）
-  var DEFAULT_MIN_SCORE = 0.4; // 校準見單元測試「合成資料校準」：0.4 時目標召回約 84%、隨機對照約 17% 的查詢會誤中一首（0.35 時誤中過半）
+  var GAP_QUERY = 0.6;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
+  var SKIP_TARGET = 0.45;       // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對（0.15→0.3 校準：對照隨機曲子的分數中位數 0.45→0.35）
+  var DEFAULT_MIN_SCORE = 0.15;  // 真人哼歌分數偏低（實測真實 RIX 曲庫：目標約 0.2～0.4），所以預設只濾掉完全不像的、列出前幾名讓人聽
+  var CONFIDENT_SCORE = 0.5;   // 達到這個分數才算「有把握」；畫面低於它的標成「可能」 // 校準見單元測試「合成資料校準」：0.4 時目標召回約 84%、隨機對照約 17% 的查詢會誤中一首（0.35 時誤中過半）
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
   function round3(x) { return Math.round(x * 1000) / 1000; }
@@ -276,7 +277,7 @@
   // query：音符（秒）；entries：[{ key, name, lines?: [{ label, contour }], contour? }]。沒有 lines 時，contour 當成唯一一條線。
   // 每首取所有線中最高分的那條，回報 hitLine（線的名稱，例如「頻道 1」）與命中的秒數範圍
   // opts: { minScore=0.35, limit=10, textHits（Set 或物件，key 命中就加分）, textWeight=0.1, weights={pitch:0.8, rhythm:0.2} }
-  function searchMelody(query, entries, opts) {
+  function searchOne(query, entries, opts) {
     opts = opts || {};
     var mel = dropOutliers(melodyNotes(query));
     if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
@@ -305,6 +306,25 @@
     });
     results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
     return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length };
+  }
+  // 哼歌的音符轉出來每次略有不同（音高追蹤的門檻、要不要把滑音當新音）。query.alts 放其他版本的音符：
+  // 每首取所有版本中最高的分數（同一次哼歌的不同轉法，不是不同的查詢），再合併排序。
+  function searchMelody(query, entries, opts) {
+    opts = opts || {};
+    var alts = (query && query.alts) || [];
+    var first = searchOne(query, entries, Object.assign({}, opts, { limit: 100000 }));
+    if (!alts.length) { first.results = first.results.slice(0, opts.limit || 10); return first; }
+    var bestBy = {}, ok = first.ok, qn = first.queryNotes;
+    first.results.forEach(function (r) { bestBy[r.key] = r; });
+    alts.forEach(function (alt) {
+      var o = searchOne(alt, entries, Object.assign({}, opts, { limit: 100000 }));
+      if (!o.ok) return; ok = true; if (qn == null) qn = o.queryNotes;
+      o.results.forEach(function (r) { if (!bestBy[r.key] || r.score > bestBy[r.key].score) bestBy[r.key] = r; });
+    });
+    var all = Object.keys(bestBy).map(function (k) { return bestBy[k]; });
+    all.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
+    if (!ok) return first;
+    return { ok: true, results: all.slice(0, opts.limit || 10), queryNotes: qn };
   }
 
   // ───── 5. 索引（逐首，可暫停續跑、取消；已建、沒變、版本相同就跳過）─────
@@ -397,7 +417,7 @@
     var shift = octaveShift(median(hum.map(function (x) { return x.n; })), median(seg0.map(function (x) { return x.n; })));
     var base = c.base + shift;
     var seg = restoreNotes(c, base).slice(hit.noteFrom, hit.noteTo + 1).map(function (x) { return { t: x.t, d: x.d, n: x.n }; });
-    return { cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
+    return { CONFIDENT_SCORE: CONFIDENT_SCORE, cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
   }
 
   return {
@@ -405,6 +425,6 @@
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
-    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, INDEX_VERSION: INDEX_VERSION
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION
   };
 }));

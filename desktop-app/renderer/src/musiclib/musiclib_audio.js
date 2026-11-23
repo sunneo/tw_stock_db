@@ -64,7 +64,7 @@
     var mono = monoOf(input.channels), sr = input.sampleRate, step = Math.max(1, Math.round(sr / 11025)), n = Math.floor(mono.length / step), w = new Float32Array(n);
     for (var i = 0; i < n; i++) { var a = 0; for (var k = 0; k < step; k++) a += mono[i * step + k]; w[i] = a / step; }
     var wsr = sr / step;
-    var tr = AM.pitchTrack(w, wsr, { fmin: 70, fmax: 900, thr: 0.12 });
+    var tr = AM.pitchTrack(w, wsr, { fmin: 70, fmax: 900, thr: opts.thr || 0.2 });
     var sorted = Array.prototype.slice.call(tr.rms).filter(function (x) { return x > 0; }).sort(function (x, y) { return x - y; });
     var ref = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
     var gate = Math.max(0.01, ref * (opts.gateRatio || 0.14)), decay = opts.decayRatio || 0.3;
@@ -75,7 +75,7 @@
       if (tr.rms[f] > runPeak) runPeak = tr.rms[f];
       if (tr.rms[f] < runPeak * decay) tr.voiced[f] = 0;   // 衰減尾：不是新音；尾巴後面冒出的小聲音也一併濾掉
     }
-    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.08 });
+    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.05 });
     if (notes.length) {
       var vs = notes.map(function (x) { return x.v; }).sort(function (x, y) { return x - y; }), med = vs[vs.length >> 1];
       notes = notes.filter(function (x) { return x.v >= med * 0.5; });
@@ -92,6 +92,17 @@
         var pv = notes[i - 1], nx = notes[i + 1];
         var blip = x.d < 0.15 && (!pv || Math.abs(x.n - pv.n) >= 3) && (!nx || Math.abs(x.n - nx.n) >= 3);
         if (blip) dropped.blip++; return !blip;
+      });
+    }
+    // 滑音：兩個音中間很短（< glideMax 秒）、音高介於前後音之間（含 1 半音內）的過渡音，是從一個音滑到下一個音的痕跡，不是新音
+    var gmax = opts.glideMax == null ? 0.12 : opts.glideMax; dropped.glide = 0;
+    if (gmax > 0) {
+      notes = notes.filter(function (x, i) {
+        var pv = notes[i - 1], nx = notes[i + 1];
+        if (!pv || !nx || x.d >= gmax) return true;
+        var lo = Math.min(pv.n, nx.n) - 1, hi = Math.max(pv.n, nx.n) + 1;
+        var g = x.n >= lo && x.n <= hi && Math.abs(pv.n - nx.n) >= 1;
+        if (g) dropped.glide++; return !g;
       });
     }
     var tot = orig.length, vOrig = 0, vKept = 0; for (var q = 0; q < tot; q++) { if (orig[q]) vOrig++; if (tr.voiced[q]) vKept++; }
