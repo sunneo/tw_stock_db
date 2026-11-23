@@ -691,7 +691,16 @@
         mFind.disabled = false; showFound(r);
       }, function (e) { mFind.disabled = false; hStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
-    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); hStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { hStatus('演奏失敗：' + String((e && e.message) || e)); } };
+    // 把哼歌旋律用 MIDI 播放器演奏：播放卡片直接插在這個按鈕下面（再按一次收起）
+    var humCard = null;
+    mMidi.onclick = function () {
+      if (!MEL || !melFound) return;
+      if (humCard) { if (humCard.parentNode) humCard.parentNode.removeChild(humCard); humCard = null; hStatus('已收起哼歌旋律的播放器'); return; }
+      hStatus('準備 MIDI 播放器…');
+      Promise.resolve(MEL.humAsMidi(melFound, '哼歌旋律')).then(function (res) {
+        if (res && res.node) { humCard = res.node; mMidi.parentNode.insertBefore(humCard, mMidi.nextSibling); hStatus('已用 MIDI 播放器載入哼歌旋律，按卡片上的播放（再按一次這個按鈕收起）'); }
+      }).catch(function (e) { hStatus('演奏失敗：' + String((e && e.message) || e)); });
+    };
     // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
     var YT_LIST_MAX = 200;
     function ytShowItems(job) {

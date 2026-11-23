@@ -100,8 +100,9 @@ try {
   if (p && hb && hb.style.display === 'none') Array.from(p.querySelectorAll('button')).find((b) => b.textContent === '🎤 哼歌找歌').click();
   check('面板有哼歌找歌區塊（主畫面）', !!p && !!hb && /哼歌/.test(p.textContent), p ? p.textContent.slice(0, 80) : '無面板');
   // 7. 找不到時演奏：humAsMidi 不丟例外（會開 MIDI 編輯器卡片）
-  let playErr = null; try { H.humAsMidi(notesD, '評測哼歌'); } catch (e) { playErr = String(e && e.message || e); }
-  check('找不到時：把哼歌旋律用 MIDI 演奏（開編輯器）不出錯', playErr === null, playErr || '');
+  // humAsMidi 現在回傳 { node }（MIDI 播放卡片，畫面把它插在按鈕下面）；舊版是塞一則編輯器訊息到對話最下面
+  let playErr = null, playRes = null; try { playRes = await H.humAsMidi(notesD, '評測哼歌'); } catch (e) { playErr = String(e && e.message || e); }
+  check('找不到時：把哼歌旋律用 MIDI 演奏，回傳播放卡片節點、不出錯', playErr === null && !!(playRes && playRes.node && playRes.node.nodeType === 1), playErr || (playRes && playRes.node ? '' : '沒有回傳節點'));
 } catch (e) {
   out.error = String((e && e.stack) || e);
 }
