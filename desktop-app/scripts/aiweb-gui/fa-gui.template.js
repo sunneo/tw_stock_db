@@ -35,11 +35,29 @@
          標題列與輸入框保留，因為有些編輯器要靠下面的輸入框用說的改。 */
       'body.fa-gui-mode #ai-chat-body .fa-msg-wrap:not(.fa-gui-focus){display:none !important;}' +
       'body.fa-gui-mode #ai-autocomplete-bar{display:none !important;}' +
-      'body.fa-gui-mode #ai-chat-body{padding:0 !important;}' +
+      /* 真正全螢幕：隱藏聊天外框（標題列、狀態列、輸入框），GUI 撐滿剩下的整個視窗。
+         輸入框預設收起，頂列「⌨ 輸入框」按鈕可以叫出來（有些編輯器要靠它用說的改）。 */
+      'body.fa-gui-mode #ai-window-header,body.fa-gui-mode #ai-status-log,body.fa-gui-mode #ai-input-wrap{display:none !important;}' +
+      'body.fa-gui-mode.fa-gui-show-input #ai-input-wrap{display:flex !important;}' +
+      'body.fa-gui-mode #ai-floating-window{position:relative !important;top:0 !important;left:0 !important;margin:0 !important;flex:1 1 auto !important;min-height:0;width:100% !important;height:auto !important;max-height:none !important;display:flex !important;flex-direction:column;}' +
+      'body.fa-gui-mode #ai-chat-body{flex:1 1 auto;min-height:0;height:auto;padding:0 !important;overflow:auto;}' +
+      'body.fa-gui-mode #ai-chat-body .fa-msg-wrap.fa-gui-focus{flex:1 1 auto;min-height:100%;box-sizing:border-box;}' +
+      'body.fa-gui-mode #app{position:relative;display:flex !important;flex-direction:column;}' +
+      '#fa-gui-input-toggle{background:#21262d;color:#cbd5e1;border:1px solid #30363d;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;}' +
       'body.fa-gui-mode #ai-chat-body .fa-msg-wrap.fa-gui-focus{max-width:none !important;margin:0 !important;}';
     var st = document.createElement('style');
     st.textContent = css;
     document.head.appendChild(st);
+  })();
+
+  // 頂列「⌨ 輸入框」切換：收起時 GUI 滿版，叫出來時底部出現輸入框
+  (function bindInputToggle() {
+    var btn = document.getElementById('fa-gui-input-toggle');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var on = document.body.classList.toggle('fa-gui-show-input');
+      btn.textContent = on ? '⌨ 收起輸入框' : '⌨ 輸入框';
+    });
   })();
 
   function setStatus(text) {

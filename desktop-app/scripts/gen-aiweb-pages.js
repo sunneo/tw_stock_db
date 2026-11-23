@@ -83,7 +83,7 @@ function pageHtml(cmd, desc) {
 <script src="../../coi-serviceworker.js"></script>
 </head>
 <body class="fa-gui-page">
-<div id="fa-gui-top"><a href="../gui/">← 指令清單</a><span class="fa-gui-cmd">${esc(cmd)}</span><span id="status" class="fa-gui-status"></span></div>
+<div id="fa-gui-top"><a href="../gui/">← 指令清單</a><span class="fa-gui-cmd">${esc(cmd)}</span><span id="status" class="fa-gui-status"></span><button type="button" id="fa-gui-input-toggle">⌨ 輸入框</button></div>
 <div id="app"></div>
 <noscript>這個全螢幕 GUI 需要 JavaScript。</noscript>
 <!-- 指令說明：${esc(desc)} -->
