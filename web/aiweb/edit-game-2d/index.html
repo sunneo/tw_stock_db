@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="fa-gui-cmd" content="/edit-game-2d">
+<title>/edit-game-2d · AI 助理</title>
+<!-- 離線模型的多執行緒需要 SharedArrayBuffer：同 web/aiweb/index.html，用 coi-serviceworker（相對於 web/） -->
+<script src="../../coi-serviceworker.js"></script>
+</head>
+<body class="fa-gui-page">
+<div id="fa-gui-top"><a href="../gui/">← 指令清單</a><span class="fa-gui-cmd">/edit-game-2d</span><span id="status" class="fa-gui-status"></span><button type="button" id="fa-gui-input-toggle">⌨ 輸入框</button></div>
+<div id="app"></div>
+<noscript>這個全螢幕 GUI 需要 JavaScript。</noscript>
+<!-- 指令說明：2D 遊戲編輯器(用說的設計,GUI):東西、行為(規則與狀態機)、碰撞、路線、場景切換、對白、背景音樂與音效、常見範本(橫向／縱向／強制捲軸、自由地圖、格鬥、RPG)。中間可以直接試玩,玩到一半暫停就是編輯器;AI 改的先預覽再套用。中間格式 YAML／UML,輸出遊戲包 .fagame(可再編輯)與網頁／Electron／Node.js／其他平台的原始碼。/edit-game-2d platformer-side 從範本開始、/edit-game-2d 做一個太空射擊。 -->
+<script src="../fa-gui.js" defer></script>
+</body>
+</html>

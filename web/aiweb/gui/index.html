@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>全螢幕 GUI 指令清單 · AI 助理</title>
+<style>
+  html,body{margin:0;background:#0d1117;color:#cbd5e1;font:15px/1.5 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;}
+  main{max-width:760px;margin:0 auto;padding:16px;}
+  h1{font-size:20px;margin:8px 0 4px;}
+  .hint{opacity:.8;font-size:13px;margin:0 0 12px;}
+  #notfound{display:none;margin:0 0 12px;padding:10px 12px;border:1px solid #7f1d1d;border-radius:8px;color:#fca5a5;background:#2a1215;}
+  ul{list-style:none;padding:0;margin:0;}
+  li{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid #30363d;border-radius:8px;margin-bottom:8px;background:#161b22;}
+  li a{color:#58a6ff;text-decoration:none;}
+  li span{font-size:13px;opacity:.85;}
+  a.back{color:#cbd5e1;font-size:13px;}
+</style>
+</head>
+<body>
+<main>
+  <a class="back" href="../">← AI 助理</a>
+  <h1>全螢幕 GUI 指令</h1>
+  <p class="hint">每個指令各有一個網址，打開後整頁就是那個 GUI；資料（IndexedDB、fap）與 AI 助理是同一份。也可以用 <code>aiweb/#/指令名</code> 開啟。</p>
+  <p id="notfound"></p>
+  <ul>
+<li><a href="../musiclib/"><code>/musiclib</code></a><span>音樂庫：加檔案或資料夾、掃描、用檔名／專輯／標題／演出者／歌詞搜尋；資料存在本機，重新開啟還在。</span></li>
+<li><a href="../run-terminal/"><code>/run-terminal</code></a><span>在對話裡嵌入一個互動終端機（WASM沙盒，busybox ash，不需要真實系統shell）。留空只開啟互動終端機；帶一段指令則開啟後直接執行它。</span></li>
+<li><a href="../edit-midi/"><code>/edit-midi</code></a><span>MIDI 編輯器:/edit-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放編輯器(鋼琴捲簾、多音軌、只能選 GS 音色、復原重做、下面可用說的改);/edit-midi 空白 → 新曲。</span></li>
+<li><a href="../edit-svg/"><code>/edit-svg</code></a><span>SVG 編輯器（用語言主導的概念畫家）：你說要畫什麼、放在哪個東西的哪一邊，AI 就加一個新物件；畫面沒有邊界，可以加在任何地方。可以貼圖讓 AI 描成 SVG、給網址或說「找一張…的圖」。物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。/edit-svg shapes 從起手式開始、/edit-svg 畫一隻紅色的小鳥站在樹枝上。</span></li>
+<li><a href="../edit-picture/"><code>/edit-picture</code></a><span>圖片編輯器（圖層式、語言主導、像 GIMP 的後製與修復）：貼圖、給網址或說「找一張…的圖」就有第一個圖層；然後用說的：「變成水彩風格」（視覺模型會看像不像）、「調亮」、「修掉右下角的污點」、「在左邊加一隻貓」。濾鏡與修復都是圖層，原圖不動；「🩹 修復畫筆」可以直接塗；說「用 AI 重畫成油畫」會用生圖模型依內容重畫。匯出 PNG／JPEG。</span></li>
+<li><a href="../edit-3d-model/"><code>/edit-3d-model</code></a><span>3D 場景編輯器（用語言主導，位置完全以你現在看的角度算）：「在我的左前方放一個紅色的球」「把它移到桌子上面」；物件欄是樹狀的、屬性面板、雙擊物件進「單一物件編輯」（像做塑膠模型：每個面貼什麼圖、塗什麼顏色）、🧾 YAML 原始碼分頁可以直接改、圖可以貼進對話框當貼圖、復原／重做、整理成 prompt、匯出場景 YAML／PNG。/edit-3d-model room 從起手式開始、/edit-3d-model last 接著對話裡最近的 3D 場景。</span></li>
+<li><a href="../edit-3d/"><code>/edit-3d</code></a><span>3D 場景編輯器：/edit-3d-model 的別名。</span></li>
+<li><a href="../edit-game-2d/"><code>/edit-game-2d</code></a><span>2D 遊戲編輯器(用說的設計,GUI):東西、行為(規則與狀態機)、碰撞、路線、場景切換、對白、背景音樂與音效、常見範本(橫向／縱向／強制捲軸、自由地圖、格鬥、RPG)。中間可以直接試玩,玩到一半暫停就是編輯器;AI 改的先預覽再套用。中間格式 YAML／UML,輸出遊戲包 .fagame(可再編輯)與網頁／Electron／Node.js／其他平台的原始碼。/edit-game-2d platformer-side 從範本開始、/edit-game-2d 做一個太空射擊。</span></li>
+<li><a href="../edit-game-3d/"><code>/edit-game-3d</code></a><span>3D 遊戲編輯器(用說的設計,GUI):第三人稱／第一人稱走動、俯視、跑酷範本;位置以相對方式放;中間 3D 畫面可以直接試玩與暫停編輯;輸出遊戲包 .fagame、網頁(three.js)、Electron、Node.js。/edit-game-3d walker-3rd 從範本開始。</span></li>
+<li><a href="../edit-media-presentation/"><code>/edit-media-presentation</code></a><span>簡報編輯器:在簡報播放器旁邊多一個 AI 對話框,用說的改簡報——你現在看的那一頁就是「這頁」:「這頁加一張飛機的照片」「在這頁後面插入一頁講風險」「每一頁都配一張照片」「旁白講短一點」。要上網找圖與資料、讀檔、畫圖表,會請簡報代理人(跟 /media-presentation 一樣的工具)去做;改的先預覽再套用,每一步都能復原;左邊是章與頁的大綱(搬動、複製、隱藏、鎖定)。/edit-media-presentation 編輯最近的簡報;/edit-media-presentation 在第 2 頁後面加一頁講風險。播放器上也有「✏️ 編輯」鈕。</span></li>
+<li><a href="../knowledge-ui/"><code>/knowledge-ui</code></a><span>知識庫 GUI 面板（等於 /knowledge ui）。加 inline 則放在對話裡。</span></li>
+  </ul>
+</main>
+<script>
+(function () {
+  var raw = (location.hash || '').replace(/^#\/?/, '');
+  if (!raw) return;
+  var box = document.getElementById('notfound');
+  box.textContent = '找不到指令「/' + decodeURIComponent(raw) + '」，或它沒有全螢幕 GUI。以下是可以開的指令。';
+  box.style.display = 'block';
+})();
+</script>
+</body>
+</html>
