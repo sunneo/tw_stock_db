@@ -38,8 +38,47 @@ function fakeDeps(opts) {
 function entries(ids) { return ids.map(function (id) { return { videoId: id, title: null }; }); }
 
 t('輸入：清單網址與 watch?v=…&list=… 都當清單', function () {
-  assert.deepStrictEqual(Y.parseInput('https://www.youtube.com/playlist?list=PLabc_123-XY'), { mode: 'playlist', listId: 'PLabc_123-XY' });
-  assert.deepStrictEqual(Y.parseInput('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345678'), { mode: 'playlist', listId: 'PL12345678' });
+  assert.deepStrictEqual(Y.parseInput('https://www.youtube.com/playlist?list=PLabc_123-XY'), { mode: 'playlist', listId: 'PLabc_123-XY', videoId: null });
+  assert.deepStrictEqual(Y.parseInput('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345678'), { mode: 'playlist', listId: 'PL12345678', videoId: 'dQw4w9WgXcQ' });
+});
+t('輸入：清單網址裡夾了單支影片→提示會展開整個清單；純清單網址沒有提示', function () {
+  assert.ok(Y.inputNote(Y.parseInput('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL12345678')).indexOf('這是清單中的一支，會展開整個清單') === 0);
+  assert.strictEqual(Y.inputNote(Y.parseInput('https://www.youtube.com/playlist?list=PL12345678')), '');
+  assert.strictEqual(Y.inputNote(Y.parseInput('https://youtu.be/dQw4w9WgXcQ')), '');
+});
+t('略過分類：非本人且非 CC→license；查無此影片→notfound；其他→other', function () {
+  assert.strictEqual(Y.classifySkip('跳過：非本人頻道且非Creative Commons授權'), 'license');
+  assert.strictEqual(Y.classifySkip('跳過：YouTube Data API查無此影片（可能已下架/設為不公開/ID錯誤）'), 'notfound');
+  assert.strictEqual(Y.classifySkip('跳過：驗證沒有回傳結果'), 'other');
+});
+t('摘要分組：清單 3 支（1 合格、1 非本人且非 CC 被跳過、1 下載失敗）→ 略過與失敗各自依原因分組', function () {
+  var job = Y.createJob({ entries: entries(['aaaaaaaaaaa', 'bbbbbbbbbbb', 'ccccccccccc']) });
+  var f = fakeDeps({
+    verdict: { bbbbbbbbbbb: { ok: false, reason: '跳過：非本人頻道且非Creative Commons授權' } },
+    downloadThrows: { ccccccccccc: Object.assign(new Error('只剩 storyboard 縮圖格式'), { stage: undefined }) },
+  });
+  return Y.runJob(job, f.deps).then(function () {
+    var s = Y.summarize(job);
+    assert.strictEqual(s.done, 1); assert.strictEqual(s.skipped, 1); assert.strictEqual(s.failed, 1);
+    assert.ok(s.text.indexOf('下載 1／3') >= 0, s.text);
+    assert.ok(s.text.indexOf('非本人頻道且非 Creative Commons：1 支') >= 0, s.text);
+    assert.ok(s.text.indexOf('下載失敗：1 支（第一個原因：只剩 storyboard 縮圖格式）') >= 0, s.text);
+    assert.ok(s.text.indexOf('索引未開啟') >= 0, '沒開自動索引時要寫明');
+  });
+});
+t('旋律索引計數：一支影片的檔案都索引完才計一次；失敗只影響那一支', function () {
+  var job = Y.createJob({ entries: entries(['aaaaaaaaaaa', 'bbbbbbbbbbb']), autoIndex: true });
+  job.items[0].status = 'done'; job.items[0].idxPending = 2;
+  job.items[1].status = 'done'; job.items[1].idxPending = 1;
+  Y.recordIndex(job, job.items[0], 'done');
+  assert.strictEqual(job.index.done, 0, '還有一個檔案沒索引完，不計');
+  Y.recordIndex(job, job.items[0], 'skipped');
+  assert.strictEqual(job.index.done, 1);
+  Y.recordIndex(job, job.items[1], 'failed', '解碼失敗：壞檔');
+  assert.strictEqual(job.index.failed, 1);
+  var s = Y.summarize(job);
+  assert.ok(s.text.indexOf('索引 1／2') >= 0, s.text);
+  assert.ok(s.text.indexOf('索引失敗：1 支（第一個原因：解碼失敗：壞檔）') >= 0, s.text);
 });
 t('輸入：只有影片連結→單支影片；亂打字→錯誤', function () {
   assert.deepStrictEqual(Y.parseInput('看這個 https://youtu.be/dQw4w9WgXcQ 很好'), { mode: 'video', videoId: 'dQw4w9WgXcQ' });
