@@ -105,12 +105,11 @@ try {
   check('找不到時：把哼歌旋律用 MIDI 演奏，回傳播放卡片節點、不出錯', playErr === null && !!(playRes && playRes.node && playRes.node.nodeType === 1), playErr || (playRes && playRes.node ? '' : '沒有回傳節點'));
   // 8. 對照聽：命中帶出軌／模式／音符範圍；結果列有「對照聽」按鈕；按了回傳播放卡片節點（用哼歌 A 的第一名）
   const top = rA.results && rA.results[0];
-  check('命中資訊：第一名帶 hit（軌、模式、標籤、音符索引範圍）', !!(top && top.hit && top.hit.label && top.hit.noteTo >= top.hit.noteFrom), JSON.stringify(top && top.hit));
+  check('命中資訊：第一名帶 hit（軌、模式、標籤、音符索引範圍）', !!(top && top.hit && top.hit.label && top.hit.noteTo >= top.hit.noteFrom), JSON.stringify(top && top.hit && { track: top.hit.track, mode: top.hit.mode, label: top.hit.label, noteFrom: top.hit.noteFrom, noteTo: top.hit.noteTo, hasBaseSemis: !!(top.hit.line && top.hit.line.semis) }));
   const cmpBtn = Array.from((p || document).querySelectorAll('button')).find((b) => b.textContent === '對照聽');
   check('哼歌後結果列有「對照聽」按鈕（需面板已顯示結果）', !!cmpBtn, cmpBtn ? '' : '面板上沒有結果列的對照聽按鈕');
-  const topEnt = ((H.entries && H.entries()) || []).find((e) => top && e.key === top.key);
   let cmpErr = null, cmpRes = null;
-  try { cmpRes = await H.compareHitAsMidi(topEnt && topEnt.path, top && top.hit, notesA); } catch (e) { cmpErr = String(e && e.message || e); }
+  try { cmpRes = await H.compareHitAsMidi(top && top.hit, notesA); } catch (e) { cmpErr = String(e && e.message || e); }
   check('對照聽：按了回傳播放卡片節點、不出錯', cmpErr === null && !!(cmpRes && cmpRes.node && cmpRes.node.nodeType === 1), cmpErr || (cmpRes && cmpRes.node ? '' : '沒有回傳節點'));
 } catch (e) {
   out.error = String((e && e.stack) || e);

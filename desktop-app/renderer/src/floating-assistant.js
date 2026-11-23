@@ -84293,7 +84293,7 @@ const holder = {};
   var MIN_TRACK_NOTES = 8;     // 每軌（合併重複音後）至少要這麼多個音才建線
   var MAX_LINES = 12;          // 每首最多保留幾條線（合併線＋各軌線）
   var SIMILAR_TRACK = 0.9;     // 兩軌的音程序列相似度超過這個，只留一條
-  var INDEX_VERSION = 2;       // 索引格式版本：2＝每軌旋律線＋重複音合併；沒有或較舊的版本，下次建立索引會自動重建
+  var INDEX_VERSION = 3;       // 索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
   var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
   var INT_CAP = 2;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
@@ -84396,7 +84396,7 @@ const holder = {};
   function labelOf(channel, track, mode) {
     return (channel != null ? '頻道 ' + channel : '軌 ' + track) + KIND_LABEL[mode];
   }
-  // 每首候選線（還沒去重、沒設上限）。索引（songLines）與播放時重建（lineOf）共用這一套規則，兩邊才會逐音一致
+  // 每首候選線（還沒去重、沒設上限）。songLines 用它決定哪些線要存進索引；索引只存 base＋semis，音高由 restoreNotes 還原
   function candidatesOf(song) {
     var cand = [];
     ((song && song.tracks) || []).forEach(function (tr, i) {
@@ -84443,16 +84443,16 @@ const holder = {};
       })
     };
   }
-  // 播放時重建「命中的那條線」：從同一份解析好的曲子取出（track＝軌索引、mode＝one／hi／lo／mid；合併線 track 傳 null 或 mode 'merged'）。
-  // 回傳 { label, track, mode, notes: [[t,d,n]]（秒）, contour }；找不到（例如那軌太短）回傳 null
-  function lineOf(song, track, mode) {
-    if (track == null || mode === 'merged') {
-      var mix = melodyFromSong(song);
-      return { label: '合併（所有軌）', track: null, mode: 'merged', notes: tuplesOf(mix), contour: contourOf(mix) };
+  // 索引的線還原成音符（秒＋音高）：音高＝base＋累加的 semis，時間與長度取 times／durs。
+  // base 不指定就用線本身存的；沒有 semis（舊版索引）回傳 null
+  function restoreNotes(c, base) {
+    if (!c || !Array.isArray(c.semis) || c.n == null) return null;
+    var p = base == null ? c.base : base, out = [];
+    for (var i = 0; i < c.n; i++) {
+      if (i > 0) p += c.semis[i - 1];
+      out.push({ t: c.times[i], d: c.durs[i], n: p });
     }
-    var c = candidatesOf(song).filter(function (x) { return x.track === track && x.kind === mode; })[0];
-    if (!c) return null;
-    return { label: labelOf(c.channel, c.track, c.kind), track: c.track, mode: c.kind, notes: tuplesOf(c.mel), contour: c.contour };
+    return out;
   }
 
   // ───── 2. 特徵 ─────
@@ -84464,14 +84464,16 @@ const holder = {};
   }
   // mel: melodyNotes 的輸出。回傳相對音程（半音，有號）、粗輪廓級別、相鄰音長的 log2 比例，以及每個音的起點與長度（用來換算命中時間）
   function contourOf(mel) {
-    var n = mel.length, intervals = [], levels = [], ratios = [], times = [], durs = [];
+    var n = mel.length, intervals = [], levels = [], ratios = [], times = [], durs = [], semis = [];
     for (var i = 0; i < n; i++) { times.push(mel[i].t); durs.push(Math.max(0.02, mel[i].d)); }
     for (var k = 0; k + 1 < n; k++) {
-      var iv = clamp(mel[k + 1].n - mel[k].n, -12, 12);
+      var iv = clamp(mel[k + 1].n - mel[k].n, -12, 12);          // 比對用：截斷到 ±12
       intervals.push(iv); levels.push(levelOf(iv));
+      semis.push(clamp(Math.round(mel[k + 1].n - mel[k].n), -127, 127));   // 索引用：未截斷的相鄰差（MIDI 音高差本來就在 ±127 內）
       ratios.push(clamp(Math.log2(durs[k + 1] / durs[k]), -2, 2));
     }
-    return { n: n, intervals: intervals, levels: levels, ratios: ratios, times: times, durs: durs };
+    // base＋semis 可以還原全部音高（音高取整數；非整數的音高會被四捨五入）
+    return { n: n, intervals: intervals, levels: levels, ratios: ratios, times: times, durs: durs, base: n ? Math.round(mel[0].n) : 0, semis: semis };
   }
   // 打擊的 onset 時間（秒）→ 相鄰間隔比例的 log2（只看節奏，與速度無關）
   function onsetRatios(times) {
@@ -84571,7 +84573,7 @@ const holder = {};
         key: e.key, name: e.name, score: Math.round(score * 1000) / 1000, pitchScore: Math.round(best.pitch * 1000) / 1000,
         rhythmScore: Math.round(best.rhythm * 1000) / 1000, textBonus: text, hitLine: bestLine.label,
         startSec: c2.times[si], endSec: c2.times[ei] + c2.durs[ei],
-        hit: { track: bestLine.track, mode: bestLine.mode, label: bestLine.label, noteFrom: si, noteTo: ei }
+        hit: { track: bestLine.track, mode: bestLine.mode, label: bestLine.label, noteFrom: si, noteTo: ei, line: c2 }
       });
     });
     results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
@@ -84635,15 +84637,18 @@ const holder = {};
     if (!m) return NaN;
     return m % 2 ? s[(m - 1) / 2] : (s[m / 2 - 1] + s[m / 2]) / 2;
   }
-  // humNotes、hitNotes：[{t,d,n}]（秒）。回傳 { hum, hit（已平移、排在哼歌之後 COMPARE_GAP 秒）, shift（平移的半音數）, humMedian, hitMedian, hitStart }
-  function compareNotes(humNotes, hitNotes) {
+  // 八度平移量（12 的倍數）：讓 hitMed 移到最接近 humMed
+  function octaveShift(humMed, hitMed) { return 12 * Math.round((humMed - hitMed) / 12); }
+  // humNotes、hitNotes：[{t,d,n}]（秒）。opts.shift：指定平移的半音數；不指定就取最接近哼歌中位音高的八度
+  // 回傳 { hum, hit（已平移、排在哼歌之後 COMPARE_GAP 秒）, shift, humMedian, hitMedian, hitStart }
+  function compareNotes(humNotes, hitNotes, opts) {
     var ok = function (x) { return !!x && isFinite(x.t) && isFinite(x.n) && (x.d || 0) > 0; };
     var copy = function (x) { return { t: +x.t, d: +x.d, n: +x.n }; };
     var byT = function (a, b) { return a.t - b.t || a.n - b.n; };
     var hum = (humNotes || []).filter(ok).map(copy).sort(byT), hit = (hitNotes || []).filter(ok).map(copy).sort(byT);
     if (!hum.length || !hit.length) throw new Error('沒有可對照的音符');
     var hm = median(hum.map(function (x) { return x.n; })), hmed = median(hit.map(function (x) { return x.n; }));
-    var shift = 12 * Math.round((hm - hmed) / 12);
+    var shift = opts && opts.shift != null ? opts.shift : octaveShift(hm, hmed);
     var humEnd = Math.max.apply(null, hum.map(function (x) { return x.t + x.d; }));
     var start = humEnd + COMPARE_GAP, base = hit[0].t;
     return {
@@ -84652,9 +84657,24 @@ const holder = {};
       shift: shift, humMedian: hm, hitMedian: hmed + shift, hitStart: start
     };
   }
+  // 索引的命中線 → 對照聽的兩段。音高只靠索引的 base＋semis：先算要移幾個八度，只改 base 再還原，不讀原檔。
+  // c：索引的線（contour）、hit：searchMelody 的 hit（noteFrom／noteTo）、humNotes：哼歌音符（秒）
+  // 回傳 { cmp（compareNotes 的結果，平移已在 base 上做完）, base（移完八度的 base）, shift（平移的半音數） }
+  function compareHit(c, hit, humNotes) {
+    if (!c || c.semis == null) throw new Error('這條舊索引沒有音高資料，請重建旋律索引（⚙ 設定 → 旋律索引 → 建立）');
+    if (!hit) throw new Error('這一筆沒有命中資訊');
+    var hum = (humNotes || []).filter(function (x) { return !!x && isFinite(x.n); });
+    if (!hum.length) throw new Error('沒有哼歌的音符');
+    var seg0 = restoreNotes(c).slice(hit.noteFrom, hit.noteTo + 1);
+    if (!seg0.length) throw new Error('命中範圍是空的（索引與結果不一致，請重建旋律索引）');
+    var shift = octaveShift(median(hum.map(function (x) { return x.n; })), median(seg0.map(function (x) { return x.n; })));
+    var base = c.base + shift;
+    var seg = restoreNotes(c, base).slice(hit.noteFrom, hit.noteTo + 1).map(function (x) { return { t: x.t, d: x.d, n: x.n }; });
+    return { cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
+  }
 
   return {
-    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, lineOf: lineOf, compareNotes: compareNotes, median: median,
+    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, restoreNotes: restoreNotes, compareNotes: compareNotes, compareHit: compareHit, median: median,
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
@@ -103441,7 +103461,7 @@ const holder = {};
           var cmpBtn = h('button', null, '對照聽');
           cmpBtn.onclick = function () {
             if (line._cmp) { if (line._cmp.parentNode) line._cmp.parentNode.removeChild(line._cmp); line._cmp = null; return; }
-            MEL.compareHitAsMidi(paths[x.key], x.hit, melHum).then(function (res) {
+            MEL.compareHitAsMidi(x.hit, melHum).then(function (res) {
               if (res && res.node) { line._cmp = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); hStatus('已載入對照聽：先哼歌，停 0.8 秒，再播命中的那條線（已移到你的音域）；再按一次收起'); }
             }).catch(function (e) { hStatus('對照聽失敗：' + String((e && e.message) || e)); });
           };
@@ -103963,7 +103983,8 @@ const FaMusicLibHost = (function () {
     var u8 = b64ToBytes(r.base64);
     if (/\.midi?$/i.test(rec.name)) {
       var song = FaMidi.parse(u8), built = FaMusicLibMelody.songLines(song);
-      return { notes: built.mix, tracks: built.tracks, method: 'mid' };
+      // 索引只存每條線的中繼資料與 contour（base＋semis 就能還原音符），不另外存一份 notes
+      return { notes: built.mix, tracks: built.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: 'mid' };
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
@@ -104141,29 +104162,22 @@ const FaMusicLibHost = (function () {
     return { node: node };
   }
 
-  // 對照聽：命中的那條線（索引記的軌與模式，播放時從原檔重建同一條）＋哼歌，做成一首臨時的單軌 MIDI：
-  // 先哼歌、停 0.8 秒、再命中段（整段以八度移到哼歌音域附近）；同一個音色、速度照實。回傳 { node }，畫面插在結果列下面
-  async function compareHitAsMidi(path, hit, humNotes) {
-    var a = api(), fa = window.fa;
+  // 對照聽：索引記的命中線（base＋semis）還原成音符，與哼歌做成一首臨時的單軌 MIDI：
+  // 先哼歌、停 0.8 秒、再命中段（只改 base 移到哼歌音域附近，不讀原檔，所以轉譜來的音訊線也能對照）；同一個音色、速度照實。
+  // 回傳 { node }，畫面插在結果列下面。舊版索引（沒有 semis）會丟出「請重建旋律索引」
+  async function compareHitAsMidi(hit, humNotes) {
+    var fa = window.fa;
     if (!fa || !fa._midiHost || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
-    if (!hit) throw new Error('這一筆沒有命中資訊（索引是舊格式，請重建索引）');
-    var r = await a.rawfs.readFile(absPath(path), 'base64');
-    if (!r || r.base64 == null) throw new Error('讀不到這個檔案');
-    var bytes = b64ToBytes(r.base64);
-    if (!(bytes.length > 4 && bytes[0] === 0x4D && bytes[1] === 0x54 && bytes[2] === 0x68 && bytes[3] === 0x64)) throw new Error('對照聽目前只支援 MIDI 檔（音訊檔的索引只存輪廓，沒有可以重建的音符）');
-    var line = FaMusicLibMelody.lineOf(FaMidi.parse(bytes), hit.track, hit.mode);
-    if (!line) throw new Error('索引的那條線在這個檔案裡找不到（檔案可能已改，請重建索引）');
-    var seg = line.notes.slice(hit.noteFrom, hit.noteTo + 1).map(function (x) { return { t: x[0], d: x[1], n: x[2] }; });
-    var cmp = FaMusicLibMelody.compareNotes(humNotes, seg);
+    var res = FaMusicLibMelody.compareHit(hit && hit.line, hit, humNotes), cmp = res.cmp;
     var s = FaMidi.addTrack(FaMidi.emptySong(), '你哼的 → 命中線', 0, false);
     s.title = '對照聽';
     s.tracks[0].notes = cmp.hum.concat(cmp.hit).map(function (x) {
       var t0 = FaMidi.secToTicks(s, x.t), t1 = FaMidi.secToTicks(s, x.t + x.d);
       return { t: t0, d: Math.max(1, t1 - t0), n: Math.round(x.n), v: 90 };
     }).sort(function (x, y) { return x.t - y.t || x.n - y.n; });
-    var title = '你哼的 → 命中的旋律線（' + line.label + '，已移到你的音域）';
+    var title = '你哼的 → 命中的旋律線（' + (hit.label || '合併（所有軌）') + '，已移到你的音域）';
     var node = await FaMidiUI.mount({ song: FaMidi.validate(s), title: title, host: fa._midiHost(), M: FaMidi });
-    return { node: node, shift: cmp.shift, humMedian: cmp.humMedian, hitMedian: cmp.hitMedian };
+    return { node: node, shift: res.shift, humMedian: cmp.humMedian, hitMedian: cmp.hitMedian };
   }
 
   var MELODY_HOST = {

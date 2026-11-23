@@ -721,7 +721,7 @@
           var cmpBtn = h('button', null, '對照聽');
           cmpBtn.onclick = function () {
             if (line._cmp) { if (line._cmp.parentNode) line._cmp.parentNode.removeChild(line._cmp); line._cmp = null; return; }
-            MEL.compareHitAsMidi(paths[x.key], x.hit, melHum).then(function (res) {
+            MEL.compareHitAsMidi(x.hit, melHum).then(function (res) {
               if (res && res.node) { line._cmp = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); hStatus('已載入對照聽：先哼歌，停 0.8 秒，再播命中的那條線（已移到你的音域）；再按一次收起'); }
             }).catch(function (e) { hStatus('對照聽失敗：' + String((e && e.message) || e)); });
           };
