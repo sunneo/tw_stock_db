@@ -148,11 +148,14 @@ if [ "$WEB" = 1 ]; then
   OLD="$(grep -o "var SHA = '[0-9a-f]\{40\}'" "$WEB_REPO/web/index.html" | head -1 | grep -o '[0-9a-f]\{40\}')"   # v417 起釘在 var SHA（jsDelivr 網址與 aiweb 的 FA_SHA 是同一個值）"
   [ -n "$OLD" ] || { echo "web/index.html 裡找不到釘住的 SHA" >&2; exit 1; }
   if [ "$OLD" = "$HEAD_SHA" ]; then echo "網頁版已經釘在這個 SHA"; else
-    if [ "$DRY" = 1 ]; then echo "[dry-run] 把 web/index.html、web/aiweb/index.html 的 ${OLD:0:8} 換成 ${HEAD_SHA:0:8}，提交並推到 main"; else
+    if [ "$DRY" = 1 ]; then echo "[dry-run] 把 web/index.html、web/aiweb/index.html 的 ${OLD:0:8} 換成 ${HEAD_SHA:0:8}，產生全螢幕 GUI 入口頁（node scripts/gen-aiweb-pages.js），提交並推到 main"; else
       sed -i "s/$OLD/$HEAD_SHA/g" "$WEB_REPO/web/index.html" "$WEB_REPO/web/aiweb/index.html"
       for f in web/index.html web/aiweb/index.html; do grep -q "$HEAD_SHA" "$WEB_REPO/$f" || { echo "$f 沒換成功" >&2; exit 1; }; done
+      # 全螢幕 GUI 入口頁（web/aiweb/<指令>/、fa-gui.js、gui 清單、aiweb 的 #/指令 轉址）同一個 SHA 一起產生，見 scripts/gen-aiweb-pages.js
+      node scripts/gen-aiweb-pages.js --web "$WEB_REPO" --sha "$HEAD_SHA" || { echo "全螢幕 GUI 入口頁產生失敗，中止" >&2; exit 1; }
+      grep -q "$HEAD_SHA" "$WEB_REPO/web/aiweb/fa-gui.js" || { echo "web/aiweb/fa-gui.js 沒釘到新 SHA" >&2; exit 1; }
       WMSG="$(mktemp)"; with_trailer "網頁版：載入的 floating-assistant 釘到 ${HEAD_SHA:0:8}（$NOTES）" > "$WMSG"
-      git -C "$WEB_REPO" add web/index.html web/aiweb/index.html
+      git -C "$WEB_REPO" add -A -- web/index.html web/aiweb
       git -C "$WEB_REPO" commit -q -F "$WMSG"; rm -f "$WMSG"
       git -C "$WEB_REPO" push -q "$REMOTE" main
       CODE="$(curl -sI -o /dev/null -w '%{http_code}' "https://raw.githubusercontent.com/sunneo/tw_stock_db/$HEAD_SHA/desktop-app/renderer/floating-assistant.js" || true)"
