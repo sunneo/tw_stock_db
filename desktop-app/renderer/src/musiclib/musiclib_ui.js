@@ -286,8 +286,13 @@
       render();
     }
     async function pick(kind) {
-      var fn = kind === 'folder' ? host.pickFolder : null;
-      if (fn) { var src = await fn(); if (src) addFrom('folder', src); return; } // 取消（null）就什麼都不做
+      var fn = kind === 'folder' ? host.pickFolder : host.pickFiles;
+      if (fn) {
+        var src = await fn();
+        if (src === undefined && kind !== 'folder') { fIn.click(); return; } // 非桌面版：用瀏覽器選檔
+        if (src) addFrom(kind === 'folder' ? 'folder' : 'file', src);
+        return; // 取消（null）就什麼都不做
+      }
       (kind === 'folder' ? dIn : fIn).click();
     }
 
