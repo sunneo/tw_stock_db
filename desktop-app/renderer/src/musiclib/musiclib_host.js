@@ -364,6 +364,11 @@ const FaMusicLibHost = (function () {
   // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
   async function notesFromHum(blob, useModel) {
     var buf = await window.fa._decodeAudioBuffer(blob);
+    if (!useModel && typeof FaAudioToMidi !== 'undefined') {
+      // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
+      var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
+      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音' };
+    }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }

@@ -87,6 +87,24 @@ t('端到端：合成哼歌（音訊）→ 單音音高追蹤 → 旋律 → 比
   assert.equal(res.results[0].key, 'S', '第一名是來源：' + JSON.stringify(res.results.map(function (x) { return [x.key, x.pitchScore]; })));
 });
 
+
+// 哼歌：音量衰減的尾巴與背景雜音不能變成多出來的音符
+t('humNotes：衰減尾與雜音不產生多餘音符', function () {
+  var AM = require('../music/audio_to_midi.js'), seq = [60, 64, 67, 64], r = rng(7), parts = [];
+  seq.forEach(function (n) {
+    var f = 440 * Math.pow(2, (n - 69) / 12), len = Math.floor(0.6 * SR), seg = new Float32Array(len + Math.floor(0.2 * SR));
+    for (var i = 0; i < len; i++) { var env = 0.4 * Math.exp(-3.2 * i / len); seg[i] = env * Math.sin(2 * Math.PI * f * i / SR); }
+    for (var j = len; j < seg.length; j++) seg[j] = 0.004 * (r() - 0.5);   // 間隙：很小的雜音
+    for (var q = 0; q < len; q++) seg[q] += 0.003 * (r() - 0.5);
+    parts.push(seg);
+  });
+  var total = parts.reduce(function (s, x) { return s + x.length; }, 0), all = new Float32Array(total), pos = 0;
+  parts.forEach(function (x) { all.set(x, pos); pos += x.length; });
+  var res = A.humNotes({ channels: [all], sampleRate: SR }, { AudioToMidi: AM });
+  var got = res.notes.map(function (x) { return x.n; });
+  assert.deepEqual(got, seq, '音符序列應該只有哼的四個音：' + JSON.stringify(got));
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];
