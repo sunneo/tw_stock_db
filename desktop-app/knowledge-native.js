@@ -16,6 +16,23 @@ function safePath(p) {
 function sha256File(p) {
   return new Promise((resolve, reject) => { const h = crypto.createHash("sha256"); const s = fs.createReadStream(p); s.on("data", (d) => h.update(d)); s.on("error", reject); s.on("end", () => resolve(h.digest("hex"))); });
 }
+// hashFile 用：串流讀檔計算雜湊（不載入整個檔案）；回傳 { algo, hex, size, mtimeMs }
+const HASH_ALGOS = { md5: true, sha256: true };
+async function hashFileStream(p, algo) {
+  p = String(p || ""); if (!path.isAbsolute(p)) throw new Error("要給完整路徑：" + p);
+  p = path.resolve(p);
+  algo = String(algo || "md5").toLowerCase(); if (!HASH_ALGOS[algo]) throw new Error("不支援的雜湊演算法：" + algo);
+  let st; try { st = fs.statSync(p); } catch (_) { throw new Error("讀不到這個檔案：" + p); }
+  if (!st.isFile()) throw new Error("不是一般檔案（資料夾或其他項目不計算）：" + p);
+  const h = crypto.createHash(algo);
+  let size = 0;
+  await new Promise((resolve, reject) => {
+    const s = fs.createReadStream(p);
+    s.on("data", (d) => { size += d.length; h.update(d); });
+    s.on("error", reject); s.on("end", resolve);
+  });
+  return { algo, hex: h.digest("hex"), size, mtimeMs: st.mtimeMs };
+}
 function fsyncPath(p) { const fd = fs.openSync(p, "r+"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }
 
 function makeOps(ctx) {
@@ -50,6 +67,10 @@ function makeOps(ctx) {
       fs.renameSync(part, to); return { ok: true, size: fs.statSync(to).size, sha256: got };
     },
     async hash({ path: p }) { p = safePath(p); return { sha256: await sha256File(p), size: fs.statSync(p).size }; },
+    // hashFile（唯讀）：任意檔案的 md5 或 sha256，串流計算（記憶體不隨檔案大小成長）。
+    // 例外：這個操作不套用 .keeplookup 副檔名限制（音樂庫要算任何檔案的指紋）；其他操作的限制不變。
+    // 只接受絕對路徑、而且必須是一般檔案（資料夾、不存在的路徑都拒絕）。
+    async hashFile({ path: p, algo }) { return hashFileStream(p, algo); },
     async remove({ path: p }) { p = safePath(p); for (const sfx of ["", ".part", "-journal", "-wal", "-shm"]) { try { fs.rmSync(p + sfx, { force: true }); } catch (_) { /* */ } } return { ok: true }; },
   };
 }
@@ -62,4 +83,4 @@ function register(ipcMain, ctx) {
   });
 }
 
-module.exports = { register, makeOps, sha256File };
+module.exports = { register, makeOps, sha256File, hashFileStream };

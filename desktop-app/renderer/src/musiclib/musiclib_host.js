@@ -403,11 +403,11 @@ const FaMusicLibHost = (function () {
     if (melodyState.running) throw new Error('旋律索引已在建立中');
     melodyState.running = true; melodyState.cancelled = false;
     // 只收一般音樂檔與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）不是音訊，拿去解碼一定失敗（舊版就是這樣），所以不收，並寫明原因
-    var recs = [], excludedCount = 0, excludedByReason = {};
+    var recs = [], excludedCount = 0, excludedByReason = {}, groups = { source: 0, mp3: 0, wav: 0, other: 0 };
     L.records.forEach(function (r) {
       var e = FaMusicLib.melodyEligible(r);
       if (e.ok) recs.push(r);
-      else { excludedCount++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
+      else { excludedCount++; groups[FaMusicLib.melodyGroup(r)]++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
     });
     var saveCount = 0;
     try {
@@ -419,7 +419,8 @@ const FaMusicLibHost = (function () {
         waitIfPaused: melodyGate
       });
       await L.save();
-      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason;
+      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason; sum.groups = groups;
+      sum.failures = recs.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).map(function (r) { return { name: r.name, reason: r.melody.reason }; });
       return sum;
     } finally { melodyState.running = false; melodyState.paused = false; }
   }
@@ -777,9 +778,113 @@ const FaMusicLibHost = (function () {
       return URL.createObjectURL(new Blob([bytes], mime ? { type: mime } : undefined));
     }
   };
+  // ───── md5 指紋：背景逐個算（一次一個，小檔先算），算完才做搬家對應（planRelocation／applyRelocation）。
+  // 算法：1) 桌面版主行程 knowledge.call('hashFile')：任意大小串流計算，hashKind='md5-full'。
+  //       2) 舊版 app 不認得 hashFile（回傳不認得的操作）：≤ 64 MB 用 rawfs.readFile 整檔算，hashKind='md5-full'；
+  //          更大的用開頭 4 MB＋大小，hashKind='md5-head4M+size'（近似特徵，畫面上會明講；app 更新後會自動重算成整檔）。
+  var MD5_FALLBACK_MAX = 64 * 1024 * 1024, MD5_HEAD_BYTES = 4 * 1024 * 1024;
+  var md5State = { running: false, cancelled: false, done: 0, total: 0, current: '', big: false, startedAt: 0, fallback: false, lastMsg: '' };
+  function md5Lib() { return typeof FaMd5 !== 'undefined' ? FaMd5 : null; }
+  async function md5OfPath(rec) {
+    var a = api(), abs = absPath(rec.path);
+    if (!a || !a.rawfs) throw new Error('算 md5 需要桌面版（讀檔通道不存在）');
+    if (!md5State.fallback && a.knowledge && a.knowledge.call) {
+      var r = await a.knowledge.call('hashFile', { path: abs, algo: 'md5' });
+      if (r && r.ok) return { hex: r.hex, kind: FaMusicLib.HASH_FULL };
+      if (!(r && /不認得的操作/.test(r.error || ''))) throw new Error((r && r.error) || '讀不到檔案');
+      md5State.fallback = true;   // 舊版 app：之後都走退路
+    }
+    var st = await a.rawfs.stat(abs);
+    var size = st && st.size != null ? st.size : (rec.sizeBytes || 0);
+    if (!md5Lib()) throw new Error('md5 模組沒有載入');
+    if (size <= MD5_FALLBACK_MAX) {
+      var f = await a.rawfs.readFile(abs, 'base64');
+      if (!f || f.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+      return { hex: md5Lib().md5Hex(b64ToBytes(f.base64)), kind: FaMusicLib.HASH_FULL };
+    }
+    var head = await a.rawfs.readHead(abs, MD5_HEAD_BYTES);
+    if (!head || head.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的開頭');
+    var hh = md5Lib().md5Create().update(b64ToBytes(head.base64)).update('size=' + size).hex();
+    return { hex: hh, kind: FaMusicLib.HASH_HEAD };
+  }
+  var MD5_HOST = {
+    // 算 md5 並對應：opts.newKeys＝這一次掃到的新紀錄（只有它們能被配成搬家後的位置）；onEvent({phase, done, total, name, big, startedAt})
+    run: async function (opts) {
+      opts = opts || {};
+      var L = getLib(); await L.ready;
+      if (md5State.running) throw new Error('md5 已在計算中');
+      md5State.running = true; md5State.cancelled = false; md5State.fallback = md5State.fallback && !opts.retryHashFile;
+      var emit = opts.onEvent || function () {};
+      var todo = L.records.filter(FaMusicLib.needsHash).sort(function (x, y) { return (x.sizeBytes || 0) - (y.sizeBytes || 0); });
+      md5State.total = todo.length; md5State.done = 0; var saves = 0, failures = [];
+      try {
+        for (var i = 0; i < todo.length && !md5State.cancelled; i++) {
+          var rec = todo[i];
+          md5State.current = rec.name; md5State.big = (rec.sizeBytes || 0) > MD5_FALLBACK_MAX; md5State.startedAt = Date.now();
+          emit({ phase: 'hash', done: i, total: todo.length, name: rec.name, big: md5State.big, startedAt: md5State.startedAt });
+          try { var h = await md5OfPath(rec); FaMusicLib.setHash(rec, { hex: h.hex, kind: h.kind }); }
+          catch (e) { rec.hashError = String((e && e.message) || e); failures.push({ name: rec.name, reason: rec.hashError }); }
+          md5State.done = i + 1;
+          if (++saves % 20 === 0) await L.save();
+        }
+        await L.save();
+        var summary = { hashed: md5State.done, total: todo.length, failures: failures, cancelled: md5State.cancelled, text: '' };
+        if (!md5State.cancelled && Object.keys(opts.newKeys || {}).length) {
+          var plan = FaMusicLib.planRelocation(L, { newKeys: opts.newKeys || {} });
+          var applied = FaMusicLib.applyRelocation(L, plan);
+          await L.save();
+          summary.plan = plan; summary.applied = applied;
+          summary.text = FaMusicLib.describeRelocation(plan, applied);
+          if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
+        } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
+        else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
+        return summary;
+      } finally { md5State.running = false; md5State.current = ''; md5State.big = false; }
+    },
+    cancel: function () { md5State.cancelled = true; },
+    // 目前狀態（給主畫面一行）：算了多少、還有多少沒算（決定什麼時候可以安全重整資料夾）
+    state: function () {
+      var L = getLib(), pending = L.records.filter(FaMusicLib.needsHash).length;
+      return { running: md5State.running, done: md5State.done, total: md5State.total, current: md5State.current, big: md5State.big, startedAt: md5State.startedAt, pending: pending, fallback: md5State.fallback };
+    },
+    // 重新對應前先看一次現況：每筆紀錄的檔案還在不在（不在就標為消失，資料保留）；回傳 { missing, back }
+    refreshStatus: async function () {
+      var L = getLib(); await L.ready;
+      var paths = L.records.map(function (r) { return r.path; });
+      var m = await LIB_HOST.statMany(paths), missing = 0, back = 0;
+      L.records.forEach(function (r) {
+        var st = m[r.path];
+        if (!st && r.status === 'ok' && !r.pending) { r.status = 'missing'; missing++; }
+        else if (st && r.status === 'missing') { r.status = 'ok'; r.sizeBytes = st.size; r.mtimeMs = st.mtimeMs; back++; }
+      });
+      await L.save();
+      return { missing: missing, back: back };
+    }
+  };
+
   // 移除實體檔：只刪衍生資料夾裡的檔案（isDerivedPath 把關），刪完再 stat 確認真的消失
   var LIB_HOST = {
     isDerivedPath: isDerivedPath,
+    // 匯入用：一次查一批路徑的現況（{size, mtimeMs} 或 null＝不存在），給 planImport 判斷 sig 與是否消失
+    statMany: async function (paths) {
+      var a = api(), out = {};
+      for (var i = 0; i < paths.length; i++) {
+        var p = paths[i];
+        if (!a || !a.rawfs || !a.rawfs.stat) { out[p] = null; continue; }
+        try { var st = await a.rawfs.stat(absPath(p)); out[p] = st && st.isFile !== false ? { size: st.size, mtimeMs: st.mtimeMs } : null; }
+        catch (_) { out[p] = null; }
+      }
+      return out;
+    },
+    // 匯出：讓使用者選資料夾（desktopAPI.roots.browse），檔案寫進去（rawfs.writeFile）；取消回傳 null
+    exportToFolder: async function (text, fileName) {
+      var a = api(); if (!a || !a.roots || !a.roots.browse || !a.rawfs || !a.rawfs.writeFile) throw new Error('匯出的通道不存在（需要桌面版）');
+      var dir = await a.roots.browse();
+      if (!dir) return null;
+      var full = joinPath(dir, fileName);
+      await a.rawfs.writeFile(full, { base64: bytesToB64(new TextEncoder().encode(text)) });
+      return { path: full };
+    },
     removeFiles: async function (paths) {
       var a = api(); if (!a || !a.rawfs || !a.rawfs.remove) throw new Error('刪除檔案的通道不存在（需要桌面版）');
       var out = [];
@@ -795,7 +900,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, md5: MD5_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
@@ -1006,7 +1111,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消

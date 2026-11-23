@@ -806,6 +806,241 @@
     return lib.records.length;
   }
 
+  // ───────────────────────── 匯出／匯入資料庫（純函式，不碰檔案系統）
+  // 匯出檔：{ format, version, exportedAt, sources, records }；records 帶旋律索引（melody）、歌詞（lyrics）、衍生關係（derivedFrom）。
+  var DB_FORMAT = 'fa-musiclib-db';
+  function cloneJson(x) { return JSON.parse(JSON.stringify(x)); }
+  function exportDb(lib, opts) {
+    opts = opts || {};
+    return { format: DB_FORMAT, version: VERSION, exportedAt: opts.now || new Date().toISOString(), sources: cloneJson(lib.sources || []), records: cloneJson(lib.records || []) };
+  }
+  // 檔案的 sig：大小＋修改時間（與掃描判斷「檔案變了沒」同一套）
+  function sigOfRec(r) { return String(r.sizeBytes != null ? r.sizeBytes : (r.size || 0)) + ':' + String(r.mtimeMs || 0); }
+  function sigOfStat(st) { return String(st.size || 0) + ':' + String(st.mtimeMs || 0); }
+  // 先整份驗證；壞的就回傳錯誤，不碰現有資料。statOf(path) → { size, mtimeMs } 或 null（檔案不存在）。
+  // mode：'merge'（保留現有、補上新的）或 'replace'（取代全部）。回傳的 plan 只是新狀態，要 applyImport 才寫進 lib。
+  function planImport(lib, data, opts) {
+    opts = opts || {};
+    var mode = opts.mode === 'replace' ? 'replace' : 'merge';
+    var statOf = opts.statOf || function () { return null; };
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: '檔案內容不是音樂庫資料（不是 JSON 物件）' };
+    if (data.format !== DB_FORMAT) return { ok: false, error: '這不是音樂庫匯出的檔案（格式欄位不是 ' + DB_FORMAT + '）' };
+    if (typeof data.version !== 'number' || !(data.version >= 1)) return { ok: false, error: '檔案沒有有效的版本號，無法確認能不能讀' };
+    if (data.version > VERSION) return { ok: false, error: '檔案版本是 ' + data.version + '，比這個 app 認得的版本 ' + VERSION + ' 新，請先更新 app；現有資料沒有被改動' };
+    if (!Array.isArray(data.sources) || !Array.isArray(data.records)) return { ok: false, error: '檔案缺少來源或紀錄清單' };
+    for (var i = 0; i < data.sources.length; i++) {
+      var s = data.sources[i];
+      if (!s || typeof s.id !== 'string' || typeof s.label !== 'string' || typeof s.type !== 'string') return { ok: false, error: '第 ' + (i + 1) + ' 個來源的格式不對' };
+    }
+    for (var j = 0; j < data.records.length; j++) {
+      var r = data.records[j];
+      if (!r || typeof r.key !== 'string' || typeof r.path !== 'string' || typeof r.sourceId !== 'string') return { ok: false, error: '第 ' + (j + 1) + ' 筆紀錄的格式不對（缺 key、path 或 sourceId）' };
+    }
+    // 以下只讀現有資料、在副本上算
+    var base = mode === 'replace' ? { sources: [], records: [] } : cloneJson({ sources: lib.sources || [], records: lib.records || [] });
+    var srcMap = {}, usedSrcIds = {};
+    base.sources.forEach(function (s) { usedSrcIds[s.id] = true; });
+    data.sources.forEach(function (s) {
+      var same = base.sources.filter(function (x) { return x.type === s.type && x.label === s.label; })[0];
+      if (same) { srcMap[s.id] = same.id; return; }
+      var id = s.id, n = 0;
+      while (usedSrcIds[id]) id = s.id + '~' + (++n);
+      usedSrcIds[id] = true;
+      srcMap[s.id] = id;
+      base.sources.push({ id: id, type: s.type, label: s.label, addedAt: s.addedAt || null, lastScanAt: s.lastScanAt || null });
+    });
+    var localByPath = {};
+    base.records.forEach(function (r) { localByPath[r.path] = r; });
+    // 內容指紋（整檔 md5）：路徑不同、md5 相同 → 同一個檔案（換了路徑）；只在唯一配上時才沿用
+    var localByMd5 = {};
+    base.records.forEach(function (r) { if (r.status === 'ok' && hasFullMd5(r)) (localByMd5[r.md5] = localByMd5[r.md5] || []).push(r); });
+    var keyMap = {}, stats = { imported: data.records.length, added: 0, matched: 0, matchedByMd5: 0, filledIndex: 0, indexStale: 0, missing: 0, orphanDerived: 0 };
+    var statCache = {};
+    function statFor(p) { if (!(p in statCache)) statCache[p] = statOf(p) || null; return statCache[p]; }
+    // 先處理來源檔，再處理擷取產物（擷取產物的 key 依賴父紀錄的新 key）
+    var ordered = data.records.filter(function (r) { return !r.derivedFrom; }).concat(data.records.filter(function (r) { return !!r.derivedFrom; }));
+    ordered.forEach(function (src) {
+      var sid = srcMap[src.sourceId] || src.sourceId;
+      var st = statFor(src.path);
+      var local = localByPath[src.path];
+      if (local) {
+        // 同一個路徑已經在曲庫裡：沿用現有的紀錄；它沒有索引／歌詞、而匯入的檔案 sig 跟現在一樣，才補上
+        keyMap[src.key] = local.key; stats.matched++;
+        if (st && sigOfRec(src) === sigOfStat(st)) {
+          var filled = false;
+          if (!local.melody && src.melody && src.melody.status === 'ok') { local.melody = cloneJson(src.melody); filled = true; }
+          if (!local.lyrics && src.lyrics) { local.lyrics = cloneJson(src.lyrics); local.lyricStatus = src.lyricStatus || 'done'; filled = true; }
+          if (filled) stats.filledIndex++;
+        }
+        return;
+      }
+      var byHash = (!local && hasFullMd5(src)) ? (localByMd5[src.md5] || []) : [];
+      if (byHash.length === 1) {
+        var lm = byHash[0];
+        keyMap[src.key] = lm.key; stats.matched++; stats.matchedByMd5++;
+        if (!lm.melody && src.melody && src.melody.status === 'ok') { lm.melody = cloneJson(src.melody); stats.filledIndex++; }
+        if (!lm.lyrics && src.lyrics) { lm.lyrics = cloneJson(src.lyrics); lm.lyricStatus = src.lyricStatus || 'done'; stats.filledIndex++; }
+        return;
+      }
+      var nr = cloneJson(src);
+      nr.sourceId = sid;
+      if (nr.derivedFrom) {
+        var parentNew = keyMap[nr.derivedFrom];
+        if (!parentNew) stats.orphanDerived++;
+        nr.derivedFrom = parentNew || nr.derivedFrom;
+        nr.key = 'derived|' + nr.derivedFrom + '|' + (src.derivedIndex || 0);
+      } else nr.key = sid + '|' + src.path;
+      keyMap[src.key] = nr.key;
+      if (!st) {
+        nr.status = 'missing'; stats.missing++;
+      } else {
+        nr.status = 'ok';
+        var same = sigOfRec(src) === sigOfStat(st);
+        nr.sizeBytes = st.size; nr.mtimeMs = st.mtimeMs;
+        if (!same) {
+          // 檔案變了：索引與歌詞是舊內容的，不沿用；紀錄本身保留，標為索引過期（下次建索引會重算）
+          nr.indexStale = true; stats.indexStale++;
+          nr.melody = null; nr.lyrics = null; nr.lyricStatus = 'none'; nr.lyricError = null;
+        } else delete nr.indexStale;
+      }
+      base.records.push(nr);
+      localByPath[nr.path] = nr;
+      stats.added++;
+    });
+    return { ok: true, mode: mode, sources: base.sources, records: base.records, stats: stats };
+  }
+  function applyImport(lib, plan) {
+    lib.sources = plan.sources;
+    lib.records = plan.records;
+    return plan.stats;
+  }
+
+  // ───────────────────────── MD5 指紋：重複檔、搬家後的對應（純函式，不碰檔案系統）
+  // 紀錄上的欄位：md5（小寫十六進位）、hashKind（'md5-full' 整檔；'md5-head4M+size' 近似：只有開頭 4 MB＋大小）、md5Sig（算的當時的 sig）。
+  var HASH_FULL = 'md5-full', HASH_HEAD = 'md5-head4M+size';
+  function hasFullMd5(r) { return !!r && r.hashKind === HASH_FULL && typeof r.md5 === 'string' && r.md5.length === 32; }
+  // 要不要（重新）算：沒有整檔 md5、或檔案的 sig 變了。掃描本身不算，由背景佇列做。
+  function needsHash(r) {
+    if (!r || r.pending || r.status !== 'ok') return false;
+    return !(hasFullMd5(r) && r.md5Sig === sigOfRec(r));
+  }
+  function setHash(r, res) { r.md5 = res.hex; r.hashKind = res.kind; r.md5Sig = sigOfRec(r); delete r.hashError; }
+  // 內容完全相同的重複檔（同 md5、不同路徑）：回傳 [{ md5, recs }]，只列兩筆以上的群組
+  function duplicateGroups(records) {
+    var by = {};
+    (records || []).forEach(function (r) { if (r.status === 'ok' && hasFullMd5(r)) (by[r.md5] = by[r.md5] || []).push(r); });
+    return Object.keys(by).filter(function (k) { return by[k].length > 1; }).map(function (k) { return { md5: k, recs: by[k] }; });
+  }
+  function duplicateKeys(records) {
+    var out = {};
+    duplicateGroups(records).forEach(function (g) { g.recs.forEach(function (r) { out[r.key] = true; }); });
+    return out;
+  }
+  function pathTail(p, n) { return String(p || '').split(/[\\\/]/).filter(Boolean).slice(-n).join('/').toLowerCase(); }
+  function nameLower(r) { return String(r.name || '').toLowerCase(); }
+  // 相近度：最後兩層（資料夾／檔名）相同 +2；檔名相同 +1；只差副檔名 +0.5
+  function similarityOf(oldR, newR) {
+    var s = 0;
+    if (pathTail(oldR.path, 2) === pathTail(newR.path, 2)) s += 2;
+    if (nameLower(oldR) === nameLower(newR)) s += 1;
+    else if (nameLower(oldR).replace(/\.[^.]*$/, '') === nameLower(newR).replace(/\.[^.]*$/, '')) s += 0.5;
+    return s;
+  }
+  // 規劃對應（不改 lib）。舊紀錄＝status 'missing' 且有整檔 md5；新紀錄＝opts.newKeys（這一次掃到的）且 status ok 且有整檔 md5。
+  // 同 md5 的一群：只有一對一、且彼此都是最相近的配對才配；配不出來的列為歧義，絕不把兩筆舊紀錄指向同一個新檔案。
+  function planRelocation(lib, opts) {
+    opts = opts || {};
+    var newKeys = opts.newKeys || {}, recs = lib.records || [];
+    var olds = recs.filter(function (r) { return r.status === 'missing' && !r.pending; });
+    var cands = recs.filter(function (r) { return newKeys[r.key] && r.status === 'ok' && hasFullMd5(r); });
+    var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], pendingHash: recs.filter(needsHash).length };
+    var oldBy = {}, candBy = {};
+    olds.forEach(function (r) { if (hasFullMd5(r)) (oldBy[r.md5] = oldBy[r.md5] || []).push(r); else plan.noMd5.push(r); });
+    cands.forEach(function (r) { (candBy[r.md5] = candBy[r.md5] || []).push(r); });
+    Object.keys(oldBy).forEach(function (m) {
+      var os = oldBy[m], cs = candBy[m] || [];
+      if (!cs.length) { os.forEach(function (o) { plan.notFound.push(o); }); return; }
+      var pairs = [];
+      os.forEach(function (o) { cs.forEach(function (c) { pairs.push({ o: o, c: c, s: similarityOf(o, c) }); }); });
+      os.forEach(function (o) {
+        var mine = pairs.filter(function (p) { return p.o === o; });
+        var best = Math.max.apply(null, mine.map(function (p) { return p.s; }));
+        var top = mine.filter(function (p) { return p.s === best; });
+        if (top.length !== 1) { plan.ambiguous.push({ old: o, candidates: cs.slice() }); return; }
+        var c = top[0].c;
+        var theirs = pairs.filter(function (p) { return p.c === c; });
+        var best2 = Math.max.apply(null, theirs.map(function (p) { return p.s; }));
+        var top2 = theirs.filter(function (p) { return p.s === best2; });
+        if (top2.length !== 1 || top2[0].o !== o) { plan.ambiguous.push({ old: o, candidates: cs.slice() }); return; }
+        plan.moves.push({ old: o, neu: c });
+      });
+    });
+    return plan;
+  }
+  // 套用對應：舊紀錄改成新路徑（保留旋律索引、歌詞、衍生關係）；被配上的新紀錄拿掉；沒有紀錄的舊來源拿掉（不留空殼來源）
+  function applyRelocation(lib, plan) {
+    var removeNew = [], keyMap = {}, touched = {}, usedNew = [];
+    plan.moves.forEach(function (m) {
+      var o = m.old, n = m.neu;
+      if (usedNew.indexOf(n) >= 0) return;   // 同一個新檔案不配給兩筆（防呆）
+      usedNew.push(n); removeNew.push(n);
+      touched[o.sourceId] = true;
+      o.path = n.path; o.name = n.name; o.ext = n.ext; o.sourceId = n.sourceId; o.sourceType = n.sourceType; o.sourceLabel = n.sourceLabel;
+      o.status = 'ok'; o.sizeBytes = n.sizeBytes; o.mtimeMs = n.mtimeMs; o.relocatedAt = Date.now();
+      if (!o.derivedFrom && o.key !== n.key) { keyMap[o.key] = n.key; o.key = n.key; }
+    });
+    lib.records = lib.records.filter(function (r) { return removeNew.indexOf(r) < 0; });
+    lib.records.forEach(function (r) { if (r.derivedFrom && keyMap[r.derivedFrom]) r.derivedFrom = keyMap[r.derivedFrom]; });
+    lib.sources = lib.sources.filter(function (s) {
+      if (!touched[s.id]) return true;
+      return lib.records.some(function (r) { return r.sourceId === s.id; });
+    });
+    return { moved: usedNew.length };
+  }
+  // 整批摘要（給人看的一行＋列出找不到與歧義的檔名）
+  function describeRelocation(plan, applied) {
+    var ok = plan.moves.length, nf = plan.notFound.length, am = plan.ambiguous.length, nm = plan.noMd5.length;
+    var out = '對應成功 ' + ok + ' 個、仍找不到 ' + nf + ' 個、有歧義 ' + am + ' 個。';
+    if (nm) out += '另有 ' + nm + ' 個因為搬家前沒算過 md5 所以無法對應，請把檔案放回原位，等 md5 算完再重新對應。';
+    if (plan.pendingHash) out += '（還有 ' + plan.pendingHash + ' 個檔案的 md5 尚未算完，算完後才會再對應一次。）';
+    var nameList = function (arr) { return arr.slice(0, 10).map(function (r) { return r.name; }).join('、') + (arr.length > 10 ? '…等 ' + arr.length + ' 個' : ''); };
+    if (nf) out += ' 找不到：' + nameList(plan.notFound.map(function (x) { return x; })) + '。';
+    if (am) out += ' 歧義（不亂配，請自己確認）：' + nameList(plan.ambiguous.map(function (x) { return x.old; })) + '。';
+    if (applied && applied.moved !== undefined && applied.moved !== ok) out += '（實際套用 ' + applied.moved + ' 個）';
+    return out;
+  }
+
+  // ───────────────────────── 旋律索引完成後的白話訊息（純函式）
+  // sum：{ done, skipped, failed, cancelled, failures:[{name, reason}] }；groups：{ source, mp3, wav, other }（不建索引的筆數，依類別）
+  function describeMelodySummary(sum, groups) {
+    sum = sum || {}; groups = groups || {};
+    var out = [], head = '旋律索引完成：新建 ' + (sum.done || 0) + ' 首、已建過沿用 ' + (sum.skipped || 0) + ' 首、失敗 ' + (sum.failed || 0) + ' 首';
+    if (sum.cancelled) head += '、取消 ' + sum.cancelled + ' 首';
+    out.push(head + '。');
+    var parts = [];
+    if (groups.source) parts.push('遊戲原始檔 ' + groups.source + ' 個（請看它擷取出來的 MIDI）');
+    var sib = [];
+    if (groups.mp3) sib.push('mp3 ' + groups.mp3 + ' 個');
+    if (groups.wav) sib.push('wav ' + groups.wav + ' 個');
+    if (sib.length) parts.push('擷取出的 ' + sib.join(' 與 ') + '（跟同一首的 MIDI 是同一首，所以只用 MIDI 建索引，搜到時會連到同一首）');
+    if (groups.other) parts.push('其他 ' + groups.other + ' 個（種類不支援旋律比對）');
+    var n = (groups.source || 0) + (groups.mp3 || 0) + (groups.wav || 0) + (groups.other || 0);
+    if (n) out.push('另有 ' + n + ' 筆不需要建：' + parts.join('、') + '。');
+    var f = sum.failures || [];
+    if (f.length) {
+      var shown = f.slice(0, 5).map(function (x) { return x.name + '（' + x.reason + '）'; }).join('；');
+      out.push('失敗的有：' + shown + (f.length > 5 ? '；…另 ' + (f.length - 5) + ' 筆' : '') + '。');
+    }
+    return out.join('');
+  }
+  // 不建索引的分類（給訊息用）：來源檔、擷取出的 mp3、擷取出的 wav、其他
+  function melodyGroup(r) {
+    if (isSourceOnly(r)) return 'source';
+    if (r.derivedFrom && r.kind === 'mp3') return 'mp3';
+    if (r.derivedFrom && r.kind === 'wav') return 'wav';
+    return 'other';
+  }
+
   // ───────────────────────── 旋律索引的收錄規則（純函式）
   // 只收一般音樂檔（音訊、影片、MIDI）與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）與 nsf 不收，
   // 它們本身不是音訊，拿去解碼一定失敗（舊版就是這樣：86 筆全部失敗）。
@@ -906,6 +1141,10 @@
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
     scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
-    createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary
+    createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary,
+    DB_FORMAT: DB_FORMAT, exportDb: exportDb, planImport: planImport, applyImport: applyImport,
+    sigOfRec: sigOfRec, sigOfStat: sigOfStat, describeMelodySummary: describeMelodySummary, melodyGroup: melodyGroup,
+    HASH_FULL: HASH_FULL, HASH_HEAD: HASH_HEAD, hasFullMd5: hasFullMd5, needsHash: needsHash, setHash: setHash,
+    duplicateGroups: duplicateGroups, duplicateKeys: duplicateKeys, planRelocation: planRelocation, applyRelocation: applyRelocation, describeRelocation: describeRelocation
   };
 });
