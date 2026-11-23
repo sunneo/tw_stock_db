@@ -353,7 +353,8 @@ const FaMusicLibHost = (function () {
     var u8 = b64ToBytes(r.base64);
     if (/\.midi?$/i.test(rec.name)) {
       var song = FaMidi.parse(u8), built = FaMusicLibMelody.songLines(song);
-      return { notes: built.mix, tracks: built.tracks, method: 'mid' };
+      // 索引只存每條線的中繼資料與 contour（base＋semis 就能還原音符），不另外存一份 notes
+      return { notes: built.mix, tracks: built.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: 'mid' };
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
@@ -491,7 +492,8 @@ const FaMusicLibHost = (function () {
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
       // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
       var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
-      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), contour: t.contour }); });
+      lines[0].track = null; lines[0].mode = 'merged';
+      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
       return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
     });
   }
@@ -535,6 +537,24 @@ const FaMusicLibHost = (function () {
     return { node: node };
   }
 
+  // 對照聽：索引記的命中線（base＋semis）還原成音符，與哼歌做成一首臨時的單軌 MIDI：
+  // 先哼歌、停 0.8 秒、再命中段（只改 base 移到哼歌音域附近，不讀原檔，所以轉譜來的音訊線也能對照）；同一個音色、速度照實。
+  // 回傳 { node }，畫面插在結果列下面。舊版索引（沒有 semis）會丟出「請重建旋律索引」
+  async function compareHitAsMidi(hit, humNotes) {
+    var fa = window.fa;
+    if (!fa || !fa._midiHost || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
+    var res = FaMusicLibMelody.compareHit(hit && hit.line, hit, humNotes), cmp = res.cmp;
+    var s = FaMidi.addTrack(FaMidi.emptySong(), '你哼的 → 命中線', 0, false);
+    s.title = '對照聽';
+    s.tracks[0].notes = cmp.hum.concat(cmp.hit).map(function (x) {
+      var t0 = FaMidi.secToTicks(s, x.t), t1 = FaMidi.secToTicks(s, x.t + x.d);
+      return { t: t0, d: Math.max(1, t1 - t0), n: Math.round(x.n), v: 90 };
+    }).sort(function (x, y) { return x.t - y.t || x.n - y.n; });
+    var title = '你哼的 → 命中的旋律線（' + (hit.label || '合併（所有軌）') + '，已移到你的音域）';
+    var node = await FaMidiUI.mount({ song: FaMidi.validate(s), title: title, host: fa._midiHost(), M: FaMidi });
+    return { node: node, shift: res.shift, humMedian: cmp.humMedian, hitMedian: cmp.hitMedian };
+  }
+
   var MELODY_HOST = {
     buildIndex: buildMelodyIndex,
     cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
@@ -545,6 +565,7 @@ const FaMusicLibHost = (function () {
     notesFromHum: notesFromHum,
     search: searchHum,
     humAsMidi: humAsMidi,
+    compareHitAsMidi: compareHitAsMidi,
     playClip: playClip,
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); },

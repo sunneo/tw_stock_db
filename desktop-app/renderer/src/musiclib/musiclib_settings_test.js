@@ -58,6 +58,7 @@ function stubMelody(entries) {
     notesFromHum: function () { return new Promise(function () {}); },
     search: function () { return Promise.resolve({ ok: false, reason: 'stub' }); },
     playClip: function () { return Promise.resolve({}); },
+    compareHitAsMidi: function () { return Promise.resolve({}); },
     humAsMidi: function () {}
   };
 }

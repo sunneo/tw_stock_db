@@ -707,8 +707,9 @@
         hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
-          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
-          var play = h('button', null, '試聽命中段');
+          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒' +
+            (x.hit && x.hit.track != null ? '；這首的命中來自' + x.hit.label + ' 的某條旋律線，不是整首音樂' : '；命中的是所有軌合併成的一條旋律線'));
+          var play = h('button', null, '原曲這一段');
           play.onclick = function () {
             // MIDI 命中段回傳播放卡片（插在這一列下面，再按一次收起）；音訊檔直接播
             if (line._clip) { if (line._clip.parentNode) line._clip.parentNode.removeChild(line._clip); line._clip = null; return; }
@@ -716,7 +717,16 @@
               if (res && res.node) { line._clip = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); }
             }).catch(function (e) { hStatus('試聽失敗：' + String((e && e.message) || e)); });
           };
+          // 對照聽：臨時的單軌 MIDI（先哼歌、停 0.8 秒、再播命中的那條線，已移到你的音域）；卡片插在這一列下面，再按一次收起
+          var cmpBtn = h('button', null, '對照聽');
+          cmpBtn.onclick = function () {
+            if (line._cmp) { if (line._cmp.parentNode) line._cmp.parentNode.removeChild(line._cmp); line._cmp = null; return; }
+            MEL.compareHitAsMidi(x.hit, melHum).then(function (res) {
+              if (res && res.node) { line._cmp = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); hStatus('已載入對照聽：先哼歌，停 0.8 秒，再播命中的那條線（已移到你的音域）；再按一次收起'); }
+            }).catch(function (e) { hStatus('對照聽失敗：' + String((e && e.message) || e)); });
+          };
           line.appendChild(document.createTextNode(' ')); line.appendChild(play);
+          line.appendChild(document.createTextNode(' ')); line.appendChild(cmpBtn);
           mRes.appendChild(line);
         });
       }
