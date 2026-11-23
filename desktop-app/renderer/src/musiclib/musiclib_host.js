@@ -403,11 +403,11 @@ const FaMusicLibHost = (function () {
     if (melodyState.running) throw new Error('旋律索引已在建立中');
     melodyState.running = true; melodyState.cancelled = false;
     // 只收一般音樂檔與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）不是音訊，拿去解碼一定失敗（舊版就是這樣），所以不收，並寫明原因
-    var recs = [], excludedCount = 0, excludedByReason = {};
+    var recs = [], excludedCount = 0, excludedByReason = {}, groups = { source: 0, mp3: 0, wav: 0, other: 0 };
     L.records.forEach(function (r) {
       var e = FaMusicLib.melodyEligible(r);
       if (e.ok) recs.push(r);
-      else { excludedCount++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
+      else { excludedCount++; groups[FaMusicLib.melodyGroup(r)]++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
     });
     var saveCount = 0;
     try {
@@ -419,7 +419,8 @@ const FaMusicLibHost = (function () {
         waitIfPaused: melodyGate
       });
       await L.save();
-      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason;
+      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason; sum.groups = groups;
+      sum.failures = recs.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).map(function (r) { return { name: r.name, reason: r.melody.reason }; });
       return sum;
     } finally { melodyState.running = false; melodyState.paused = false; }
   }
@@ -780,6 +781,26 @@ const FaMusicLibHost = (function () {
   // 移除實體檔：只刪衍生資料夾裡的檔案（isDerivedPath 把關），刪完再 stat 確認真的消失
   var LIB_HOST = {
     isDerivedPath: isDerivedPath,
+    // 匯入用：一次查一批路徑的現況（{size, mtimeMs} 或 null＝不存在），給 planImport 判斷 sig 與是否消失
+    statMany: async function (paths) {
+      var a = api(), out = {};
+      for (var i = 0; i < paths.length; i++) {
+        var p = paths[i];
+        if (!a || !a.rawfs || !a.rawfs.stat) { out[p] = null; continue; }
+        try { var st = await a.rawfs.stat(absPath(p)); out[p] = st && st.isFile !== false ? { size: st.size, mtimeMs: st.mtimeMs } : null; }
+        catch (_) { out[p] = null; }
+      }
+      return out;
+    },
+    // 匯出：讓使用者選資料夾（desktopAPI.roots.browse），檔案寫進去（rawfs.writeFile）；取消回傳 null
+    exportToFolder: async function (text, fileName) {
+      var a = api(); if (!a || !a.roots || !a.roots.browse || !a.rawfs || !a.rawfs.writeFile) throw new Error('匯出的通道不存在（需要桌面版）');
+      var dir = await a.roots.browse();
+      if (!dir) return null;
+      var full = joinPath(dir, fileName);
+      await a.rawfs.writeFile(full, { base64: bytesToB64(new TextEncoder().encode(text)) });
+      return { path: full };
+    },
     removeFiles: async function (paths) {
       var a = api(); if (!a || !a.rawfs || !a.rawfs.remove) throw new Error('刪除檔案的通道不存在（需要桌面版）');
       var out = [];

@@ -43,7 +43,7 @@
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
-  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律搜尋'], ['yt', 'YouTube']];
+  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律搜尋'], ['yt', 'YouTube'], ['db', '資料']];
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function errText(e) { return String((e && e.message) || e); }
@@ -224,7 +224,15 @@
       var hits = lib.search(q, { scope: scope }), hitMap = {}, keep = {}, byKey = {};
       lib.records.forEach(function (r) { byKey[r.key] = r; });
       hits.forEach(function (x) { keep[x.record.key] = true; hitMap[x.record.key] = x.lyricHits || []; });
-      hits.forEach(function (x) { var p = x.record.derivedFrom; if (p && byKey[p] && !keep[p]) { keep[p] = true; hitMap[p] = []; } });
+      // 命中的子曲目（例如 MIDI）：它的來源，和同一來源擷取出的兄弟（mp3／wav）一起顯示、可播放；命中來源時它的子曲目也一起顯示
+      var kids = {};
+      lib.records.forEach(function (r) { if (r.derivedFrom) (kids[r.derivedFrom] = kids[r.derivedFrom] || []).push(r); });
+      var parents = {};
+      Object.keys(keep).forEach(function (k) { var r = byKey[k]; if (r) parents[r.derivedFrom || k] = true; });
+      Object.keys(parents).forEach(function (pk) {
+        if (byKey[pk]) { keep[pk] = true; if (!hitMap[pk]) hitMap[pk] = []; }
+        (kids[pk] || []).forEach(function (c) { keep[c.key] = true; if (!hitMap[c.key]) hitMap[c.key] = []; });
+      });
       return { recs: lib.records.filter(function (r) { return keep[r.key]; }).sort(bySort), hits: hitMap, searching: true, count: hits.length };
     }
     function lyricCell(r) {
@@ -535,9 +543,7 @@
       mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…'); melRunning = true; renderWork();
       MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork();
-        var why = Object.keys(sum.excludedByReason || {}).map(function (k) { return k + ' ' + sum.excludedByReason[k] + ' 筆'; }).join('；');
-        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled
-          + (sum.excluded ? '、不建索引 ' + sum.excluded + ' 筆（' + why + '）' : '') + '（失敗的會寫明原因）');
+        melStatus(M.describeMelodySummary(sum, sum.groups || {}));
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork(); melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
@@ -629,6 +635,75 @@
       host.youtubeControl(j.job.paused ? 'resume' : 'pause');
     };
     bYtCancel.onclick = function () { if (host.youtubeControl) host.youtubeControl('cancel'); };
+
+    // ───── 資料分頁：匯出／匯入資料庫。純邏輯在 core（exportDb、planImport、applyImport）；檔案讀寫在 host。
+    // 匯入取代或合併前一律先在面板內列出結果，按「確定」才寫入（不用 window.confirm）。
+    var dbBox = h('div', 'fml-bar');
+    var bDbExp = h('button', null, '匯出資料庫');
+    var dbMode = h('select');
+    [['merge', '合併（保留現有，補上新的）'], ['replace', '取代全部（現有資料會被換掉）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; dbMode.appendChild(op); });
+    var bDbImp = h('button', null, '匯入資料庫…');
+    var dbOk = h('button', null, '確定匯入'), dbNo = h('button', null, '取消');
+    dbOk.style.display = 'none'; dbNo.style.display = 'none';
+    var dbStat = h('span', 'fml-st');
+    var dbIn = h('input'); dbIn.type = 'file'; dbIn.accept = '.json,application/json'; dbIn.style.display = 'none';
+    dbBox.appendChild(bDbExp); dbBox.appendChild(dbMode); dbBox.appendChild(bDbImp); dbBox.appendChild(dbOk); dbBox.appendChild(dbNo); dbBox.appendChild(dbStat); dbBox.appendChild(dbIn);
+    var dbNote = h('div', 'fml-foot', '匯出會把來源、紀錄、旋律索引、歌詞轉錄結果與衍生關係存成一個資料檔（檔名含日期，帶版本號）。匯入時以路徑比對：路徑與檔案大小、修改時間都相同才沿用索引與歌詞；檔案變了就標為索引過期；路徑找不到就標為消失，資料保留。讀不懂的檔案或較新版本的檔案會明確報錯，現有資料不會被改動。');
+    tabPane.db.appendChild(dbBox); tabPane.db.appendChild(dbNote);
+    function todayStr() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function downloadText(text, name) {
+      var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      var a = document.createElement('a'); a.href = url; a.download = name; a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+    bDbExp.onclick = async function () {
+      var text = JSON.stringify(M.exportDb(lib), null, 1);
+      var name = 'fa-musiclib-db_' + todayStr() + '.json';
+      dbStat.textContent = '匯出中…';
+      try {
+        if (host.library && host.library.exportToFolder) {
+          var r = await host.library.exportToFolder(text, name);
+          dbStat.textContent = r ? '已匯出到 ' + r.path + '（' + lib.records.length + ' 筆紀錄，資料版本 ' + M.VERSION + '）' : '已取消匯出';
+        } else {
+          downloadText(text, name);
+          dbStat.textContent = '已開始下載 ' + name;
+        }
+      } catch (e) { dbStat.textContent = '匯出失敗：' + errText(e); }
+    };
+    var pendingPlan = null;
+    function clearImportAsk() { pendingPlan = null; dbOk.style.display = 'none'; dbNo.style.display = 'none'; }
+    bDbImp.onclick = function () { clearImportAsk(); dbIn.value = ''; dbIn.click(); };
+    dbIn.onchange = async function () {
+      var f = dbIn.files && dbIn.files[0]; if (!f) return;
+      clearImportAsk(); dbStat.textContent = '讀取檔案中…';
+      var data;
+      try { data = JSON.parse(await f.text()); } catch (e) { dbStat.textContent = '匯入失敗：這個檔案讀不懂（' + errText(e) + '），現有資料沒有被改動'; return; }
+      var mode = dbMode.value;
+      var paths = (data && Array.isArray(data.records)) ? data.records.map(function (x) { return x && x.path; }).filter(function (p) { return typeof p === 'string'; }) : [];
+      var statMap = {};
+      try { statMap = host.library && host.library.statMany ? await host.library.statMany(paths) : {}; } catch (_) { statMap = {}; }
+      var plan = M.planImport(lib, data, { mode: mode, statOf: function (p) { return statMap[p] || null; } });
+      if (!plan.ok) { dbStat.textContent = '匯入失敗：' + plan.error + '；現有資料沒有被改動'; return; }
+      pendingPlan = plan;
+      var s = plan.stats;
+      dbStat.textContent = (mode === 'replace' ? '取代全部：現有 ' + lib.records.length + ' 筆紀錄會被換掉。' : '合併：') + '檔案共 ' + s.imported + ' 筆，新增 ' + s.added
+        + '、路徑已在曲庫（沿用現有）' + s.matched + '、補上索引或歌詞 ' + s.filledIndex + '、索引過期 ' + s.indexStale + '、檔案已消失（資料保留）' + s.missing
+        + (s.orphanDerived ? '、擷取產物找不到來源 ' + s.orphanDerived : '') + '。';
+      dbOk.textContent = mode === 'replace' ? '確定取代' : '確定匯入';
+      dbOk.style.display = ''; dbNo.style.display = '';
+    };
+    dbNo.onclick = function () { clearImportAsk(); dbStat.textContent = '已取消匯入，資料沒有改動'; };
+    dbOk.onclick = async function () {
+      if (!pendingPlan) return;
+      var plan = pendingPlan; clearImportAsk();
+      try {
+        M.applyImport(lib, plan);
+        await lib.save();
+        msg = '匯入完成：' + lib.records.length + ' 筆紀錄';
+        dbStat.textContent = msg;
+      } catch (e) { msg = '匯入寫入失敗：' + errText(e); dbStat.textContent = msg; }
+      render();
+    };
 
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列與進行中工作，不重畫清單）

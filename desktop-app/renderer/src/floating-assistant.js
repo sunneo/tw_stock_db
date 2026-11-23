@@ -83827,6 +83827,135 @@ const holder = {};
     return lib.records.length;
   }
 
+  // ───────────────────────── 匯出／匯入資料庫（純函式，不碰檔案系統）
+  // 匯出檔：{ format, version, exportedAt, sources, records }；records 帶旋律索引（melody）、歌詞（lyrics）、衍生關係（derivedFrom）。
+  var DB_FORMAT = 'fa-musiclib-db';
+  function cloneJson(x) { return JSON.parse(JSON.stringify(x)); }
+  function exportDb(lib, opts) {
+    opts = opts || {};
+    return { format: DB_FORMAT, version: VERSION, exportedAt: opts.now || new Date().toISOString(), sources: cloneJson(lib.sources || []), records: cloneJson(lib.records || []) };
+  }
+  // 檔案的 sig：大小＋修改時間（與掃描判斷「檔案變了沒」同一套）
+  function sigOfRec(r) { return String(r.sizeBytes != null ? r.sizeBytes : (r.size || 0)) + ':' + String(r.mtimeMs || 0); }
+  function sigOfStat(st) { return String(st.size || 0) + ':' + String(st.mtimeMs || 0); }
+  // 先整份驗證；壞的就回傳錯誤，不碰現有資料。statOf(path) → { size, mtimeMs } 或 null（檔案不存在）。
+  // mode：'merge'（保留現有、補上新的）或 'replace'（取代全部）。回傳的 plan 只是新狀態，要 applyImport 才寫進 lib。
+  function planImport(lib, data, opts) {
+    opts = opts || {};
+    var mode = opts.mode === 'replace' ? 'replace' : 'merge';
+    var statOf = opts.statOf || function () { return null; };
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: '檔案內容不是音樂庫資料（不是 JSON 物件）' };
+    if (data.format !== DB_FORMAT) return { ok: false, error: '這不是音樂庫匯出的檔案（格式欄位不是 ' + DB_FORMAT + '）' };
+    if (typeof data.version !== 'number' || !(data.version >= 1)) return { ok: false, error: '檔案沒有有效的版本號，無法確認能不能讀' };
+    if (data.version > VERSION) return { ok: false, error: '檔案版本是 ' + data.version + '，比這個 app 認得的版本 ' + VERSION + ' 新，請先更新 app；現有資料沒有被改動' };
+    if (!Array.isArray(data.sources) || !Array.isArray(data.records)) return { ok: false, error: '檔案缺少來源或紀錄清單' };
+    for (var i = 0; i < data.sources.length; i++) {
+      var s = data.sources[i];
+      if (!s || typeof s.id !== 'string' || typeof s.label !== 'string' || typeof s.type !== 'string') return { ok: false, error: '第 ' + (i + 1) + ' 個來源的格式不對' };
+    }
+    for (var j = 0; j < data.records.length; j++) {
+      var r = data.records[j];
+      if (!r || typeof r.key !== 'string' || typeof r.path !== 'string' || typeof r.sourceId !== 'string') return { ok: false, error: '第 ' + (j + 1) + ' 筆紀錄的格式不對（缺 key、path 或 sourceId）' };
+    }
+    // 以下只讀現有資料、在副本上算
+    var base = mode === 'replace' ? { sources: [], records: [] } : cloneJson({ sources: lib.sources || [], records: lib.records || [] });
+    var srcMap = {}, usedSrcIds = {};
+    base.sources.forEach(function (s) { usedSrcIds[s.id] = true; });
+    data.sources.forEach(function (s) {
+      var same = base.sources.filter(function (x) { return x.type === s.type && x.label === s.label; })[0];
+      if (same) { srcMap[s.id] = same.id; return; }
+      var id = s.id, n = 0;
+      while (usedSrcIds[id]) id = s.id + '~' + (++n);
+      usedSrcIds[id] = true;
+      srcMap[s.id] = id;
+      base.sources.push({ id: id, type: s.type, label: s.label, addedAt: s.addedAt || null, lastScanAt: s.lastScanAt || null });
+    });
+    var localByPath = {};
+    base.records.forEach(function (r) { localByPath[r.path] = r; });
+    var keyMap = {}, stats = { imported: data.records.length, added: 0, matched: 0, filledIndex: 0, indexStale: 0, missing: 0, orphanDerived: 0 };
+    var statCache = {};
+    function statFor(p) { if (!(p in statCache)) statCache[p] = statOf(p) || null; return statCache[p]; }
+    // 先處理來源檔，再處理擷取產物（擷取產物的 key 依賴父紀錄的新 key）
+    var ordered = data.records.filter(function (r) { return !r.derivedFrom; }).concat(data.records.filter(function (r) { return !!r.derivedFrom; }));
+    ordered.forEach(function (src) {
+      var sid = srcMap[src.sourceId] || src.sourceId;
+      var st = statFor(src.path);
+      var local = localByPath[src.path];
+      if (local) {
+        // 同一個路徑已經在曲庫裡：沿用現有的紀錄；它沒有索引／歌詞、而匯入的檔案 sig 跟現在一樣，才補上
+        keyMap[src.key] = local.key; stats.matched++;
+        if (st && sigOfRec(src) === sigOfStat(st)) {
+          var filled = false;
+          if (!local.melody && src.melody && src.melody.status === 'ok') { local.melody = cloneJson(src.melody); filled = true; }
+          if (!local.lyrics && src.lyrics) { local.lyrics = cloneJson(src.lyrics); local.lyricStatus = src.lyricStatus || 'done'; filled = true; }
+          if (filled) stats.filledIndex++;
+        }
+        return;
+      }
+      var nr = cloneJson(src);
+      nr.sourceId = sid;
+      if (nr.derivedFrom) {
+        var parentNew = keyMap[nr.derivedFrom];
+        if (!parentNew) stats.orphanDerived++;
+        nr.derivedFrom = parentNew || nr.derivedFrom;
+        nr.key = 'derived|' + nr.derivedFrom + '|' + (src.derivedIndex || 0);
+      } else nr.key = sid + '|' + src.path;
+      keyMap[src.key] = nr.key;
+      if (!st) {
+        nr.status = 'missing'; stats.missing++;
+      } else {
+        nr.status = 'ok';
+        var same = sigOfRec(src) === sigOfStat(st);
+        nr.sizeBytes = st.size; nr.mtimeMs = st.mtimeMs;
+        if (!same) {
+          // 檔案變了：索引與歌詞是舊內容的，不沿用；紀錄本身保留，標為索引過期（下次建索引會重算）
+          nr.indexStale = true; stats.indexStale++;
+          nr.melody = null; nr.lyrics = null; nr.lyricStatus = 'none'; nr.lyricError = null;
+        } else delete nr.indexStale;
+      }
+      base.records.push(nr);
+      localByPath[nr.path] = nr;
+      stats.added++;
+    });
+    return { ok: true, mode: mode, sources: base.sources, records: base.records, stats: stats };
+  }
+  function applyImport(lib, plan) {
+    lib.sources = plan.sources;
+    lib.records = plan.records;
+    return plan.stats;
+  }
+
+  // ───────────────────────── 旋律索引完成後的白話訊息（純函式）
+  // sum：{ done, skipped, failed, cancelled, failures:[{name, reason}] }；groups：{ source, mp3, wav, other }（不建索引的筆數，依類別）
+  function describeMelodySummary(sum, groups) {
+    sum = sum || {}; groups = groups || {};
+    var out = [], head = '旋律索引完成：新建 ' + (sum.done || 0) + ' 首、已建過沿用 ' + (sum.skipped || 0) + ' 首、失敗 ' + (sum.failed || 0) + ' 首';
+    if (sum.cancelled) head += '、取消 ' + sum.cancelled + ' 首';
+    out.push(head + '。');
+    var parts = [];
+    if (groups.source) parts.push('遊戲原始檔 ' + groups.source + ' 個（請看它擷取出來的 MIDI）');
+    var sib = [];
+    if (groups.mp3) sib.push('mp3 ' + groups.mp3 + ' 個');
+    if (groups.wav) sib.push('wav ' + groups.wav + ' 個');
+    if (sib.length) parts.push('擷取出的 ' + sib.join(' 與 ') + '（跟同一首的 MIDI 是同一首，所以只用 MIDI 建索引，搜到時會連到同一首）');
+    if (groups.other) parts.push('其他 ' + groups.other + ' 個（種類不支援旋律比對）');
+    var n = (groups.source || 0) + (groups.mp3 || 0) + (groups.wav || 0) + (groups.other || 0);
+    if (n) out.push('另有 ' + n + ' 筆不需要建：' + parts.join('、') + '。');
+    var f = sum.failures || [];
+    if (f.length) {
+      var shown = f.slice(0, 5).map(function (x) { return x.name + '（' + x.reason + '）'; }).join('；');
+      out.push('失敗的有：' + shown + (f.length > 5 ? '；…另 ' + (f.length - 5) + ' 筆' : '') + '。');
+    }
+    return out.join('');
+  }
+  // 不建索引的分類（給訊息用）：來源檔、擷取出的 mp3、擷取出的 wav、其他
+  function melodyGroup(r) {
+    if (isSourceOnly(r)) return 'source';
+    if (r.derivedFrom && r.kind === 'mp3') return 'mp3';
+    if (r.derivedFrom && r.kind === 'wav') return 'wav';
+    return 'other';
+  }
+
   // ───────────────────────── 旋律索引的收錄規則（純函式）
   // 只收一般音樂檔（音訊、影片、MIDI）與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）與 nsf 不收，
   // 它們本身不是音訊，拿去解碼一定失敗（舊版就是這樣：86 筆全部失敗）。
@@ -83927,7 +84056,9 @@ const holder = {};
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
     scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
-    createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary
+    createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary,
+    DB_FORMAT: DB_FORMAT, exportDb: exportDb, planImport: planImport, applyImport: applyImport,
+    sigOfRec: sigOfRec, sigOfStat: sigOfStat, describeMelodySummary: describeMelodySummary, melodyGroup: melodyGroup
   };
 });
 
@@ -102071,7 +102202,7 @@ const holder = {};
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
-  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律搜尋'], ['yt', 'YouTube']];
+  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律搜尋'], ['yt', 'YouTube'], ['db', '資料']];
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function errText(e) { return String((e && e.message) || e); }
@@ -102252,7 +102383,15 @@ const holder = {};
       var hits = lib.search(q, { scope: scope }), hitMap = {}, keep = {}, byKey = {};
       lib.records.forEach(function (r) { byKey[r.key] = r; });
       hits.forEach(function (x) { keep[x.record.key] = true; hitMap[x.record.key] = x.lyricHits || []; });
-      hits.forEach(function (x) { var p = x.record.derivedFrom; if (p && byKey[p] && !keep[p]) { keep[p] = true; hitMap[p] = []; } });
+      // 命中的子曲目（例如 MIDI）：它的來源，和同一來源擷取出的兄弟（mp3／wav）一起顯示、可播放；命中來源時它的子曲目也一起顯示
+      var kids = {};
+      lib.records.forEach(function (r) { if (r.derivedFrom) (kids[r.derivedFrom] = kids[r.derivedFrom] || []).push(r); });
+      var parents = {};
+      Object.keys(keep).forEach(function (k) { var r = byKey[k]; if (r) parents[r.derivedFrom || k] = true; });
+      Object.keys(parents).forEach(function (pk) {
+        if (byKey[pk]) { keep[pk] = true; if (!hitMap[pk]) hitMap[pk] = []; }
+        (kids[pk] || []).forEach(function (c) { keep[c.key] = true; if (!hitMap[c.key]) hitMap[c.key] = []; });
+      });
       return { recs: lib.records.filter(function (r) { return keep[r.key]; }).sort(bySort), hits: hitMap, searching: true, count: hits.length };
     }
     function lyricCell(r) {
@@ -102563,9 +102702,7 @@ const holder = {};
       mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…'); melRunning = true; renderWork();
       MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork();
-        var why = Object.keys(sum.excludedByReason || {}).map(function (k) { return k + ' ' + sum.excludedByReason[k] + ' 筆'; }).join('；');
-        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled
-          + (sum.excluded ? '、不建索引 ' + sum.excluded + ' 筆（' + why + '）' : '') + '（失敗的會寫明原因）');
+        melStatus(M.describeMelodySummary(sum, sum.groups || {}));
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork(); melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
@@ -102657,6 +102794,75 @@ const holder = {};
       host.youtubeControl(j.job.paused ? 'resume' : 'pause');
     };
     bYtCancel.onclick = function () { if (host.youtubeControl) host.youtubeControl('cancel'); };
+
+    // ───── 資料分頁：匯出／匯入資料庫。純邏輯在 core（exportDb、planImport、applyImport）；檔案讀寫在 host。
+    // 匯入取代或合併前一律先在面板內列出結果，按「確定」才寫入（不用 window.confirm）。
+    var dbBox = h('div', 'fml-bar');
+    var bDbExp = h('button', null, '匯出資料庫');
+    var dbMode = h('select');
+    [['merge', '合併（保留現有，補上新的）'], ['replace', '取代全部（現有資料會被換掉）']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; dbMode.appendChild(op); });
+    var bDbImp = h('button', null, '匯入資料庫…');
+    var dbOk = h('button', null, '確定匯入'), dbNo = h('button', null, '取消');
+    dbOk.style.display = 'none'; dbNo.style.display = 'none';
+    var dbStat = h('span', 'fml-st');
+    var dbIn = h('input'); dbIn.type = 'file'; dbIn.accept = '.json,application/json'; dbIn.style.display = 'none';
+    dbBox.appendChild(bDbExp); dbBox.appendChild(dbMode); dbBox.appendChild(bDbImp); dbBox.appendChild(dbOk); dbBox.appendChild(dbNo); dbBox.appendChild(dbStat); dbBox.appendChild(dbIn);
+    var dbNote = h('div', 'fml-foot', '匯出會把來源、紀錄、旋律索引、歌詞轉錄結果與衍生關係存成一個資料檔（檔名含日期，帶版本號）。匯入時以路徑比對：路徑與檔案大小、修改時間都相同才沿用索引與歌詞；檔案變了就標為索引過期；路徑找不到就標為消失，資料保留。讀不懂的檔案或較新版本的檔案會明確報錯，現有資料不會被改動。');
+    tabPane.db.appendChild(dbBox); tabPane.db.appendChild(dbNote);
+    function todayStr() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function downloadText(text, name) {
+      var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      var a = document.createElement('a'); a.href = url; a.download = name; a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+    bDbExp.onclick = async function () {
+      var text = JSON.stringify(M.exportDb(lib), null, 1);
+      var name = 'fa-musiclib-db_' + todayStr() + '.json';
+      dbStat.textContent = '匯出中…';
+      try {
+        if (host.library && host.library.exportToFolder) {
+          var r = await host.library.exportToFolder(text, name);
+          dbStat.textContent = r ? '已匯出到 ' + r.path + '（' + lib.records.length + ' 筆紀錄，資料版本 ' + M.VERSION + '）' : '已取消匯出';
+        } else {
+          downloadText(text, name);
+          dbStat.textContent = '已開始下載 ' + name;
+        }
+      } catch (e) { dbStat.textContent = '匯出失敗：' + errText(e); }
+    };
+    var pendingPlan = null;
+    function clearImportAsk() { pendingPlan = null; dbOk.style.display = 'none'; dbNo.style.display = 'none'; }
+    bDbImp.onclick = function () { clearImportAsk(); dbIn.value = ''; dbIn.click(); };
+    dbIn.onchange = async function () {
+      var f = dbIn.files && dbIn.files[0]; if (!f) return;
+      clearImportAsk(); dbStat.textContent = '讀取檔案中…';
+      var data;
+      try { data = JSON.parse(await f.text()); } catch (e) { dbStat.textContent = '匯入失敗：這個檔案讀不懂（' + errText(e) + '），現有資料沒有被改動'; return; }
+      var mode = dbMode.value;
+      var paths = (data && Array.isArray(data.records)) ? data.records.map(function (x) { return x && x.path; }).filter(function (p) { return typeof p === 'string'; }) : [];
+      var statMap = {};
+      try { statMap = host.library && host.library.statMany ? await host.library.statMany(paths) : {}; } catch (_) { statMap = {}; }
+      var plan = M.planImport(lib, data, { mode: mode, statOf: function (p) { return statMap[p] || null; } });
+      if (!plan.ok) { dbStat.textContent = '匯入失敗：' + plan.error + '；現有資料沒有被改動'; return; }
+      pendingPlan = plan;
+      var s = plan.stats;
+      dbStat.textContent = (mode === 'replace' ? '取代全部：現有 ' + lib.records.length + ' 筆紀錄會被換掉。' : '合併：') + '檔案共 ' + s.imported + ' 筆，新增 ' + s.added
+        + '、路徑已在曲庫（沿用現有）' + s.matched + '、補上索引或歌詞 ' + s.filledIndex + '、索引過期 ' + s.indexStale + '、檔案已消失（資料保留）' + s.missing
+        + (s.orphanDerived ? '、擷取產物找不到來源 ' + s.orphanDerived : '') + '。';
+      dbOk.textContent = mode === 'replace' ? '確定取代' : '確定匯入';
+      dbOk.style.display = ''; dbNo.style.display = '';
+    };
+    dbNo.onclick = function () { clearImportAsk(); dbStat.textContent = '已取消匯入，資料沒有改動'; };
+    dbOk.onclick = async function () {
+      if (!pendingPlan) return;
+      var plan = pendingPlan; clearImportAsk();
+      try {
+        M.applyImport(lib, plan);
+        await lib.save();
+        msg = '匯入完成：' + lib.records.length + ' 筆紀錄';
+        dbStat.textContent = msg;
+      } catch (e) { msg = '匯入寫入失敗：' + errText(e); dbStat.textContent = msg; }
+      render();
+    };
 
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列與進行中工作，不重畫清單）
@@ -103086,11 +103292,11 @@ const FaMusicLibHost = (function () {
     if (melodyState.running) throw new Error('旋律索引已在建立中');
     melodyState.running = true; melodyState.cancelled = false;
     // 只收一般音樂檔與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）不是音訊，拿去解碼一定失敗（舊版就是這樣），所以不收，並寫明原因
-    var recs = [], excludedCount = 0, excludedByReason = {};
+    var recs = [], excludedCount = 0, excludedByReason = {}, groups = { source: 0, mp3: 0, wav: 0, other: 0 };
     L.records.forEach(function (r) {
       var e = FaMusicLib.melodyEligible(r);
       if (e.ok) recs.push(r);
-      else { excludedCount++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
+      else { excludedCount++; groups[FaMusicLib.melodyGroup(r)]++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
     });
     var saveCount = 0;
     try {
@@ -103102,7 +103308,8 @@ const FaMusicLibHost = (function () {
         waitIfPaused: melodyGate
       });
       await L.save();
-      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason;
+      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason; sum.groups = groups;
+      sum.failures = recs.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).map(function (r) { return { name: r.name, reason: r.melody.reason }; });
       return sum;
     } finally { melodyState.running = false; melodyState.paused = false; }
   }
@@ -103463,6 +103670,26 @@ const FaMusicLibHost = (function () {
   // 移除實體檔：只刪衍生資料夾裡的檔案（isDerivedPath 把關），刪完再 stat 確認真的消失
   var LIB_HOST = {
     isDerivedPath: isDerivedPath,
+    // 匯入用：一次查一批路徑的現況（{size, mtimeMs} 或 null＝不存在），給 planImport 判斷 sig 與是否消失
+    statMany: async function (paths) {
+      var a = api(), out = {};
+      for (var i = 0; i < paths.length; i++) {
+        var p = paths[i];
+        if (!a || !a.rawfs || !a.rawfs.stat) { out[p] = null; continue; }
+        try { var st = await a.rawfs.stat(absPath(p)); out[p] = st && st.isFile !== false ? { size: st.size, mtimeMs: st.mtimeMs } : null; }
+        catch (_) { out[p] = null; }
+      }
+      return out;
+    },
+    // 匯出：讓使用者選資料夾（desktopAPI.roots.browse），檔案寫進去（rawfs.writeFile）；取消回傳 null
+    exportToFolder: async function (text, fileName) {
+      var a = api(); if (!a || !a.roots || !a.roots.browse || !a.rawfs || !a.rawfs.writeFile) throw new Error('匯出的通道不存在（需要桌面版）');
+      var dir = await a.roots.browse();
+      if (!dir) return null;
+      var full = joinPath(dir, fileName);
+      await a.rawfs.writeFile(full, { base64: bytesToB64(new TextEncoder().encode(text)) });
+      return { path: full };
+    },
     removeFiles: async function (paths) {
       var a = api(); if (!a || !a.rawfs || !a.rawfs.remove) throw new Error('刪除檔案的通道不存在（需要桌面版）');
       var out = [];

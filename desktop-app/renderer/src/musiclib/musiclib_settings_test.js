@@ -106,7 +106,7 @@ t('五個分頁：切換時只顯示被選的那一頁，並標示目前分頁',
   resetDom();
   var p = mountPanel();
   findBtn(p.root, '⚙ 設定').click();
-  var names = ['來源與擷取', '歌詞', '輸出', '旋律搜尋', 'YouTube'];
+  var names = ['來源與擷取', '歌詞', '輸出', '旋律搜尋', 'YouTube', '資料'];
   names.forEach(function (n, i) {
     tabBtnOf(p.dlg, n).click();
     names.forEach(function (_, j) {
@@ -126,7 +126,8 @@ t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋�
     [1, ['轉錄歌詞', '暫停', '取消轉錄']],
     [2, ['批次輸出', '取消輸出']],
     [3, ['建立旋律索引', '暫停索引', '取消索引', '錄哼歌（8 秒）', '選音檔找', '找相似']],
-    [4, ['＋加入 YouTube 清單', '暫停', '取消']]
+    [4, ['＋加入 YouTube 清單', '暫停', '取消']],
+    [5, ['匯出資料庫', '匯入資料庫…']]
   ];
   want.forEach(function (w) {
     var texts = buttonsIn(pane(w[0])).map(function (b) { return b.textContent; });
@@ -143,6 +144,32 @@ t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋�
   // 旋律搜尋：文字加分、Basic Pitch 勾選
   assert.ok(all(pane(3)).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '旋律缺文字加分');
   p.m.destroy();
+});
+
+t('搜尋命中 MIDI：同一來源擷取出的 wav、mp3 兄弟一起顯示', function () {
+  resetDom();
+  // 一個來源（rix）底下擷取出 MIDI、wav、mp3 三個子曲目；搜尋 MIDI 的名字，三個都要顯示
+  var lib = makeLib();
+  var src = lib.records[0];
+  var mk = function (name, kind) {
+    return { key: 'derived|' + src.key + '|' + name, sourceId: src.sourceId, path: 'D:\\g\\音樂庫衍生檔\\s\\' + name, name: name, kind: kind, category: 'audio', label: kind.toUpperCase(),
+      pending: false, status: 'ok', derivedFrom: src.key, derivedIndex: 0, lyricStatus: 'none', durationSec: 3, title: name.replace(/\.\w+$/, ''), album: null };
+  };
+  // wav、mp3 的名字不含搜尋字，只能靠「同一來源的兄弟」被帶出來
+  lib.records.push(mk('hitsong.mid', 'mid'), mk('zz-audio.wav', 'wav'), mk('zz-audio.mp3', 'mp3'));
+  var r = new El('div');
+  var m = UI.mount(r, { library: lib, host: {}, queue: null });
+  var fml = r.children[r.children.length - 1];
+  var q = all(fml).filter(function (x) { return x.tagName === 'input' && x.type === 'search'; })[0];
+  q.value = 'hitsong'; q.oninput({ target: q });
+  // 假 DOM 的文字放在子文字節點裡，所以把每一列底下所有文字節點接起來
+  var rowsText = all(fml).filter(function (x) { return x.tagName === 'tr'; }).map(function (tr) {
+    return all(tr).filter(function (x) { return x.tagName === '#text'; }).map(function (x) { return x.textContent; }).join('');
+  }).join('|');
+  assert.ok(rowsText.indexOf('hitsong.mid') >= 0, '命中的 MIDI 要在：' + rowsText);
+  assert.ok(rowsText.indexOf('zz-audio.wav') >= 0, 'wav 兄弟要在：' + rowsText);
+  assert.ok(rowsText.indexOf('zz-audio.mp3') >= 0, 'mp3 兄弟要在：' + rowsText);
+  m.destroy();
 });
 
 t('設定值寫入 localStorage，重開面板會還原', function () {
