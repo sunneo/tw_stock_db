@@ -44,7 +44,7 @@ function all(el, out) { out = out || []; out.push(el); (el.children || []).forEa
 function buttonsIn(el) { return all(el).filter(function (x) { return x.tagName === 'button'; }); }
 function findBtn(el, text) { return buttonsIn(el).filter(function (b) { return b.textContent === text; })[0] || null; }
 function dlgOf(root) { return root.children.filter(function (c) { return c.className === 'fml-dlgbg'; })[0]; }
-function paneOf(dlg, idx) { return dlg.children[0].children[2].children[idx]; }   // 0 來源與擷取 1 歌詞 2 輸出 3 旋律索引 4 YouTube 5 資料
+function paneOf(dlg, idx) { return dlg.children[0].children[1].children[1].children[idx]; }   // 版面：box＝[標題列, main＝[左側分頁, 內容]]；0 來源與擷取 1 歌詞 2 輸出 3 旋律索引 4 YouTube 5 資料
 function humBoxOf(root) { return all(root).filter(function (x) { return x.className === 'fml-hum fml-foot'; })[0]; }
 function cbByLabel(el, prefix) { return all(el).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox' && x.parentNode && String(x.parentNode.textContent || '').indexOf(prefix) === 0; })[0]; }
 // 假的旋律模組（只給面板掛載與索引狀態用；哼歌實際流程不在這裡測）
@@ -62,7 +62,7 @@ function stubMelody(entries) {
     humAsMidi: function () {}
   };
 }
-function tabBtnOf(dlg, text) { return dlg.children[0].children[1].children.filter(function (b) { return b.textContent === text; })[0]; }
+function tabBtnOf(dlg, text) { return dlg.children[0].children[1].children[0].children.filter(function (b) { return b.textContent === text; })[0]; }
 function fakeRecs() {
   return [
     { key: 'R', sourceId: 'src1', path: 'D:\\g\\song.rix', name: 'song.rix', kind: 'rix', category: 'extract', pending: false, status: 'ok', album: null, durationSec: null, lyricStatus: 'none', title: 'song', derivedFrom: null, label: 'RIX' },
