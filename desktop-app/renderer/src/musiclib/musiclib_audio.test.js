@@ -105,6 +105,17 @@ t('humNotes：衰減尾與雜音不產生多餘音符', function () {
   assert.deepEqual(got, seq, '音符序列應該只有哼的四個音：' + JSON.stringify(got));
 });
 
+
+// 哼歌：遠低於旋律的底噪音（像 110 Hz 的嗡聲）要丟掉，不能混進旋律
+t('humNotes：離旋律太遠的低頻底噪音被丟掉', function () {
+  var AM = require('../music/audio_to_midi.js'), seq = [62, 64, 65, 67, 65, 64, 62, 64], list = [];
+  seq.forEach(function (n, i) { list.push({ n: n, d: 0.4 }); if (i === 3 || i === 6) list.push({ n: 45, d: 0.3 }); });
+  var res = A.humNotes({ channels: [synthNotes(list, SR)], sampleRate: SR }, { AudioToMidi: AM });
+  var got = res.notes.map(function (x) { return x.n; });
+  assert.ok(got.every(function (x) { return x >= 60; }), '不該留下 45：' + JSON.stringify(got));
+  assert.ok(got.length >= 7, '旋律音要留住：' + JSON.stringify(got));
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];

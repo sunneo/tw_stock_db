@@ -671,7 +671,7 @@
     bHum.onclick = function () { setHum(!humOn); };
     var melBlob = null, melMethod = '';
     function hStatus(s) { hStat.textContent = s; }
-    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; hStatus('哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'); }
+    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; hStatus('哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）' + (r.diag ? '　' + r.diag : '')); }
     mRec.onclick = function () {
       if (!MEL) return; mRec.disabled = true; hStatus('錄音中（8 秒）…');
       var blobNow = null;

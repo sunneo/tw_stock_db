@@ -368,7 +368,8 @@ const FaMusicLibHost = (function () {
     if (!useModel && typeof FaAudioToMidi !== 'undefined') {
       // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
       var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
-      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音' };
+      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音',
+        diag: '音量基準 ' + hn.ref.toFixed(3) + '、門檻 ' + hn.gate.toFixed(3) + '；有音高的幀 ' + hn.voicedRaw + '→消雜音後 ' + hn.voicedKept + '／共 ' + hn.frames + '；音域 ' + (hn.lo == null ? '無' : hn.lo + '–' + hn.hi) };
     }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
