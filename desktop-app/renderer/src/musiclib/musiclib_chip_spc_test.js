@@ -22,7 +22,8 @@ function makeSpc(opts) {
   for (var i = 0; i < 8; i++) blk.push(((SINE16[2 * i] & 15) << 4) | (SINE16[2 * i + 1] & 15));
   ram.set(blk, 0x0300);
   dsp[0x5D] = 0x02; dsp[0x0C] = 0x7F; dsp[0x1C] = 0x7F; dsp[0x00] = 0x7F; dsp[0x01] = 0x7F;
-  dsp[0x02] = 0x00; dsp[0x03] = 0x10; dsp[0x07] = 0x7F; dsp[0x6C] = 0x00;
+  var pitch = opts.pitch == null ? 0x1000 : opts.pitch;
+  dsp[0x02] = pitch & 0xFF; dsp[0x03] = (pitch >> 8) & 0xFF; dsp[0x07] = 0x7F; dsp[0x6C] = 0x00;
   dsp[0x4C] = opts.kon == null ? 0x01 : opts.kon;
   return SFC.packSpc({ ram: ram, dsp: dsp, pc: 0x0400, title: opts.title || 'テスト', game: 'G', artist: 'A', lengthSec: opts.lengthSec == null ? 42 : opts.lengthSec });
 }
@@ -76,6 +77,31 @@ t('播放器：FaChipPlayer 的 spc 後端可 seek、render，且 seek 後與順
   for (var i = 0; i < 44100; i += 97) assert.ok(Math.abs(seq[44100 + i] - tail[i]) < 1e-6, 'seek 後第 ' + i + ' 個樣本不同');
   var r = q.render(0, 0, 0.25);
   assert.strictEqual(r.length, Math.round(0.25 * 44100));
+});
+
+t('MIDI：toMidi 回傳與 FaMidi 同形的曲子；音高 56 的聲道 0 → A4（69）', function () {
+  var loaded = BE.parse(makeSpc({ pitch: 56, lengthSec: 2 }));
+  var song = BE.toMidi(loaded, 0);
+  assert.strictEqual(typeof song.ppq, 'number');
+  assert.ok(Array.isArray(song.tracks) && song.tracks.length >= 1, '沒有音軌');
+  var tr = song.tracks[0];
+  assert.strictEqual(tr.name, '聲道 0');
+  assert.strictEqual(tr.notes[0].n, 69, '音符 ' + tr.notes[0].n);
+});
+t('MIDI：音符時長延續到曲長（2 秒 ≈ 1920 tick，ppq 480、120 BPM）', function () {
+  var loaded = BE.parse(makeSpc({ pitch: 56, lengthSec: 2 }));
+  var song = BE.toMidi(loaded, 0);
+  var d = song.tracks[0].notes[0].d;
+  assert.ok(Math.abs(d - 1920) <= 2, '時長 ' + d + ' tick');
+});
+t('MIDI：沒有發聲的 .spc（KON 為 0）不產生音軌', function () {
+  var loaded = BE.parse(makeSpc({ kon: 0, lengthSec: 1 }));
+  var song = BE.toMidi(loaded, 0);
+  assert.strictEqual(song.tracks.length, 0);
+});
+t('MIDI：只有一首曲目，其他編號要說明', function () {
+  var loaded = BE.parse(makeSpc({ lengthSec: 1 }));
+  assert.throws(function () { BE.toMidi(loaded, 1); }, /只有一首/);
 });
 
 function runAll() {

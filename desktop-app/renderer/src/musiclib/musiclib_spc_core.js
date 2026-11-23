@@ -72,6 +72,7 @@
   function createCore(init) {
     init = init || {};
     var konEvents = 0;
+    var onDsp = typeof init.onDspWrite === 'function' ? init.onDspWrite : null;   // 可選：每次 DSP 暫存器寫入回報（reg, value, 取樣序號）
     var ram = new Uint8Array(65536);
     var dspRegs = new Uint8Array(128);
     var unknown = 0;
@@ -79,7 +80,7 @@
     var io = { control: 0x80, dspAddr: 0, out: [0, 0, 0, 0], inp: [0, 0, 0, 0], div: [0, 0, 0], stage: [0, 0, 0], cnt: [0, 0, 0], acc: [0, 0, 0] };
     var voices = [], v;
     for (v = 0; v < 8; v++) voices.push(newVoice());
-    var st = { ctr: 0, lfsr: 0x4000, echoOff: 0, echoHL: new Int32Array(8), echoHR: new Int32Array(8), pendKon: 0, pendKoff: 0, dspAcc: 0, outL: 0, outR: 0 };
+    var st = { ctr: 0, lfsr: 0x4000, echoOff: 0, echoHL: new Int32Array(8), echoHR: new Int32Array(8), pendKon: 0, pendKoff: 0, dspAcc: 0, outL: 0, outR: 0, tick: 0 };
 
     function newVoice() {
       return { mode: M_OFF, env: 0, frac: 0, hist: new Int32Array(4), block: new Int32Array(16), idx: 16, addr: 0, loopAddr: 0,
@@ -406,6 +407,7 @@
     // ───── S-DSP ─────
     function dspWrite(a, val) {
       dspRegs[a] = val;
+      if (onDsp) onDsp(a & 0x7F, val & 0xFF, st.tick);
       switch (a) {
         case 0x4C: st.pendKon |= val; break;
         case 0x5C: st.pendKoff |= val; break;
@@ -500,6 +502,7 @@
     }
     // 產生一個 DSP 取樣（32 kHz）
     function dspTick() {
+      st.tick++;
       var flg = dspRegs[0x6C], q, pendK, pmon = dspRegs[0x2D], non = dspRegs[0x3D], eon = dspRegs[0x4C] && 0;
       eon = dspRegs[0x4D];
       if (st.pendKon) { for (q = 0; q < 8; q++) if ((st.pendKon >> q) & 1) keyOn(q); st.pendKon = 0; }
@@ -627,7 +630,7 @@
             return { mode: vo.mode, env: vo.env, frac: vo.frac, hist: vo.hist.slice(), block: vo.block.slice(), idx: vo.idx, addr: vo.addr, loopAddr: vo.loopAddr,
               endAfter: vo.endAfter, endLoop: vo.endLoop, stop: vo.stop, p1: vo.p1, p2: vo.p2, out: vo.out };
           }),
-          st: { ctr: st.ctr, lfsr: st.lfsr, echoOff: st.echoOff, echoHL: st.echoHL.slice(), echoHR: st.echoHR.slice(), pendKon: st.pendKon, pendKoff: st.pendKoff, dspAcc: st.dspAcc, outL: st.outL, outR: st.outR }
+          st: { ctr: st.ctr, lfsr: st.lfsr, echoOff: st.echoOff, echoHL: st.echoHL.slice(), echoHR: st.echoHR.slice(), pendKon: st.pendKon, pendKoff: st.pendKoff, dspAcc: st.dspAcc, outL: st.outL, outR: st.outR, tick: st.tick }
         };
       },
       restore: function (s) {
@@ -640,7 +643,7 @@
           vo.addr = vs.addr; vo.loopAddr = vs.loopAddr; vo.endAfter = vs.endAfter; vo.endLoop = vs.endLoop; vo.stop = vs.stop; vo.p1 = vs.p1; vo.p2 = vs.p2; vo.out = vs.out;
         }
         st.ctr = s.st.ctr; st.lfsr = s.st.lfsr; st.echoOff = s.st.echoOff; st.echoHL = s.st.echoHL.slice(); st.echoHR = s.st.echoHR.slice();
-        st.pendKon = s.st.pendKon; st.pendKoff = s.st.pendKoff; st.dspAcc = s.st.dspAcc; st.outL = s.st.outL; st.outR = s.st.outR;
+        st.pendKon = s.st.pendKon; st.pendKoff = s.st.pendKoff; st.dspAcc = s.st.dspAcc; st.outL = s.st.outL; st.outR = s.st.outR; st.tick = s.st.tick || 0;
       },
       peek: function (a) { return ram[a & 0xFFFF]; },
       poke: function (a, bytes) { if (typeof bytes === 'number') { ram[a & 0xFFFF] = bytes & 0xFF; return; } for (var i = 0; i < bytes.length; i++) ram[(a + i) & 0xFFFF] = bytes[i] & 0xFF; },
@@ -658,8 +661,9 @@
   }
 
   // 由 .spc 檔的解析結果（musiclib_extract_sfc.js 的 parseSpc）建立核心
-  function fromSpc(spc) {
-    return createCore({ ram: spc.ram, dsp: spc.dsp, extraRam: spc.extraRam, pc: spc.pc, a: spc.a, x: spc.x, y: spc.y, psw: spc.psw, sp: spc.sp });
+  // opts.onDspWrite(reg, value, tick)：可選，給 MIDI 擷取用
+  function fromSpc(spc, opts) {
+    return createCore({ ram: spc.ram, dsp: spc.dsp, extraRam: spc.extraRam, pc: spc.pc, a: spc.a, x: spc.x, y: spc.y, psw: spc.psw, sp: spc.sp, onDspWrite: opts && opts.onDspWrite });
   }
 
   return {

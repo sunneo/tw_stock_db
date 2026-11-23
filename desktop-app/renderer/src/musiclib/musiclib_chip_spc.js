@@ -2,7 +2,8 @@
  *   createBackend(CORE, SFC) → 後端物件（kind = 'spc'），交給 FaChipPlayer.registerBackend 註冊。
  *   後端介面：canLoad(bytes)、parse(bytes) → { title, artist, spc, tracks:[{ title, durationSec, durationNote }] }、
  *            openStream(loaded, trackIndex, sampleRate) → { read(out, off, n)、snapshot()、restore(s) }。
- *   沒有 toMidi：本後端還沒有 DSP 音符事件的 MIDI 擷取（musiclib_extract_sfc.js 的 dspEventsToSong 可接上，列為後續）。
+ *   toMidi(loaded, trackIndex) → 標準 MIDI 曲子：另開一個核心把整首（曲長）跑完，記下所有 DSP 暫存器寫入，
+ *            交給 musiclib_extract_sfc.js 的 dspEventsToSong（退路：音高＋KON／KOFF 換音，音色用程式 80）。
  *
  * 做法：
  *   1. SPC 檔由 FaMusicLibSfc.parseSpc 解析（RAM、DSP 暫存器、SPC700 暫存器、ID666 長度）。
@@ -40,8 +41,25 @@
       openStream: function (loaded, trackIndex, sampleRate) {
         if (trackIndex !== 0 || !loaded.tracks[0]) throw new Error('SPC 只有一首曲目');
         return makeStream(loaded.spc, sampleRate || 44100);
+      },
+      toMidi: function (loaded, trackIndex) {
+        if (trackIndex !== 0 || !loaded.tracks[0]) throw new Error('SPC 只有一首曲目');
+        return makeMidi(loaded.spc, loaded.title, loaded.tracks[0].durationSec);
       }
     };
+  }
+
+  // MIDI 擷取：先把載入時的 DSP 狀態當成 t=0 的寫入（聲道已在發聲的 KON 不會再出現在程式寫入裡），再跑整首記下寫入
+  function makeMidi(spc, title, seconds) {
+    var d = spc.dsp, events = [], reg;
+    for (reg = 0; reg < 128; reg++) if (reg !== 0x4C && reg !== 0x5C) events.push({ t: 0, reg: reg, value: d[reg] });
+    events.push({ t: 0, reg: 0x4C, value: d[0x4C] });
+    var core = CORE.fromSpc(spc, { onDspWrite: function (r, v, t) { events.push({ t: t, reg: r, value: v }); } });
+    var total = Math.round(seconds * CORE_RATE);
+    core.runSamples(total);
+    // 結尾哨兵：無害的寫入（未用的暫存器 $7F），只為讓最後還在發聲的音符延續到曲長
+    events.push({ t: total, reg: 0x7F, value: 0 });
+    return SFC.dspEventsToSong(events, { title: title || '' }).song;
   }
 
   // 串流：核心以 32 kHz 產生，依播放取樣率線性內插讀出
@@ -85,5 +103,5 @@
     };
   }
 
-  return { createBackend: createBackend, makeStream: makeStream };
+  return { createBackend: createBackend, makeStream: makeStream, makeMidi: makeMidi };
 }));
