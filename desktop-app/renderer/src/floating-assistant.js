@@ -100926,6 +100926,7 @@ const holder = {};
   function createCore(init) {
     init = init || {};
     var konEvents = 0;
+    var onDsp = typeof init.onDspWrite === 'function' ? init.onDspWrite : null;   // 可選：每次 DSP 暫存器寫入回報（reg, value, 取樣序號）
     var ram = new Uint8Array(65536);
     var dspRegs = new Uint8Array(128);
     var unknown = 0;
@@ -100933,7 +100934,7 @@ const holder = {};
     var io = { control: 0x80, dspAddr: 0, out: [0, 0, 0, 0], inp: [0, 0, 0, 0], div: [0, 0, 0], stage: [0, 0, 0], cnt: [0, 0, 0], acc: [0, 0, 0] };
     var voices = [], v;
     for (v = 0; v < 8; v++) voices.push(newVoice());
-    var st = { ctr: 0, lfsr: 0x4000, echoOff: 0, echoHL: new Int32Array(8), echoHR: new Int32Array(8), pendKon: 0, pendKoff: 0, dspAcc: 0, outL: 0, outR: 0 };
+    var st = { ctr: 0, lfsr: 0x4000, echoOff: 0, echoHL: new Int32Array(8), echoHR: new Int32Array(8), pendKon: 0, pendKoff: 0, dspAcc: 0, outL: 0, outR: 0, tick: 0 };
 
     function newVoice() {
       return { mode: M_OFF, env: 0, frac: 0, hist: new Int32Array(4), block: new Int32Array(16), idx: 16, addr: 0, loopAddr: 0,
@@ -101260,6 +101261,7 @@ const holder = {};
     // ───── S-DSP ─────
     function dspWrite(a, val) {
       dspRegs[a] = val;
+      if (onDsp) onDsp(a & 0x7F, val & 0xFF, st.tick);
       switch (a) {
         case 0x4C: st.pendKon |= val; break;
         case 0x5C: st.pendKoff |= val; break;
@@ -101354,6 +101356,7 @@ const holder = {};
     }
     // 產生一個 DSP 取樣（32 kHz）
     function dspTick() {
+      st.tick++;
       var flg = dspRegs[0x6C], q, pendK, pmon = dspRegs[0x2D], non = dspRegs[0x3D], eon = dspRegs[0x4C] && 0;
       eon = dspRegs[0x4D];
       if (st.pendKon) { for (q = 0; q < 8; q++) if ((st.pendKon >> q) & 1) keyOn(q); st.pendKon = 0; }
@@ -101481,7 +101484,7 @@ const holder = {};
             return { mode: vo.mode, env: vo.env, frac: vo.frac, hist: vo.hist.slice(), block: vo.block.slice(), idx: vo.idx, addr: vo.addr, loopAddr: vo.loopAddr,
               endAfter: vo.endAfter, endLoop: vo.endLoop, stop: vo.stop, p1: vo.p1, p2: vo.p2, out: vo.out };
           }),
-          st: { ctr: st.ctr, lfsr: st.lfsr, echoOff: st.echoOff, echoHL: st.echoHL.slice(), echoHR: st.echoHR.slice(), pendKon: st.pendKon, pendKoff: st.pendKoff, dspAcc: st.dspAcc, outL: st.outL, outR: st.outR }
+          st: { ctr: st.ctr, lfsr: st.lfsr, echoOff: st.echoOff, echoHL: st.echoHL.slice(), echoHR: st.echoHR.slice(), pendKon: st.pendKon, pendKoff: st.pendKoff, dspAcc: st.dspAcc, outL: st.outL, outR: st.outR, tick: st.tick }
         };
       },
       restore: function (s) {
@@ -101494,7 +101497,7 @@ const holder = {};
           vo.addr = vs.addr; vo.loopAddr = vs.loopAddr; vo.endAfter = vs.endAfter; vo.endLoop = vs.endLoop; vo.stop = vs.stop; vo.p1 = vs.p1; vo.p2 = vs.p2; vo.out = vs.out;
         }
         st.ctr = s.st.ctr; st.lfsr = s.st.lfsr; st.echoOff = s.st.echoOff; st.echoHL = s.st.echoHL.slice(); st.echoHR = s.st.echoHR.slice();
-        st.pendKon = s.st.pendKon; st.pendKoff = s.st.pendKoff; st.dspAcc = s.st.dspAcc; st.outL = s.st.outL; st.outR = s.st.outR;
+        st.pendKon = s.st.pendKon; st.pendKoff = s.st.pendKoff; st.dspAcc = s.st.dspAcc; st.outL = s.st.outL; st.outR = s.st.outR; st.tick = s.st.tick || 0;
       },
       peek: function (a) { return ram[a & 0xFFFF]; },
       poke: function (a, bytes) { if (typeof bytes === 'number') { ram[a & 0xFFFF] = bytes & 0xFF; return; } for (var i = 0; i < bytes.length; i++) ram[(a + i) & 0xFFFF] = bytes[i] & 0xFF; },
@@ -101512,8 +101515,9 @@ const holder = {};
   }
 
   // 由 .spc 檔的解析結果（musiclib_extract_sfc.js 的 parseSpc）建立核心
-  function fromSpc(spc) {
-    return createCore({ ram: spc.ram, dsp: spc.dsp, extraRam: spc.extraRam, pc: spc.pc, a: spc.a, x: spc.x, y: spc.y, psw: spc.psw, sp: spc.sp });
+  // opts.onDspWrite(reg, value, tick)：可選，給 MIDI 擷取用
+  function fromSpc(spc, opts) {
+    return createCore({ ram: spc.ram, dsp: spc.dsp, extraRam: spc.extraRam, pc: spc.pc, a: spc.a, x: spc.x, y: spc.y, psw: spc.psw, sp: spc.sp, onDspWrite: opts && opts.onDspWrite });
   }
 
   return {
@@ -101533,7 +101537,8 @@ const holder = {};
  *   createBackend(CORE, SFC) → 後端物件（kind = 'spc'），交給 FaChipPlayer.registerBackend 註冊。
  *   後端介面：canLoad(bytes)、parse(bytes) → { title, artist, spc, tracks:[{ title, durationSec, durationNote }] }、
  *            openStream(loaded, trackIndex, sampleRate) → { read(out, off, n)、snapshot()、restore(s) }。
- *   沒有 toMidi：本後端還沒有 DSP 音符事件的 MIDI 擷取（musiclib_extract_sfc.js 的 dspEventsToSong 可接上，列為後續）。
+ *   toMidi(loaded, trackIndex) → 標準 MIDI 曲子：另開一個核心跑完整首，依 KON／KOFF／ENVX 決定音符起訖，
+ *            音高取音符期間的中位數，相對換算並整首平移到 36–96（規則見 collectNotes／buildSong 上方的註解）。
  *
  * 做法：
  *   1. SPC 檔由 FaMusicLibSfc.parseSpc 解析（RAM、DSP 暫存器、SPC700 暫存器、ID666 長度）。
@@ -101571,9 +101576,116 @@ const holder = {};
       openStream: function (loaded, trackIndex, sampleRate) {
         if (trackIndex !== 0 || !loaded.tracks[0]) throw new Error('SPC 只有一首曲目');
         return makeStream(loaded.spc, sampleRate || 44100);
+      },
+      toMidi: function (loaded, trackIndex) {
+        if (trackIndex !== 0 || !loaded.tracks[0]) throw new Error('SPC 只有一首曲目');
+        return makeMidi(loaded.spc, loaded.title, loaded.tracks[0].durationSec);
       }
     };
   }
+
+  // ───── SPC 專用 MIDI 擷取（不用 dspEventsToSong；那個維持原樣、有自己的測試）─────
+  // 規則：
+  //  · 起訖：KON 寫入開始；KOFF 寫入結束（進入釋放）；聲道變成 OFF 或包絡 ENVX 歸零也結束。
+  //  · 音高：音符期間每 POLL 個取樣讀一次 pitch 暫存器取中位數；顫音、滑音不切新音符。
+  //  · 音高暫存器 × 32000 ÷ 4096 是取樣播放速率，不是音高。沒有樣本基準頻率，所以每個聲道以它最常出現的音高為中心（MIDI 60），
+  //    用 12·log2(音高 ÷ 中心) 相對換算；整首再以八度為單位平移，讓最多的音落在 36–96。
+  //  · 每個 SRCN 對應一個 MIDI 聲道（跳過聲道 10）；短（< 0.25 秒）且音高不穩（跨度 ≥ 1 半音）的音符放聲道 10（鼓）。
+  //  · 不足 5 毫秒的音符丟棄，不產生 0 長度音符。
+  var POLL = 64, MIN_SEC = 0.005, DRUM_SEC = 0.25, LO = 36, HI = 96, DRUM_CH = 9, TPS = 960;   // TPS：ppq 480、120 BPM
+  var MELODY_CH = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
+
+  // 第一步：收集原始音符（起訖取樣序號、SRCN、音高樣本、ENVX 最大值）
+  function collectNotes(spc, seconds) {
+    var total = Math.round(seconds * CORE_RATE), events = [], notes = [], open = [], q, t;
+    var core = CORE.fromSpc(spc, { onDspWrite: function (r, v, tick) { if (r === 0x4C || r === 0x5C) events.push({ t: tick, reg: r, value: v }); } });
+    function pitchOf(v) { return core.dspRead(v * 16 + 2) | ((core.dspRead(v * 16 + 3) & 0x3F) << 8); }
+    function openNote(v, at) { open[v] = { v: v, start: at, end: at, srcn: core.dspRead(v * 16 + 4), pitches: [], env: 0, polls: 0, released: false }; }
+    function closeNote(v, at) { var n = open[v]; if (!n) return; n.end = at; notes.push(n); open[v] = null; }
+    for (q = 0; q < 8; q++) if (core.voiceMode(q) !== 0) openNote(q, 0);      // 載入時就在發聲的聲道
+    for (t = 0; t < total; t += POLL) {
+      var tEnd = Math.min(total, t + POLL);
+      core.runSamples(tEnd - t);
+      for (var ei = 0; ei < events.length; ei++) {
+        var e = events[ei];
+        for (var b = 0; b < 8; b++) {
+          var bit = 1 << b;
+          if (e.reg === 0x4C && (e.value & bit)) { if (open[b]) closeNote(b, e.t); openNote(b, e.t); }
+          else if (e.reg === 0x5C && (e.value & bit) && open[b] && !open[b].released) { open[b].released = true; closeNote(b, e.t); }
+        }
+      }
+      events.length = 0;
+      for (q = 0; q < 8; q++) {
+        var n = open[q];
+        if (!n) continue;
+        var env = core.dspRead(q * 16 + 8);
+        if (core.voiceMode(q) === 0 || (env === 0 && n.polls > 1)) { closeNote(q, tEnd); continue; }
+        n.polls++;
+        if (env > n.env) n.env = env;
+        var p = pitchOf(q);
+        if (p > 0) n.pitches.push(p);
+      }
+    }
+    for (q = 0; q < 8; q++) closeNote(q, total);
+    return notes;
+  }
+
+  // 第二步：換成 MIDI 曲子（與 FaMidi 同形）。回傳 { song, stats }
+  function buildSong(raw, title) {
+    var stats = { raw: raw.length, shortDropped: 0, noPitch: 0, drumNotes: 0, melodyNotes: 0, shiftSemitones: 0, clamped: 0, channels: 0 };
+    var kept = [];
+    raw.forEach(function (n) {
+      var dur = n.end - n.start;
+      if (dur < MIN_SEC * CORE_RATE) { stats.shortDropped++; return; }
+      if (!n.pitches.length) { stats.noPitch++; return; }
+      var ps = n.pitches.slice().sort(function (a, b) { return a - b; });
+      kept.push({ srcn: n.srcn, start: n.start, dur: dur, med: ps[ps.length >> 1], spread: 12 * Math.log2(ps[ps.length - 1] / ps[0]), env: n.env,
+        drum: dur < DRUM_SEC * CORE_RATE && 12 * Math.log2(ps[ps.length - 1] / ps[0]) >= 1, ch: 0, base: 0 });
+    });
+    // 聲道：每個 SRCN 一個聲道（依第一次出現的順序），鼓放聲道 10
+    var chOfSrcn = {}, srcnOfCh = {}, nextCh = 0;
+    kept.forEach(function (n) {
+      if (n.drum) { n.ch = DRUM_CH; return; }
+      if (!(n.srcn in chOfSrcn)) { var c = MELODY_CH[nextCh % MELODY_CH.length]; nextCh++; chOfSrcn[n.srcn] = c; srcnOfCh[c] = n.srcn; }
+      n.ch = chOfSrcn[n.srcn];
+    });
+    // 每個聲道的中心音：最常出現的音符中位數音高（同次數取先出現者）
+    var chans = {};
+    kept.forEach(function (n) { (chans[n.ch] = chans[n.ch] || []).push(n); });
+    Object.keys(chans).forEach(function (key) {
+      var cnt = {}, best = null, bc = -1;
+      chans[key].forEach(function (n) { cnt[n.med] = (cnt[n.med] || 0) + 1; if (cnt[n.med] > bc) { bc = cnt[n.med]; best = n.med; } });
+      chans[key].forEach(function (n) { n.base = Math.round(60 + 12 * Math.log2(n.med / best)); });
+    });
+    // 整首平移（八度）：讓落在 36–96 的旋律音最多；同樣多取離 60 最近的
+    var mel = kept.filter(function (n) { return !n.drum; });
+    var bestK = 0, bestCount = -1;
+    for (var k = -6; k <= 6; k++) {
+      var inRange = 0;
+      mel.forEach(function (n) { var v = n.base + 12 * k; if (v >= LO && v <= HI) inRange++; });
+      if (inRange > bestCount || (inRange === bestCount && Math.abs(k) < Math.abs(bestK))) { bestCount = inRange; bestK = k; }
+    }
+    stats.shiftSemitones = bestK * 12;
+    mel.forEach(function (n) { n.base += bestK * 12; });
+    // 輸出：限制在 36–96（超出的數量記入 clamped）
+    var byCh = {};
+    kept.forEach(function (n) {
+      var v = n.base;
+      if (v < LO || v > HI) { stats.clamped++; v = Math.max(LO, Math.min(HI, v)); }
+      if (n.drum) stats.drumNotes++; else stats.melodyNotes++;
+      (byCh[n.ch] = byCh[n.ch] || []).push({ t: Math.round(n.start / CORE_RATE * TPS), d: Math.max(1, Math.round(n.dur / CORE_RATE * TPS)), n: v, v: Math.max(1, Math.min(127, n.env)) });
+    });
+    var tracks = [];
+    Object.keys(byCh).map(Number).sort(function (a, b) { return a - b; }).forEach(function (c) {
+      var drum = c === DRUM_CH;
+      tracks.push({ name: drum ? '鼓（聲道 10）' : 'SRCN ' + srcnOfCh[c], channel: c, program: drum ? 0 : 80, drum: drum, volume: 100, pan: 64,
+        notes: byCh[c].sort(function (a, b) { return a.t - b.t; }) });
+    });
+    stats.channels = tracks.length;
+    return { song: { ppq: 480, tempos: [{ t: 0, bpm: 120 }], timesig: { n: 4, d: 4 }, title: title || '', tracks: tracks }, stats: stats };
+  }
+
+  function makeMidi(spc, title, seconds) { return buildSong(collectNotes(spc, seconds), title).song; }
 
   // 串流：核心以 32 kHz 產生，依播放取樣率線性內插讀出
   function makeStream(spc, sr) {
@@ -101616,7 +101728,7 @@ const holder = {};
     };
   }
 
-  return { createBackend: createBackend, makeStream: makeStream };
+  return { createBackend: createBackend, makeStream: makeStream, makeMidi: makeMidi, collectNotes: collectNotes, buildSong: buildSong };
 }));
 
 }).call(null, undefined, holder);
