@@ -29,6 +29,8 @@ try {
   L.records.forEach((r) => { if (r.name !== 'Autumn Leaves.wav') r.status = r.status; });
   window.fa._mlOpen();
   const p = await waitFor(() => { const all = document.querySelectorAll('.fml'); return all.length ? all[all.length - 1] : null; }, 15000);
+  // 轉錄控制項在「⚙ 設定」的「歌詞」分頁：先開設定視窗、切到歌詞分頁
+  btn(p, '⚙ 設定').click(); btn(p, '歌詞').click();
   const t0 = Date.now();
   const q = L.queue;
   // 只跑 wav：原生解碼應該能直接吃（不需要 ffmpeg.wasm，也就不會出現下載同意卡片）。不替使用者按任何確認。

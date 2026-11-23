@@ -95,6 +95,8 @@ try {
   // 6. 面板有「哼歌找歌」
   window.fa._mlOpen(); await sleep(1200);
   const panels = document.querySelectorAll('.fml'), p = panels[panels.length - 1];
+  // 哼歌找歌在「⚙ 設定」的「旋律搜尋」分頁：先開設定視窗、切到該分頁，再確認區塊存在
+  if (p) { Array.from(p.querySelectorAll('button')).find((b) => b.textContent === '⚙ 設定').click(); Array.from(p.querySelectorAll('button')).find((b) => b.textContent === '旋律搜尋').click(); }
   check('面板有哼歌找歌區塊', !!p && /哼歌/.test(p.textContent), p ? p.textContent.slice(0, 80) : '無面板');
   // 7. 找不到時演奏：humAsMidi 不丟例外（會開 MIDI 編輯器卡片）
   let playErr = null; try { H.humAsMidi(notesD, '評測哼歌'); } catch (e) { playErr = String(e && e.message || e); }

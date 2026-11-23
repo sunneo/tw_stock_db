@@ -55,6 +55,8 @@ try {
 
   window.fa._mlOpen();
   const p = await waitFor(() => { const all = document.querySelectorAll('.fml'); return all.length ? all[all.length - 1] : null; }, 15000);
+  // 轉錄控制項在「⚙ 設定」的「歌詞」分頁：先開設定視窗、切到歌詞分頁（與使用者的操作路徑一致）
+  btn(p, '⚙ 設定').click(); btn(p, '歌詞').click();
   out.lyricLine0 = p.querySelector('.fml-lyr .fml-st').textContent;
 
   if (out.beforeCounts.done === 0) {
