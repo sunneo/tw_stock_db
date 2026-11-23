@@ -84672,7 +84672,37 @@ const holder = {};
     return { song: r.song, tempo: r.tempo, method: method, skipped: (r.report && r.report.skipped) || [] };
   }
 
-  return { monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+
+  // 哼歌專用：人只會哼單音，不需要鼓／貝斯分離；重點是把「音量變小的尾巴、背景雜音」濾掉，
+  // 不然衰減中的聲音會被音高追蹤抓成下一個（多半是錯的）音符。
+  // 作法：降到約 11 kHz 後追蹤音高；以整段音量的高百分位為基準，低於基準的一定比例（約 -17 dB）就當沒聲音；
+  // 音符內音量掉到該音起頭很小（衰減尾）的幀也截掉；轉成音符後再丟掉太短、太輕（遠低於整段中位）的音。
+  function humNotes(input, opts) {
+    opts = opts || {};
+    var AM = opts.AudioToMidi; if (!AM || !AM.pitchTrack) throw new Error('缺少 FaAudioToMidi（音高追蹤）');
+    var mono = monoOf(input.channels), sr = input.sampleRate, step = Math.max(1, Math.round(sr / 11025)), n = Math.floor(mono.length / step), w = new Float32Array(n);
+    for (var i = 0; i < n; i++) { var a = 0; for (var k = 0; k < step; k++) a += mono[i * step + k]; w[i] = a / step; }
+    var wsr = sr / step;
+    var tr = AM.pitchTrack(w, wsr, { fmin: 70, fmax: 900, thr: 0.12 });
+    var sorted = Array.prototype.slice.call(tr.rms).filter(function (x) { return x > 0; }).sort(function (x, y) { return x - y; });
+    var ref = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
+    var gate = Math.max(0.01, ref * (opts.gateRatio || 0.14)), decay = opts.decayRatio || 0.3;
+    var runPeak = 0, orig = Uint8Array.from(tr.voiced);
+    for (var f = 0; f < tr.voiced.length; f++) {
+      if (!orig[f]) { runPeak = 0; continue; }   // 原本就沒音高（靜音）才算新的一段
+      if (tr.rms[f] < gate) { tr.voiced[f] = 0; runPeak = 0; continue; }
+      if (tr.rms[f] > runPeak) runPeak = tr.rms[f];
+      if (tr.rms[f] < runPeak * decay) tr.voiced[f] = 0;   // 衰減尾：不是新音；尾巴後面冒出的小聲音也一併濾掉
+    }
+    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.08 });
+    if (notes.length) {
+      var vs = notes.map(function (x) { return x.v; }).sort(function (x, y) { return x - y; }), med = vs[vs.length >> 1];
+      notes = notes.filter(function (x) { return x.v >= med * 0.5; });
+    }
+    return { notes: notes, gate: gate, ref: ref };
+  }
+
+  return { humNotes: humNotes, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
 }));
 
 }).call(null, undefined, holder);
@@ -103911,6 +103941,11 @@ const FaMusicLibHost = (function () {
   // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
   async function notesFromHum(blob, useModel) {
     var buf = await window.fa._decodeAudioBuffer(blob);
+    if (!useModel && typeof FaAudioToMidi !== 'undefined') {
+      // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
+      var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
+      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音' };
+    }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }

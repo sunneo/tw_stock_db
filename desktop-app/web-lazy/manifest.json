@@ -1949,6 +1949,14 @@
    "size": 7853,
    "md5": "fcd907f966ba41053cc4cb3f2b58ade1"
   },
+  "mlaud": {
+   "file": "chunks/mlaud.js",
+   "names": [
+    "FaMusicLibAudio"
+   ],
+   "size": 2324,
+   "md5": "012b3a354d95dcb5a23404029374e8bf"
+  },
   "mlrix": {
    "file": "chunks/mlrix.js",
    "names": [
@@ -2114,12 +2122,12 @@
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 47988,
-   "md5": "216b139883d32c61a8649f51d0cee73a"
+   "size": 48251,
+   "md5": "f73fb8415ad908ad78266e0afa842386"
   }
  },
  "core": {
-  "size": 6924718,
-  "md5": "ef635a5ddc0a7993cb4fe9f629919e8c"
+  "size": 6923409,
+  "md5": "2ee947dba41f7e0de9c84a3dd28dc3f8"
  }
 }
