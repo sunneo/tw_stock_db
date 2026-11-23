@@ -36,12 +36,11 @@ test('解析登錄表：單行與多行的 register_slash_command 都抓得到�
   assert.equal(reg.get('/two').desc, '第二個：多行呼叫，描述在下一行。');
 });
 
-test('真實登錄表：使用者點名的 GUI 指令都登錄過（knowledge-ui 不存在，不硬塞）', () => {
+test('真實登錄表：使用者點名的 GUI 指令都登錄過（/knowledge-ui 是 /knowledge ui 的別名）', () => {
   const reg = G.parseRegistry(fs.readFileSync(REAL_SRC, 'utf8'));
-  for (const c of ['/musiclib', '/run-terminal', '/edit-midi', '/edit-svg', '/edit-picture', '/edit-3d-model', '/edit-3d']) {
+  for (const c of ['/musiclib', '/run-terminal', '/edit-midi', '/edit-svg', '/edit-picture', '/edit-3d-model', '/edit-3d', '/knowledge-ui']) {
     assert.ok(reg.has(c), c + ' 應該在登錄表裡');
   }
-  assert.equal(reg.has('/knowledge-ui'), false);
 });
 
 test('gui-commands.json：每個名稱都在真實登錄表裡，且沒有重複', () => {
