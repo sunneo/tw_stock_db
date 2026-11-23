@@ -1,0 +1,16 @@
+{
+  "_說明": "有圖形介面、要在網頁版 web/aiweb/<指令>/ 開成全螢幕頁的斜線指令。名稱必須是 floating-assistant.js 裡 register_slash_command 登錄過的（產生腳本會逐一檢查，不存在就失敗）。新增或移除要改這裡，然後跑 gen-aiweb-pages.js。",
+  "gui": [
+    "/musiclib",
+    "/run-terminal",
+    "/edit-midi",
+    "/edit-svg",
+    "/edit-picture",
+    "/edit-3d-model",
+    "/edit-3d",
+    "/edit-game-2d",
+    "/edit-game-3d",
+    "/edit-media-presentation",
+    "/knowledge-ui"
+  ]
+}
