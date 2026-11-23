@@ -33,6 +33,8 @@ function measure(pcm, sr) {
 }
 
 try {
+  // 後端由宿主在第一次播放時接上（chipKinds 會觸發）；這裡先呼叫，並把清單記進結果
+  out.chipKinds = FaMusicLibHost.play && FaMusicLibHost.play.chipKinds ? FaMusicLibHost.play.chipKinds() : null;
   check('晶片播放器有 spc 後端', typeof FaChipPlayer !== 'undefined' && (() => { try { FaChipPlayer.getBackend('spc'); return true; } catch (_) { return false; } })(), '');
   check('mp3 編碼與 MIDI 函式存在', !!(window.fa && window.fa._encodeMp3) && typeof FaMidi !== 'undefined', '');
   if (!out.checks.every((c) => c.ok)) throw new Error('前置條件不符，停止');

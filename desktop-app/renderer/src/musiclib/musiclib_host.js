@@ -734,9 +734,14 @@ const FaMusicLibHost = (function () {
   var nsfWired = false;
   // 晶片後端：nsf 的後端要先接上（與 openNsf 同一寫法），之後 createPlayer 才找得到
   function ensureChipBackends() {
-    if (typeof FaChipPlayer === 'undefined' || typeof FaChipNsf === 'undefined' || typeof FaJsnes === 'undefined') return;
-    if (nsfWired) return;
-    try { FaChipPlayer.getBackend('nsf'); } catch (_) { FaChipPlayer.registerBackend(FaChipNsf.createBackend(FaJsnes.NES)); }
+    if (typeof FaChipPlayer === 'undefined' || nsfWired) return;
+    // 每種晶片後端各自接上（缺哪個就略過哪個，不能因為缺 nsf 而讓 spc 也接不上）
+    if (typeof FaChipNsf !== 'undefined' && typeof FaJsnes !== 'undefined') {
+      try { FaChipPlayer.getBackend('nsf'); } catch (_) { FaChipPlayer.registerBackend(FaChipNsf.createBackend(FaJsnes.NES)); }
+    }
+    if (typeof FaChipSpc !== 'undefined') {
+      try { FaChipPlayer.getBackend('spc'); } catch (_) { FaChipPlayer.registerBackend(FaChipSpc.createBackend()); }
+    }
     nsfWired = true;
   }
   function chipKinds() { ensureChipBackends(); return typeof FaChipPlayer === 'undefined' ? [] : FaChipPlayer.listBackends().map(function (b) { return b.kind; }); }
