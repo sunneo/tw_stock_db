@@ -638,7 +638,13 @@
         r.results.forEach(function (x) {
           var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
           var play = h('button', null, '試聽命中段');
-          play.onclick = function () { MEL.playClip(paths[x.key], x.startSec, x.endSec).catch(function (e) { melStatus('試聽失敗：' + String((e && e.message) || e)); }); };
+          play.onclick = function () {
+            // MIDI 命中段回傳播放卡片（插在這一列下面，再按一次收起）；音訊檔直接播
+            if (line._clip) { if (line._clip.parentNode) line._clip.parentNode.removeChild(line._clip); line._clip = null; return; }
+            MEL.playClip(paths[x.key], x.startSec, x.endSec).then(function (res) {
+              if (res && res.node) { line._clip = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); }
+            }).catch(function (e) { melStatus('試聽失敗：' + String((e && e.message) || e)); });
+          };
           line.appendChild(document.createTextNode(' ')); line.appendChild(play);
           mRes.appendChild(line);
         });

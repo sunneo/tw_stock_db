@@ -368,10 +368,36 @@ const FaMusicLibHost = (function () {
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }
   // 試聽：從音樂庫的檔案讀出來，用 new Audio(objectURL)（與 app 的 TTS 試聽同一寫法），從 startSec 開始，endSec 後停
+  // 切出 [fromSec, toSec] 這一段：音符平移到 0 起算（跨界的音符截斷），速度取該段開頭的速度（段內的速度變化保留）
+  function clipMidiSong(song, fromSec, toSec) {
+    var t0 = FaMidi.secToTicks(song, fromSec), t1 = FaMidi.secToTicks(song, toSec);
+    var s = JSON.parse(JSON.stringify(song));
+    var tempos = (song.tempos || [{ t: 0, bpm: 120 }]).slice().sort(function (x, y) { return x.t - y.t; });
+    var startBpm = tempos[0].bpm; tempos.forEach(function (x) { if (x.t <= t0) startBpm = x.bpm; });
+    s.tempos = [{ t: 0, bpm: startBpm }].concat(tempos.filter(function (x) { return x.t > t0 && x.t < t1; }).map(function (x) { return { t: x.t - t0, bpm: x.bpm }; }));
+    s.tracks.forEach(function (tr) {
+      tr.notes = (tr.notes || []).filter(function (n) { return n.t < t1 && n.t + n.d > t0; }).map(function (n) {
+        var a = Math.max(n.t, t0), b = Math.min(n.t + n.d, t1);
+        return Object.assign({}, n, { t: a - t0, d: Math.max(1, b - a) });
+      });
+    });
+    s.tracks = s.tracks.filter(function (tr) { return tr.notes.length; });
+    return s;
+  }
   async function playClip(path, startSec, endSec) {
-    var a = api(); var r = await a.rawfs.readFile(path, 'base64');
+    var a = api(); var r = await a.rawfs.readFile(absPath(path), 'base64');
     if (!r || r.base64 == null) throw new Error('讀不到這個檔案');
-    var url = URL.createObjectURL(new Blob([b64ToBytes(r.base64)]));
+    var bytes = b64ToBytes(r.base64);
+    // MIDI 不是瀏覽器的音訊檔，<audio> 播不了（會報「找不到支援的來源」）；旋律索引收的主要就是 MIDI，
+    // 所以命中段改用 app 的 MIDI 播放器播：把命中前後的音符切出來，回傳播放卡片節點（畫面把它插在結果旁邊）。
+    if (bytes.length > 4 && bytes[0] === 0x4D && bytes[1] === 0x54 && bytes[2] === 0x68 && bytes[3] === 0x64) {
+      if (typeof FaMidi === 'undefined' || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
+      var fa = window.fa; if (!fa || !fa._midiHost) throw new Error('MIDI 播放器不存在（需要桌面版）');
+      var clip = clipMidiSong(FaMidi.parse(bytes), Math.max(0, startSec - 0.3), endSec + 1);
+      var node = await FaMidiUI.mount({ song: clip, title: '命中段 ' + startSec.toFixed(1) + '–' + endSec.toFixed(1) + ' 秒', host: fa._midiHost(), M: FaMidi });
+      return { node: node };
+    }
+    var url = URL.createObjectURL(new Blob([bytes]));
     var au = new Audio(url);
     au.onloadedmetadata = function () { try { au.currentTime = Math.max(0, startSec - 0.3); } catch (_) { /* */ } };
     await au.play();
@@ -1118,7 +1144,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  return { methods: methods, getLib: getLib, clipMidiSong: clipMidiSong, pickFolder: pickFolder, pickFiles: pickFiles, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
