@@ -352,8 +352,8 @@ const FaMusicLibHost = (function () {
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
     var u8 = b64ToBytes(r.base64);
     if (/\.midi?$/i.test(rec.name)) {
-      var song = FaMidi.parse(u8);
-      return { notes: FaMusicLibMelody.melodyFromSong(song), method: 'mid' };
+      var song = FaMidi.parse(u8), built = FaMusicLibMelody.songLines(song);
+      return { notes: built.mix, tracks: built.tracks, method: 'mid' };
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
@@ -453,7 +453,10 @@ const FaMusicLibHost = (function () {
   // 查詢用的索引項目（只取建好的）
   function melodyEntries(L) {
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
-      return { key: r.key, name: r.name, contour: r.melody.contour, method: r.melody.method, path: r.path };
+      // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
+      var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
+      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), contour: t.contour }); });
+      return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
     });
   }
   // 哼歌的文字：先用既有轉錄（whisperTranscribe，同歌詞轉錄的 Whisper 流程）取文字；面板手動填的文字優先

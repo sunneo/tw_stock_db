@@ -84046,6 +84046,7 @@ const holder = {};
     sum = sum || {}; groups = groups || {};
     var out = [], head = '旋律索引完成：新建 ' + (sum.done || 0) + ' 首、已建過沿用 ' + (sum.skipped || 0) + ' 首、失敗 ' + (sum.failed || 0) + ' 首';
     if (sum.cancelled) head += '、取消 ' + sum.cancelled + ' 首';
+    if (sum.rebuilt) head += '；索引格式更新，重建 ' + sum.rebuilt + ' 首（每軌各自建線）';
     out.push(head + '。');
     var parts = [];
     if (groups.source) parts.push('遊戲原始檔 ' + groups.source + ' 個（請看它擷取出來的 MIDI）');
@@ -84273,36 +84274,52 @@ const holder = {};
 /* 音樂庫的旋律找歌核心（UMD，純函式，不碰 DOM、麥克風、網路；node 可直接跑單元測試）。
  *
  * 流程：
- *   1. 旋律：從音符清單取主旋律（同時多音取最高音，鼓軌不算）→ melodyNotes / melodyFromSong
- *   2. 特徵：相對音程序列（與調高無關）＋相鄰音長的 log2 比例（與速度無關）→ contourOf
+ *   1. 旋律：音符清單 → melodyNotes（同音高的連續重複音合併、同群起音取最高音，鼓軌不算）；
+ *      MIDI 另外每軌各取一條旋律線 → songLines（索引版本 INDEX_VERSION＝2）
+ *   2. 特徵：相對音程序列（與調高無關）＋粗輪廓級別（7 級）＋相鄰音長的 log2 比例（與速度無關）→ contourOf
  *   3. 比對：對音程序列做「子序列對齊」（query 全部要對上，target 任何位置開始、可跳過多餘的 target 音；
- *      query 多出的音有懲罰、query 漏音＝target 跳過，代價很小）→ align；回傳分數與命中區段（曲中秒數）
+ *      query 多出的音有懲罰、query 漏音＝target 跳過，代價很小）；音高代價＝精確半音差與粗輪廓級差加權；
+ *      每首的所有線（合併線＋各軌線）分別比對，取最高分，並回報命中的是哪一條線 → searchMelody
  *   4. 打擊：只比 onset 間隔比例（節奏）→ rhythmScore，獨立分數
- *   5. 索引：background 逐首建立，已建且檔案大小／修改時間沒變就跳過，可暫停、續跑、取消；失敗附階段與原因 → runMelodyIndex
+ *   5. 索引：background 逐首建立，已建、檔案沒變、索引版本相同就跳過，可暫停、續跑、取消；失敗附階段與原因 → runMelodyIndex
  * 音訊轉音符（單音音高追蹤、Basic Pitch）不在這裡：呼叫端用 FaAudioToMidi.pitchTrack／framesToNotes 取得音符後交進來。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibMelody = factory();
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var CHORD_WIN = 0.05;        // 秒：起音差在這之內視為同一群（取最高音）
+  var REPEAT_GAP = 0.05;       // 秒：同音高、前後兩音的空隔小於這個，視為同一個音（MIDI 常把一個音拆成連續短音）
+  var OUTLIER_LEAP = 18;       // 半音：查詢最前／最後一個音與鄰音相差這麼多，當離群音丟掉（哼歌常在頭尾抓錯）
+  var MIN_TRACK_NOTES = 8;     // 每軌（合併重複音後）至少要這麼多個音才建線
+  var MAX_LINES = 12;          // 每首最多保留幾條線（合併線＋各軌線）
+  var SIMILAR_TRACK = 0.9;     // 兩軌的音程序列相似度超過這個，只留一條
+  var INDEX_VERSION = 2;       // 索引格式版本：2＝每軌旋律線＋重複音合併；沒有或較舊的版本，下次建立索引會自動重建
+  var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
   var INT_CAP = 2;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
   var RATIO_CAP = 1;           // 節奏比例差距（log2）超過 1 就當完全不同（= 兩倍）
   var GAP_QUERY = 1.0;         // query 多出一個音的代價（不能太便宜，否則無關旋律會靠「略過」湊分）
-  var SKIP_TARGET = 0.15;      // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對
-  var DEFAULT_MIN_SCORE = 0.35;
+  var SKIP_TARGET = 0.3;       // 跳過 target 的音（查詢漏音）的代價：不能太小，否則任何旋律都能靠跳音湊對（0.15→0.3 校準：對照隨機曲子的分數中位數 0.45→0.35）
+  var DEFAULT_MIN_SCORE = 0.4; // 校準見單元測試「合成資料校準」：0.4 時目標召回約 84%、隨機對照約 17% 的查詢會誤中一首（0.35 時誤中過半）
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function round3(x) { return Math.round(x * 1000) / 1000; }
 
   // ───── 1. 旋律 ─────
-  // notes: [{t(秒), d(秒), n(音高), v}]；同群起音只留最高音（音高相同留較長的）
+  // notes: [{t(秒), d(秒), n(音高), v}]。先合併同音高、空隔小於 REPEAT_GAP 的連續音；再同群起音只留最高音（音高相同留較長的）
   function melodyNotes(notes) {
     var src = (notes || []).filter(function (x) { return x && isFinite(x.t) && isFinite(x.n) && (x.d || 0) > 0; })
       .map(function (x) { return { t: +x.t, d: +x.d, n: +x.n }; })
       .sort(function (a, b) { return a.t - b.t || b.n - a.n; });
+    var rep = [];
+    for (var r = 0; r < src.length; r++) {
+      var y = src[r], p = rep[rep.length - 1];
+      if (p && p.n === y.n && y.t - (p.t + p.d) < REPEAT_GAP) { p.d = Math.max(p.d, y.t + y.d - p.t); continue; }
+      rep.push(y);
+    }
     var out = [];
-    for (var i = 0; i < src.length; i++) {
-      var x = src[i], last = out[out.length - 1];
+    for (var i = 0; i < rep.length; i++) {
+      var x = rep[i], last = out[out.length - 1];
       if (last && x.t - last.t < CHORD_WIN) {
         if (x.n > last.n || (x.n === last.n && x.d > last.d)) out[out.length - 1] = x;
         continue;
@@ -84330,17 +84347,107 @@ const holder = {};
     });
     return melodyNotes(all);
   }
+  // 全序列的音程相似度（0..1）：編輯距離（音程差 0..2 半音的替換代價，插入刪除各 1），除以較長的長度
+  function globalSim(a, b) {
+    var m = a.length, n = b.length;
+    if (!m || !n) return 0;
+    var prev = new Float64Array(n + 1), cur = new Float64Array(n + 1), i, j;
+    for (j = 0; j <= n; j++) prev[j] = j;
+    for (i = 1; i <= m; i++) {
+      cur[0] = i;
+      for (j = 1; j <= n; j++) {
+        var sub = prev[j - 1] + Math.min(Math.abs(a[i - 1] - b[j - 1]), 2) / 2;
+        cur[j] = Math.min(sub, prev[j] + 1, cur[j - 1] + 1);
+      }
+      var tmp = prev; prev = cur; cur = tmp;
+    }
+    return clamp(1 - prev[n] / Math.max(m, n), 0, 1);
+  }
+  // ── 單軌的聲部線 ──
+  // 哼歌的查詢永遠是「單一條旋律線」：人不可能同時哼出兩個旋律（除非 beatbox）。所以索引端要把每首曲子拆成「所有可能被人哼出來的單線」，
+  // 而不是把整首壓成一條。拿音樂錄音當查詢時，查詢本身就是多聲部壓成的一條線，所以和合併線比對得上；哼歌不行。
+  // 單軌內同一起音群（CHORD_WIN 內）有多個音（和弦、琶音）時，該軌另外產生：
+  //   最高音線（hi）：每群取最高音；最低音線（lo）：每群取最低音（人也會哼低音）；
+  //   中聲部線（mid）：群內 3 個音以上時取中間那個（旋律常在中間，上面被高音琶音蓋住、下面有低音）。
+  // 沒有多音群的軌只有一條線（one）。
+  function voicesOf(ns) {
+    var sorted = ns.slice().sort(function (x, y) { return x.t - y.t || x.n - y.n; });
+    var groups = [], multi = false;
+    sorted.forEach(function (x) {
+      var g = groups[groups.length - 1];
+      if (g && x.t - g[0].t < CHORD_WIN) g.push(x); else groups.push([x]);
+    });
+    var hi = [], lo = [], mid = [];
+    groups.forEach(function (g) {
+      if (g.length > 1) multi = true;
+      g.sort(function (x, y) { return x.n - y.n; });
+      hi.push(g[g.length - 1]); lo.push(g[0]);
+      if (g.length >= 3) mid.push(g[(g.length - 1) >> 1]);
+    });
+    return { multi: multi, hi: hi, lo: lo, mid: mid };
+  }
+  var REG_MID = 64;   // 音域中段的參考音高（MIDI 音號）：每首線數超過上限時，離這裡近的線優先保留
+  var KIND_ORDER = { one: 0, hi: 1, mid: 2, lo: 3 };
+  var KIND_LABEL = { one: '', hi: ' 最高音', mid: ' 中聲部', lo: ' 最低音' };
+  // song → { mix: 合併旋律（同 melodyFromSong）, tracks: [{ track, channel, name, kind, label, notes:[[t,d,n]], contour }] }
+  // 每個非鼓軌：單聲部一條；多聲部再加最高音、最低音、中聲部（各自合併重複音後至少 MIN_TRACK_NOTES 個音）。
+  // 音程序列近乎相同（相似度 > SIMILAR_TRACK）只留一條；每首線數（含合併線）最多 MAX_LINES 條。
+  // 超過上限時的優先順序：音數多 → 音域離中段近 → 軌號小、kind 固定順序；再依序略過與已留下的線重複的。
+  function songLines(song) {
+    var mix = melodyFromSong(song), cand = [];
+    ((song && song.tracks) || []).forEach(function (tr, i) {
+      if (tr.drum) return;
+      var ns = (tr.notes || []).map(function (n) {
+        var t0 = ticksToSec(song, n.t), t1 = ticksToSec(song, n.t + n.d);
+        return { t: t0, d: t1 - t0, n: n.n, v: n.v };
+      });
+      var v = voicesOf(ns), chName = tr.channel == null ? null : +tr.channel, name = String(tr.name || '');
+      var variants = [{ kind: v.multi ? 'hi' : 'one', list: v.hi }];
+      if (v.multi) { variants.push({ kind: 'lo', list: v.lo }); variants.push({ kind: 'mid', list: v.mid }); }
+      variants.forEach(function (vr) {
+        var mel = melodyNotes(vr.list);
+        if (mel.length < MIN_TRACK_NOTES) return;
+        var reg = mel.reduce(function (s, x) { return s + x.n; }, 0) / mel.length;
+        cand.push({ track: i, channel: chName, name: name, kind: vr.kind, mel: mel, reg: reg, contour: contourOf(mel) });
+      });
+    });
+    cand.sort(function (x, y) {
+      return (y.mel.length - x.mel.length) || (Math.abs(x.reg - REG_MID) - Math.abs(y.reg - REG_MID)) ||
+        (x.track - y.track) || (KIND_ORDER[x.kind] - KIND_ORDER[y.kind]);
+    });
+    var kept = [];
+    cand.forEach(function (c) {
+      var dup = kept.some(function (k) { return globalSim(k.contour.intervals, c.contour.intervals) > SIMILAR_TRACK; });
+      if (!dup && kept.length < MAX_LINES - 1) kept.push(c);
+    });
+    kept.sort(function (x, y) { return x.track - y.track || KIND_ORDER[x.kind] - KIND_ORDER[y.kind]; });
+    return {
+      mix: mix,
+      tracks: kept.map(function (c) {
+        var label = (c.channel != null ? '頻道 ' + c.channel : '軌 ' + c.track) + KIND_LABEL[c.kind];
+        return { track: c.track, channel: c.channel, name: c.name, kind: c.kind, label: label,
+          notes: c.mel.map(function (x) { return [round3(x.t), round3(x.d), x.n]; }), contour: c.contour };
+      })
+    };
+  }
 
   // ───── 2. 特徵 ─────
-  // mel: melodyNotes 的輸出。回傳相對音程（半音，有號）與相鄰音長的 log2 比例，以及每個音的起點與長度（用來換算命中時間）
+  // 粗輪廓級別：音程 → 7 級（0 持平；±1 小上／小下 1–2 半音；±2 中 3–5；±3 大 ≥6）
+  function levelOf(d) {
+    var a = Math.abs(d), s = d < 0 ? -1 : (d > 0 ? 1 : 0);
+    if (a === 0) return 0;
+    return s * (a <= 2 ? 1 : (a <= 5 ? 2 : 3));
+  }
+  // mel: melodyNotes 的輸出。回傳相對音程（半音，有號）、粗輪廓級別、相鄰音長的 log2 比例，以及每個音的起點與長度（用來換算命中時間）
   function contourOf(mel) {
-    var n = mel.length, intervals = [], ratios = [], times = [], durs = [];
+    var n = mel.length, intervals = [], levels = [], ratios = [], times = [], durs = [];
     for (var i = 0; i < n; i++) { times.push(mel[i].t); durs.push(Math.max(0.02, mel[i].d)); }
     for (var k = 0; k + 1 < n; k++) {
-      intervals.push(clamp(mel[k + 1].n - mel[k].n, -12, 12));
+      var iv = clamp(mel[k + 1].n - mel[k].n, -12, 12);
+      intervals.push(iv); levels.push(levelOf(iv));
       ratios.push(clamp(Math.log2(durs[k + 1] / durs[k]), -2, 2));
     }
-    return { n: n, intervals: intervals, ratios: ratios, times: times, durs: durs };
+    return { n: n, intervals: intervals, levels: levels, ratios: ratios, times: times, durs: durs };
   }
   // 打擊的 onset 時間（秒）→ 相鄰間隔比例的 log2（只看節奏，與速度無關）
   function onsetRatios(times) {
@@ -84373,7 +84480,18 @@ const holder = {};
     var bj = 0; for (j = 1; j <= n; j++) if (pc[j] < pc[bj] - 1e-12) bj = j;
     return { norm: pc[bj] / m, start: ps[bj], end: bj };
   }
-  function pitchOpts() { return { sub: function (a, b) { return Math.min(Math.abs(a - b), INT_CAP) / INT_CAP; }, gapQuery: GAP_QUERY, skipTarget: SKIP_TARGET }; }
+  // 音高代價用的元素：{ e: 音程（半音）, l: 粗輪廓級別 }
+  function pitchItems(c) {
+    var out = [];
+    for (var i = 0; i < c.intervals.length; i++) out.push({ e: c.intervals[i], l: c.levels ? c.levels[i] : levelOf(c.intervals[i]) });
+    return out;
+  }
+  function pitchOpts() {
+    return {
+      sub: function (a, b) { return W_EXACT * Math.min(Math.abs(a.e - b.e), INT_CAP) / INT_CAP + W_COARSE * Math.abs(a.l - b.l) / 6; },
+      gapQuery: GAP_QUERY, skipTarget: SKIP_TARGET
+    };
+  }
   function rhythmOpts() { return { sub: function (a, b) { return Math.min(Math.abs(a - b), RATIO_CAP) / RATIO_CAP; }, gapQuery: GAP_QUERY, skipTarget: SKIP_TARGET }; }
   function toScore(norm) { return clamp(1 - norm, 0, 1); }
   // 對比拉伸：隨機旋律的分數大多落在 0.4～0.6，把 0.5 以下壓成 0，讓「找不到」與「命中」分得開（門檻在合成資料上調過，見單元測試）
@@ -84389,52 +84507,73 @@ const holder = {};
   }
 
   // ───── 4. 查詢 ─────
-  // query：melodyNotes 的輸出（已取主旋律）；entries：[{ key, name, contour: contourOf(...) }]
+  // 查詢音符的離群處理：最前或最後一個音與鄰音相差 ≥ OUTLIER_LEAP 半音，丟掉（只看頭尾各一次）
+  function dropOutliers(mel) {
+    var out = mel.slice();
+    if (out.length >= 3 && Math.abs(out[0].n - out[1].n) >= OUTLIER_LEAP) out.shift();
+    if (out.length >= 3 && Math.abs(out[out.length - 1].n - out[out.length - 2].n) >= OUTLIER_LEAP) out.pop();
+    return out;
+  }
+  // 一條線的比對：回傳 { raw, pitch, rhythm, start, end }
+  function scoreLine(qc, qItems, c, w, po, ro) {
+    var p = align(qItems, pitchItems(c), po), pitch = toScore(p.norm);
+    var rhythm = qc.ratios.length >= 2 ? toScore(align(qc.ratios, c.ratios, ro).norm) : 0;
+    return { pitch: pitch, rhythm: rhythm, raw: w.pitch * pitch + w.rhythm * rhythm, start: p.start, end: p.end };
+  }
+  // query：音符（秒）；entries：[{ key, name, lines?: [{ label, contour }], contour? }]。沒有 lines 時，contour 當成唯一一條線。
+  // 每首取所有線中最高分的那條，回報 hitLine（線的名稱，例如「頻道 1」）與命中的秒數範圍
   // opts: { minScore=0.35, limit=10, textHits（Set 或物件，key 命中就加分）, textWeight=0.1, weights={pitch:0.8, rhythm:0.2} }
   function searchMelody(query, entries, opts) {
     opts = opts || {};
-    var mel = melodyNotes(query);
+    var mel = dropOutliers(melodyNotes(query));
     if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
-    var qc = contourOf(mel), w = Object.assign({ pitch: 0.8, rhythm: 0.2 }, opts.weights || {});
+    var qc = contourOf(mel), qItems = pitchItems(qc), w = Object.assign({ pitch: 0.8, rhythm: 0.2 }, opts.weights || {});
     var minScore = opts.minScore == null ? DEFAULT_MIN_SCORE : opts.minScore, textWeight = opts.textWeight == null ? 0.1 : opts.textWeight;
     var po = pitchOpts(), ro = rhythmOpts(), results = [];
     (entries || []).forEach(function (e) {
-      var c = e.contour; if (!c || c.n < 2) return;
-      var p = align(qc.intervals, c.intervals, po), pitch = toScore(p.norm);
-      var rhythm = qc.ratios.length >= 2 ? toScore(align(qc.ratios, c.ratios, ro).norm) : 0;
+      var lines = e.lines && e.lines.length ? e.lines : (e.contour ? [{ label: '', contour: e.contour }] : []);
+      var best = null, bestLine = null;
+      lines.forEach(function (ln) {
+        var c = ln.contour; if (!c || c.n < 2) return;
+        var s = scoreLine(qc, qItems, c, w, po, ro);
+        if (!best || s.raw > best.raw) { best = s; bestLine = { label: ln.label || '', c: c }; }
+      });
+      if (!best) return;
       var text = opts.textHits && (opts.textHits instanceof Set ? opts.textHits.has(e.key) : !!opts.textHits[e.key]) ? textWeight : 0;
-      var raw = w.pitch * pitch + w.rhythm * rhythm + text;
-      var score = contrast(raw);
+      var score = contrast(best.raw + text);
       if (score < minScore) return;
-      var si = clamp(p.start, 0, c.n - 1), ei = clamp(p.end, 0, c.n - 1);
+      var c2 = bestLine.c, si = clamp(best.start, 0, c2.n - 1), ei = clamp(best.end, 0, c2.n - 1);
       results.push({
-        key: e.key, name: e.name, score: Math.round(score * 1000) / 1000, pitchScore: Math.round(pitch * 1000) / 1000,
-        rhythmScore: Math.round(rhythm * 1000) / 1000, textBonus: text,
-        startSec: c.times[si], endSec: c.times[ei] + c.durs[ei]
+        key: e.key, name: e.name, score: Math.round(score * 1000) / 1000, pitchScore: Math.round(best.pitch * 1000) / 1000,
+        rhythmScore: Math.round(best.rhythm * 1000) / 1000, textBonus: text, hitLine: bestLine.label,
+        startSec: c2.times[si], endSec: c2.times[ei] + c2.durs[ei]
       });
     });
     results.sort(function (a, b) { return b.score - a.score || a.name.localeCompare(b.name); });
     return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length };
   }
 
-  // ───── 5. 索引（逐首，可暫停續跑、取消；已建且沒變就跳過）─────
-  // rec: { key, path, size, mtimeMs, melody? }；melody = { sig, method, contour, status:'ok'|'failed', reason? }
-  // opts: { extract(rec, ctx) → Promise<{ notes, method }>（失敗丟錯，錯誤訊息附階段）, save(rec)（寫回儲存層）,
+  // ───── 5. 索引（逐首，可暫停續跑、取消；已建、沒變、版本相同就跳過）─────
+  // rec: { key, path, size, mtimeMs, melody? }；melody = { sig, version, method, contour, tracks, status:'ok'|'failed', reason? }
+  // opts: { extract(rec, ctx) → Promise<{ notes, method, tracks? }>（失敗丟錯，錯誤訊息附階段）, save(rec)（寫回儲存層）,
   //         onEvent(ev), isCancelled(), waitIfPaused() → Promise（暫停時等）, retries=3, sleep(ms) }
+  // 回傳 summary：done、skipped、failed、cancelled、rebuilt（舊索引格式版本，這次要重建的首數）
   function sigOf(rec) { return String(rec.size || 0) + ':' + String(rec.mtimeMs || 0); }
   var TRANSIENT_RE = /network|timeout|timed out|逾時|連線|fetch/i;
+  function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < INDEX_VERSION); }
   async function runMelodyIndex(recs, opts) {
     opts = opts || {};
     var emit = opts.onEvent || function () {}, cancelled = opts.isCancelled || function () { return false; };
     var wait = opts.waitIfPaused || function () { return Promise.resolve(); };
     var sleep = opts.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
     var retries = opts.retries == null ? 3 : opts.retries;
-    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0 };
+    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0, rebuilt: 0 };
     for (var i = 0; i < recs.length; i++) {
       var rec = recs[i];
       if (cancelled()) { summary.cancelled++; continue; }
       await wait();
-      if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok') { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
+      if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
+      var stale = isStaleFormat(rec);
       emit({ key: rec.key, status: 'running' });
       var attempt = 0, done = false;
       for (;;) {
@@ -84443,17 +84582,18 @@ const holder = {};
           var got = await opts.extract(rec, { attempt: attempt });
           var mel = melodyNotes(got.notes);
           if (mel.length < MIN_NOTES) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
-          rec.melody = { sig: sigOf(rec), status: 'ok', method: got.method, contour: contourOf(mel) };
+          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: contourOf(mel), tracks: got.tracks || [] };
           done = true; break;
         } catch (err) {
           var msg = String((err && err.message) || err);
           if (cancelled()) break;
           if (TRANSIENT_RE.test(msg) && attempt < retries) { emit({ key: rec.key, status: 'retry', attempt: attempt, reason: msg }); await sleep(1000 * attempt); continue; }
-          rec.melody = { sig: sigOf(rec), status: 'failed', reason: msg };
+          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'failed', reason: msg };
           break;
         }
       }
       if (cancelled() && !done) { summary.cancelled++; emit({ key: rec.key, status: 'cancelled' }); continue; }
+      if (stale) summary.rebuilt++;
       if (opts.save) await opts.save(rec);
       if (done) { summary.done++; emit({ key: rec.key, status: 'done', method: rec.melody.method }); }
       else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: rec.melody.reason }); }
@@ -84462,9 +84602,10 @@ const holder = {};
   }
 
   return {
-    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, contourOf: contourOf, onsetRatios: onsetRatios,
+    melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
-    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE
+    dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, INDEX_VERSION: INDEX_VERSION
   };
 }));
 
@@ -103116,7 +103257,7 @@ const holder = {};
         hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
-          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
+          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中：' + (x.hitLine || '合併旋律') + '　時間 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
           var play = h('button', null, '試聽命中段');
           play.onclick = function () {
             // MIDI 命中段回傳播放卡片（插在這一列下面，再按一次收起）；音訊檔直接播
@@ -103640,8 +103781,8 @@ const FaMusicLibHost = (function () {
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
     var u8 = b64ToBytes(r.base64);
     if (/\.midi?$/i.test(rec.name)) {
-      var song = FaMidi.parse(u8);
-      return { notes: FaMusicLibMelody.melodyFromSong(song), method: 'mid' };
+      var song = FaMidi.parse(u8), built = FaMusicLibMelody.songLines(song);
+      return { notes: built.mix, tracks: built.tracks, method: 'mid' };
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
@@ -103741,7 +103882,10 @@ const FaMusicLibHost = (function () {
   // 查詢用的索引項目（只取建好的）
   function melodyEntries(L) {
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
-      return { key: r.key, name: r.name, contour: r.melody.contour, method: r.melody.method, path: r.path };
+      // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
+      var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
+      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), contour: t.contour }); });
+      return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
     });
   }
   // 哼歌的文字：先用既有轉錄（whisperTranscribe，同歌詞轉錄的 Whisper 流程）取文字；面板手動填的文字優先

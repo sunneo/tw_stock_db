@@ -1016,6 +1016,7 @@
     sum = sum || {}; groups = groups || {};
     var out = [], head = '旋律索引完成：新建 ' + (sum.done || 0) + ' 首、已建過沿用 ' + (sum.skipped || 0) + ' 首、失敗 ' + (sum.failed || 0) + ' 首';
     if (sum.cancelled) head += '、取消 ' + sum.cancelled + ' 首';
+    if (sum.rebuilt) head += '；索引格式更新，重建 ' + sum.rebuilt + ' 首（每軌各自建線）';
     out.push(head + '。');
     var parts = [];
     if (groups.source) parts.push('遊戲原始檔 ' + groups.source + ' 個（請看它擷取出來的 MIDI）');
