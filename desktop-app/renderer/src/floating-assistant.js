@@ -101937,6 +101937,7 @@ const holder = {};
     + '.fml button:disabled{opacity:.45;cursor:default}'
     + '.fml-lyr input[type=text]{flex:1;min-width:180px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
+    + '.fml.max{position:fixed;inset:0;z-index:2147482000;border-radius:0;border:none;display:flex;flex-direction:column;overflow:auto}.fml.max .fml-wrap{max-height:none;flex:1;min-height:200px}'
     + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
     + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
@@ -101983,6 +101984,13 @@ const holder = {};
     var bDel = h('button', null, '移除勾選');
     var bSrc = h('button', null, '來源管理');
     var stat = h('span', 'fml-st');
+    // 最大化：整個面板鋪滿視窗（再按或按 Esc 還原）
+    var bMax = h('button', null, '⛶ 最大化'); bMax.title = '把音樂庫放大到整個視窗（Esc 還原）';
+    function setMax(on) { root.classList.toggle('max', !!on); bMax.textContent = on ? '🗗 還原' : '⛶ 最大化'; }
+    bMax.onclick = function () { setMax(!root.classList.contains('max')); };
+    var onKey = function (ev) { if (ev.key === 'Escape' && root.classList.contains('max')) setMax(false); };
+    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('keydown', onKey);
+    bar.appendChild(bMax);
     bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel); bar.appendChild(bDel); bar.appendChild(bSrc); bar.appendChild(stat);
 
     var lyr = h('div', 'fml-lyr');
@@ -102032,7 +102040,8 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(srcBox); root.appendChild(fIn); root.appendChild(dIn);
+    // 來源管理列要放在工具列正下方：放在清單底下時，清單一長就在畫面外，按了像是沒反應
+    root.appendChild(bar); root.appendChild(srcBox); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
@@ -102445,7 +102454,7 @@ const holder = {};
     render();
     return {
       refresh: render,
-      destroy: function () { clearInterval(ticker); if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
+      destroy: function () { try { document.removeEventListener('keydown', onKey); } catch (_) { /* */ } clearInterval(ticker); if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
     };
   }
 
