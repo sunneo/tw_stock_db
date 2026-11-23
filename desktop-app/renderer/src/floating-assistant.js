@@ -83872,7 +83872,10 @@ const holder = {};
     });
     var localByPath = {};
     base.records.forEach(function (r) { localByPath[r.path] = r; });
-    var keyMap = {}, stats = { imported: data.records.length, added: 0, matched: 0, filledIndex: 0, indexStale: 0, missing: 0, orphanDerived: 0 };
+    // 內容指紋（整檔 md5）：路徑不同、md5 相同 → 同一個檔案（換了路徑）；只在唯一配上時才沿用
+    var localByMd5 = {};
+    base.records.forEach(function (r) { if (r.status === 'ok' && hasFullMd5(r)) (localByMd5[r.md5] = localByMd5[r.md5] || []).push(r); });
+    var keyMap = {}, stats = { imported: data.records.length, added: 0, matched: 0, matchedByMd5: 0, filledIndex: 0, indexStale: 0, missing: 0, orphanDerived: 0 };
     var statCache = {};
     function statFor(p) { if (!(p in statCache)) statCache[p] = statOf(p) || null; return statCache[p]; }
     // 先處理來源檔，再處理擷取產物（擷取產物的 key 依賴父紀錄的新 key）
@@ -83890,6 +83893,14 @@ const holder = {};
           if (!local.lyrics && src.lyrics) { local.lyrics = cloneJson(src.lyrics); local.lyricStatus = src.lyricStatus || 'done'; filled = true; }
           if (filled) stats.filledIndex++;
         }
+        return;
+      }
+      var byHash = (!local && hasFullMd5(src)) ? (localByMd5[src.md5] || []) : [];
+      if (byHash.length === 1) {
+        var lm = byHash[0];
+        keyMap[src.key] = lm.key; stats.matched++; stats.matchedByMd5++;
+        if (!lm.melody && src.melody && src.melody.status === 'ok') { lm.melody = cloneJson(src.melody); stats.filledIndex++; }
+        if (!lm.lyrics && src.lyrics) { lm.lyrics = cloneJson(src.lyrics); lm.lyricStatus = src.lyricStatus || 'done'; stats.filledIndex++; }
         return;
       }
       var nr = cloneJson(src);
@@ -83923,6 +83934,101 @@ const holder = {};
     lib.sources = plan.sources;
     lib.records = plan.records;
     return plan.stats;
+  }
+
+  // ───────────────────────── MD5 指紋：重複檔、搬家後的對應（純函式，不碰檔案系統）
+  // 紀錄上的欄位：md5（小寫十六進位）、hashKind（'md5-full' 整檔；'md5-head4M+size' 近似：只有開頭 4 MB＋大小）、md5Sig（算的當時的 sig）。
+  var HASH_FULL = 'md5-full', HASH_HEAD = 'md5-head4M+size';
+  function hasFullMd5(r) { return !!r && r.hashKind === HASH_FULL && typeof r.md5 === 'string' && r.md5.length === 32; }
+  // 要不要（重新）算：沒有整檔 md5、或檔案的 sig 變了。掃描本身不算，由背景佇列做。
+  function needsHash(r) {
+    if (!r || r.pending || r.status !== 'ok') return false;
+    return !(hasFullMd5(r) && r.md5Sig === sigOfRec(r));
+  }
+  function setHash(r, res) { r.md5 = res.hex; r.hashKind = res.kind; r.md5Sig = sigOfRec(r); delete r.hashError; }
+  // 內容完全相同的重複檔（同 md5、不同路徑）：回傳 [{ md5, recs }]，只列兩筆以上的群組
+  function duplicateGroups(records) {
+    var by = {};
+    (records || []).forEach(function (r) { if (r.status === 'ok' && hasFullMd5(r)) (by[r.md5] = by[r.md5] || []).push(r); });
+    return Object.keys(by).filter(function (k) { return by[k].length > 1; }).map(function (k) { return { md5: k, recs: by[k] }; });
+  }
+  function duplicateKeys(records) {
+    var out = {};
+    duplicateGroups(records).forEach(function (g) { g.recs.forEach(function (r) { out[r.key] = true; }); });
+    return out;
+  }
+  function pathTail(p, n) { return String(p || '').split(/[\\\/]/).filter(Boolean).slice(-n).join('/').toLowerCase(); }
+  function nameLower(r) { return String(r.name || '').toLowerCase(); }
+  // 相近度：最後兩層（資料夾／檔名）相同 +2；檔名相同 +1；只差副檔名 +0.5
+  function similarityOf(oldR, newR) {
+    var s = 0;
+    if (pathTail(oldR.path, 2) === pathTail(newR.path, 2)) s += 2;
+    if (nameLower(oldR) === nameLower(newR)) s += 1;
+    else if (nameLower(oldR).replace(/\.[^.]*$/, '') === nameLower(newR).replace(/\.[^.]*$/, '')) s += 0.5;
+    return s;
+  }
+  // 規劃對應（不改 lib）。舊紀錄＝status 'missing' 且有整檔 md5；新紀錄＝opts.newKeys（這一次掃到的）且 status ok 且有整檔 md5。
+  // 同 md5 的一群：只有一對一、且彼此都是最相近的配對才配；配不出來的列為歧義，絕不把兩筆舊紀錄指向同一個新檔案。
+  function planRelocation(lib, opts) {
+    opts = opts || {};
+    var newKeys = opts.newKeys || {}, recs = lib.records || [];
+    var olds = recs.filter(function (r) { return r.status === 'missing' && !r.pending; });
+    var cands = recs.filter(function (r) { return newKeys[r.key] && r.status === 'ok' && hasFullMd5(r); });
+    var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], pendingHash: recs.filter(needsHash).length };
+    var oldBy = {}, candBy = {};
+    olds.forEach(function (r) { if (hasFullMd5(r)) (oldBy[r.md5] = oldBy[r.md5] || []).push(r); else plan.noMd5.push(r); });
+    cands.forEach(function (r) { (candBy[r.md5] = candBy[r.md5] || []).push(r); });
+    Object.keys(oldBy).forEach(function (m) {
+      var os = oldBy[m], cs = candBy[m] || [];
+      if (!cs.length) { os.forEach(function (o) { plan.notFound.push(o); }); return; }
+      var pairs = [];
+      os.forEach(function (o) { cs.forEach(function (c) { pairs.push({ o: o, c: c, s: similarityOf(o, c) }); }); });
+      os.forEach(function (o) {
+        var mine = pairs.filter(function (p) { return p.o === o; });
+        var best = Math.max.apply(null, mine.map(function (p) { return p.s; }));
+        var top = mine.filter(function (p) { return p.s === best; });
+        if (top.length !== 1) { plan.ambiguous.push({ old: o, candidates: cs.slice() }); return; }
+        var c = top[0].c;
+        var theirs = pairs.filter(function (p) { return p.c === c; });
+        var best2 = Math.max.apply(null, theirs.map(function (p) { return p.s; }));
+        var top2 = theirs.filter(function (p) { return p.s === best2; });
+        if (top2.length !== 1 || top2[0].o !== o) { plan.ambiguous.push({ old: o, candidates: cs.slice() }); return; }
+        plan.moves.push({ old: o, neu: c });
+      });
+    });
+    return plan;
+  }
+  // 套用對應：舊紀錄改成新路徑（保留旋律索引、歌詞、衍生關係）；被配上的新紀錄拿掉；沒有紀錄的舊來源拿掉（不留空殼來源）
+  function applyRelocation(lib, plan) {
+    var removeNew = [], keyMap = {}, touched = {}, usedNew = [];
+    plan.moves.forEach(function (m) {
+      var o = m.old, n = m.neu;
+      if (usedNew.indexOf(n) >= 0) return;   // 同一個新檔案不配給兩筆（防呆）
+      usedNew.push(n); removeNew.push(n);
+      touched[o.sourceId] = true;
+      o.path = n.path; o.name = n.name; o.ext = n.ext; o.sourceId = n.sourceId; o.sourceType = n.sourceType; o.sourceLabel = n.sourceLabel;
+      o.status = 'ok'; o.sizeBytes = n.sizeBytes; o.mtimeMs = n.mtimeMs; o.relocatedAt = Date.now();
+      if (!o.derivedFrom && o.key !== n.key) { keyMap[o.key] = n.key; o.key = n.key; }
+    });
+    lib.records = lib.records.filter(function (r) { return removeNew.indexOf(r) < 0; });
+    lib.records.forEach(function (r) { if (r.derivedFrom && keyMap[r.derivedFrom]) r.derivedFrom = keyMap[r.derivedFrom]; });
+    lib.sources = lib.sources.filter(function (s) {
+      if (!touched[s.id]) return true;
+      return lib.records.some(function (r) { return r.sourceId === s.id; });
+    });
+    return { moved: usedNew.length };
+  }
+  // 整批摘要（給人看的一行＋列出找不到與歧義的檔名）
+  function describeRelocation(plan, applied) {
+    var ok = plan.moves.length, nf = plan.notFound.length, am = plan.ambiguous.length, nm = plan.noMd5.length;
+    var out = '對應成功 ' + ok + ' 個、仍找不到 ' + nf + ' 個、有歧義 ' + am + ' 個。';
+    if (nm) out += '另有 ' + nm + ' 個因為搬家前沒算過 md5 所以無法對應，請把檔案放回原位，等 md5 算完再重新對應。';
+    if (plan.pendingHash) out += '（還有 ' + plan.pendingHash + ' 個檔案的 md5 尚未算完，算完後才會再對應一次。）';
+    var nameList = function (arr) { return arr.slice(0, 10).map(function (r) { return r.name; }).join('、') + (arr.length > 10 ? '…等 ' + arr.length + ' 個' : ''); };
+    if (nf) out += ' 找不到：' + nameList(plan.notFound.map(function (x) { return x; })) + '。';
+    if (am) out += ' 歧義（不亂配，請自己確認）：' + nameList(plan.ambiguous.map(function (x) { return x.old; })) + '。';
+    if (applied && applied.moved !== undefined && applied.moved !== ok) out += '（實際套用 ' + applied.moved + ' 個）';
+    return out;
   }
 
   // ───────────────────────── 旋律索引完成後的白話訊息（純函式）
@@ -84058,7 +84164,9 @@ const holder = {};
     scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
     createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary,
     DB_FORMAT: DB_FORMAT, exportDb: exportDb, planImport: planImport, applyImport: applyImport,
-    sigOfRec: sigOfRec, sigOfStat: sigOfStat, describeMelodySummary: describeMelodySummary, melodyGroup: melodyGroup
+    sigOfRec: sigOfRec, sigOfStat: sigOfStat, describeMelodySummary: describeMelodySummary, melodyGroup: melodyGroup,
+    HASH_FULL: HASH_FULL, HASH_HEAD: HASH_HEAD, hasFullMd5: hasFullMd5, needsHash: needsHash, setHash: setHash,
+    duplicateGroups: duplicateGroups, duplicateKeys: duplicateKeys, planRelocation: planRelocation, applyRelocation: applyRelocation, describeRelocation: describeRelocation
   };
 });
 
@@ -84066,6 +84174,89 @@ const holder = {};
 return holder.FaMusicLib;
 })();
 /* MLCORE-END */
+/* MLMD5-BEGIN */
+const FaMd5 = (function () {
+const holder = {};
+(function (module, self) {
+/* MD5（RFC 1321，公共領域演算法）的純 JS 實作，UMD。WebCrypto 沒有 MD5，所以自己寫。
+ *   md5Create() → { update(bytes), hex() }：分段輸入，結果與一次輸入相同；hex() 之後不可再 update。
+ *   md5Hex(bytesOrString) → 小寫十六進位（字串用 UTF-8 編碼）。
+ * 只用在桌面版主行程算不到（舊版 app）時的退路，所以不追求速度，但不會把整個檔案放進記憶體以外的地方。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMd5 = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var S = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
+  var K = [];
+  for (var i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+
+  function rotl(x, c) { return (x << c) | (x >>> (32 - c)); }
+  // 處理一個 64 位元組的區塊（m[o..o+63]）
+  function transform(st, m, o) {
+    var X = new Array(16), j;
+    for (j = 0; j < 16; j++) { var p = o + j * 4; X[j] = m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24); }
+    var a = st[0], b = st[1], c = st[2], d = st[3], f, g;
+    for (var k = 0; k < 64; k++) {
+      if (k < 16) { f = (b & c) | (~b & d); g = k; }
+      else if (k < 32) { f = (d & b) | (~d & c); g = (5 * k + 1) % 16; }
+      else if (k < 48) { f = b ^ c ^ d; g = (3 * k + 5) % 16; }
+      else { f = c ^ (b | ~d); g = (7 * k) % 16; }
+      var tmp = d; d = c; c = b;
+      b = (b + rotl((a + f + K[k] + X[g]) | 0, S[k])) | 0;
+      a = tmp;
+    }
+    st[0] = (st[0] + a) | 0; st[1] = (st[1] + b) | 0; st[2] = (st[2] + c) | 0; st[3] = (st[3] + d) | 0;
+  }
+  function toBytes(x) {
+    if (typeof x === 'string') return new TextEncoder().encode(x);
+    return x instanceof Uint8Array ? x : new Uint8Array(x);
+  }
+
+  function md5Create() {
+    var st = [0x67452301, 0xefcdab89 | 0, 0x98badcfe | 0, 0x10325476];
+    var buf = new Uint8Array(64), bl = 0, total = 0, done = false;
+    return {
+      update: function (input) {
+        if (done) throw new Error('md5：已經算完（hex 之後不能再 update）');
+        var u = toBytes(input), pos = 0;
+        total += u.length;
+        if (bl > 0) {
+          var take = Math.min(64 - bl, u.length);
+          buf.set(u.subarray(0, take), bl); bl += take; pos = take;
+          if (bl === 64) { transform(st, buf, 0); bl = 0; }
+        }
+        while (pos + 64 <= u.length) { transform(st, u, pos); pos += 64; }
+        if (pos < u.length) { buf.set(u.subarray(pos), 0); bl = u.length - pos; }
+        return this;
+      },
+      hex: function () {
+        if (done) throw new Error('md5：hex 只能呼叫一次');
+        done = true;
+        var padLen = (bl < 56) ? (56 - bl) : (120 - bl);
+        var tail = new Uint8Array(padLen + 8);
+        tail[0] = 0x80;
+        var bitsLo = (total * 8) >>> 0, bitsHi = Math.floor(total / 536870912) >>> 0; // total*8 的低 32 位與高 32 位
+        for (var i = 0; i < 4; i++) { tail[padLen + i] = (bitsLo >>> (8 * i)) & 0xff; tail[padLen + 4 + i] = (bitsHi >>> (8 * i)) & 0xff; }
+        var all = new Uint8Array(bl + tail.length);
+        all.set(buf.subarray(0, bl), 0); all.set(tail, bl);
+        for (var p = 0; p < all.length; p += 64) transform(st, all, p);
+        var out = '';
+        for (var w = 0; w < 4; w++) for (var b = 0; b < 4; b++) out += ((st[w] >>> (8 * b)) & 0xff).toString(16).padStart(2, '0');
+        return out;
+      }
+    };
+  }
+  function md5Hex(input) { return md5Create().update(input).hex(); }
+  return { md5Create: md5Create, md5Hex: md5Hex };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMd5;
+})();
+/* MLMD5-END */
 /* MLMEL-BEGIN */
 const FaMusicLibMelody = (function () {
 const holder = {};
@@ -102199,6 +102390,7 @@ const holder = {};
     + '.fml-dlg-tabs{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid #d0d7de;flex-wrap:wrap}'
     + '.fml-dlg-tabs button.on{background:#0969da;color:#fff;border-color:#0969da}'
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
+    + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
@@ -102295,7 +102487,16 @@ const holder = {};
     xRow.appendChild(xRoot); xRow.appendChild(xBtn); xRow.appendChild(xCancel); xRow.appendChild(xStat);
     var xList = h('div', 'fml-foot fml-exp');
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; xStat.textContent = '擷取不可用（需要桌面版）'; }
-    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(xRow); tabPane.src.appendChild(xList);
+    // md5 指紋與重新對應：重整資料夾後用「重新對應」，選新的資料夾；重複檔列在下面（不自動刪除）
+    var mdRow = h('div', 'fml-bar');
+    var bRelocate = h('button', null, '重新對應（選新資料夾）');
+    bRelocate.title = '重整資料夾後用這個：先檢查哪些檔案消失了，再選新的資料夾；用 md5 把消失的紀錄對到新位置（保留索引、歌詞、衍生關係）';
+    var bMd5Cancel = h('button', null, '取消 md5'); bMd5Cancel.disabled = true;
+    var mdStat = h('span', 'fml-st');
+    mdRow.appendChild(bRelocate); mdRow.appendChild(bMd5Cancel); mdRow.appendChild(mdStat);
+    if (!host.md5) { bRelocate.disabled = true; mdStat.textContent = 'md5 對應不可用（需要桌面版）'; }
+    var dupBox = h('div', 'fml-foot');
+    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(mdRow); tabPane.src.appendChild(dupBox); tabPane.src.appendChild(xRow); tabPane.src.appendChild(xList);
 
     // ───── 歌詞分頁 ─────
     var lyr = h('div', 'fml-lyr');
@@ -102453,6 +102654,7 @@ const holder = {};
     function render() {
       var V = visibleSet();
       var rows = M.buildTreeRows(V.recs, { expanded: expanded, forceExpand: V.searching });
+      var dupK = M.duplicateKeys(lib.records);
       thead.innerHTML = '';
       var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
       all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.rec.key]; });
@@ -102477,6 +102679,7 @@ const holder = {};
           nameTd.appendChild(tg); nameTd.appendChild(document.createTextNode(' '));
         }
         nameTd.appendChild(document.createTextNode(r.name + (r.status === 'missing' ? '（已消失）' : '') + (x.orphan ? '（來源已移除）' : '')));
+        if (dupK[r.key]) nameTd.appendChild(h('span', 'fml-dup', ' 重複'));
         if (r.derivedFrom) nameTd.appendChild(h('div', 'fml-st', '擷取產物（不是檔案系統上的檔案）' + (r.derivedMethod ? '｜擷取方式：' + r.derivedMethod : '')));
         tr.appendChild(nameTd);
         tr.appendChild(h('td', null, r.album || ''));
@@ -102499,7 +102702,7 @@ const holder = {};
       });
       var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
       stat.textContent = (V.searching ? '找到 ' + V.count + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
-      renderSources();
+      renderSources(); renderDups();
       renderLyr();
       renderWork();
       foot.textContent = selText();
@@ -102543,6 +102746,11 @@ const holder = {};
       if (expRunning) items.push({ text: '輸出中 ' + expProg, tab: 'exp' });
       if (melRunning) items.push({ text: '旋律索引建立中', tab: 'mel' });
       if (ytRunning) items.push({ text: 'YouTube 清單處理中', tab: 'yt' });
+      if (host.md5 && host.md5.state) {
+        var ms = host.md5.state();
+        if (ms.running) items.push({ text: ms.big ? '正在算 ' + ms.current + ' 的 md5（大檔，需要一點時間，已 ' + Math.round((Date.now() - ms.startedAt) / 1000) + ' 秒）' : 'md5 計算中 ' + ms.done + '／' + ms.total, tab: 'src' });
+        else if (ms.pending) items.push({ text: 'md5 尚未算完 ' + ms.pending + ' 個（算完前先不要重整資料夾）', tab: 'src' });
+      }
       return items;
     }
     function renderWork() {
@@ -102555,14 +102763,52 @@ const holder = {};
     }
     function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
+    // md5 背景計算：一次一個；算完才對應（搬家）。計算中又加了資料夾：新紀錄先累積，算完再跑一次
+    var mdPending = null;
+    function startMd5(newKeys) {
+      if (!host.md5 || !host.md5.run) return;
+      if (host.md5.state().running) { mdPending = Object.assign(mdPending || {}, newKeys || {}); return; }
+      bMd5Cancel.disabled = false;
+      host.md5.run({ newKeys: Object.assign({}, newKeys || {}), onEvent: function () { renderWork(); } }).then(function (s) {
+        var again = mdPending; mdPending = null; bMd5Cancel.disabled = true;
+        if (s.text) msg = s.text;
+        var st = host.md5.state();
+        mdStat.textContent = st.fallback ? '注意：這個 app 還不認得 hashFile，大檔是近似特徵（開頭 4 MB＋大小）；app 更新重啟後會自動重算成整檔。' : '';
+        render();
+        if (again && Object.keys(again).length) startMd5(again);
+      }, function (e) { mdPending = null; bMd5Cancel.disabled = true; msg = 'md5 計算出錯：' + errText(e); render(); });
+    }
+    bMd5Cancel.onclick = function () { if (host.md5) host.md5.cancel(); mdStat.textContent = '取消中（目前這個檔案算完就停）…'; };
+    function renderDups() {
+      dupBox.textContent = '';
+      var groups = M.duplicateGroups(lib.records);
+      if (!groups.length) { dupBox.textContent = '重複檔：目前沒有（只比對已算好 md5、內容完全相同的檔案）'; return; }
+      dupBox.appendChild(h('div', null, '重複檔（內容完全相同、路徑不同）：' + groups.length + ' 組。不會自動刪除任何檔案，請自己決定要留哪一份。'));
+      groups.slice(0, 30).forEach(function (g) {
+        dupBox.appendChild(h('div', null, '・' + g.recs.length + ' 份：' + g.recs.map(function (r) { return r.path; }).join('　｜　')));
+      });
+      if (groups.length > 30) dupBox.appendChild(h('div', null, '…還有 ' + (groups.length - 30) + ' 組'));
+    }
+    bRelocate.onclick = async function () {
+      if (!host.md5) return;
+      msg = '檢查檔案現況…'; render();
+      try { var rs = await host.md5.refreshStatus(); msg = '現況：' + rs.missing + ' 個紀錄的檔案消失了，' + rs.back + ' 個回來了。請選新的資料夾。'; }
+      catch (e) { msg = '檢查失敗：' + errText(e); render(); return; }
+      render();
+      await pick('folder');
+    };
+
     async function addFrom(type, src) {
       if (!src || !src.entries || !src.entries.length) { msg = '沒有可加入的檔案'; render(); return; }
+      var before = {}; lib.records.forEach(function (r) { before[r.key] = true; });
       var sid = lib.addSource(type, src.label);
       msg = '掃描中…'; render();
       try {
         var rep = await lib.scan(sid, src.entries, src.readHead);
         await lib.save();
         msg = '新增 ' + rep.added + '、變更 ' + rep.changed + '、未變 ' + rep.unchanged + '、消失 ' + rep.missing + '、略過 ' + rep.skipped;
+        var newKeys = {}; lib.records.forEach(function (r) { if (!before[r.key]) newKeys[r.key] = true; });
+        startMd5(newKeys);   // 掃描本身不算 md5；這裡交給背景計算，算完才對應
       } catch (e) {
         msg = '掃描失敗：' + (e && e.message);
       }
@@ -102872,6 +103118,7 @@ const holder = {};
       renderWork();
     }, 1000);
     showTab(curTab);
+    if (host.md5) startMd5({});   // 開面板時把還沒算的 md5 在背景算完（沒有就什麼都不做）
     render();
     return {
       refresh: render,
@@ -103667,6 +103914,90 @@ const FaMusicLibHost = (function () {
       return URL.createObjectURL(new Blob([bytes], mime ? { type: mime } : undefined));
     }
   };
+  // ───── md5 指紋：背景逐個算（一次一個，小檔先算），算完才做搬家對應（planRelocation／applyRelocation）。
+  // 算法：1) 桌面版主行程 knowledge.call('hashFile')：任意大小串流計算，hashKind='md5-full'。
+  //       2) 舊版 app 不認得 hashFile（回傳不認得的操作）：≤ 64 MB 用 rawfs.readFile 整檔算，hashKind='md5-full'；
+  //          更大的用開頭 4 MB＋大小，hashKind='md5-head4M+size'（近似特徵，畫面上會明講；app 更新後會自動重算成整檔）。
+  var MD5_FALLBACK_MAX = 64 * 1024 * 1024, MD5_HEAD_BYTES = 4 * 1024 * 1024;
+  var md5State = { running: false, cancelled: false, done: 0, total: 0, current: '', big: false, startedAt: 0, fallback: false, lastMsg: '' };
+  function md5Lib() { return typeof FaMd5 !== 'undefined' ? FaMd5 : null; }
+  async function md5OfPath(rec) {
+    var a = api(), abs = absPath(rec.path);
+    if (!a || !a.rawfs) throw new Error('算 md5 需要桌面版（讀檔通道不存在）');
+    if (!md5State.fallback && a.knowledge && a.knowledge.call) {
+      var r = await a.knowledge.call('hashFile', { path: abs, algo: 'md5' });
+      if (r && r.ok) return { hex: r.hex, kind: FaMusicLib.HASH_FULL };
+      if (!(r && /不認得的操作/.test(r.error || ''))) throw new Error((r && r.error) || '讀不到檔案');
+      md5State.fallback = true;   // 舊版 app：之後都走退路
+    }
+    var st = await a.rawfs.stat(abs);
+    var size = st && st.size != null ? st.size : (rec.sizeBytes || 0);
+    if (!md5Lib()) throw new Error('md5 模組沒有載入');
+    if (size <= MD5_FALLBACK_MAX) {
+      var f = await a.rawfs.readFile(abs, 'base64');
+      if (!f || f.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+      return { hex: md5Lib().md5Hex(b64ToBytes(f.base64)), kind: FaMusicLib.HASH_FULL };
+    }
+    var head = await a.rawfs.readHead(abs, MD5_HEAD_BYTES);
+    if (!head || head.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的開頭');
+    var hh = md5Lib().md5Create().update(b64ToBytes(head.base64)).update('size=' + size).hex();
+    return { hex: hh, kind: FaMusicLib.HASH_HEAD };
+  }
+  var MD5_HOST = {
+    // 算 md5 並對應：opts.newKeys＝這一次掃到的新紀錄（只有它們能被配成搬家後的位置）；onEvent({phase, done, total, name, big, startedAt})
+    run: async function (opts) {
+      opts = opts || {};
+      var L = getLib(); await L.ready;
+      if (md5State.running) throw new Error('md5 已在計算中');
+      md5State.running = true; md5State.cancelled = false; md5State.fallback = md5State.fallback && !opts.retryHashFile;
+      var emit = opts.onEvent || function () {};
+      var todo = L.records.filter(FaMusicLib.needsHash).sort(function (x, y) { return (x.sizeBytes || 0) - (y.sizeBytes || 0); });
+      md5State.total = todo.length; md5State.done = 0; var saves = 0, failures = [];
+      try {
+        for (var i = 0; i < todo.length && !md5State.cancelled; i++) {
+          var rec = todo[i];
+          md5State.current = rec.name; md5State.big = (rec.sizeBytes || 0) > MD5_FALLBACK_MAX; md5State.startedAt = Date.now();
+          emit({ phase: 'hash', done: i, total: todo.length, name: rec.name, big: md5State.big, startedAt: md5State.startedAt });
+          try { var h = await md5OfPath(rec); FaMusicLib.setHash(rec, { hex: h.hex, kind: h.kind }); }
+          catch (e) { rec.hashError = String((e && e.message) || e); failures.push({ name: rec.name, reason: rec.hashError }); }
+          md5State.done = i + 1;
+          if (++saves % 20 === 0) await L.save();
+        }
+        await L.save();
+        var summary = { hashed: md5State.done, total: todo.length, failures: failures, cancelled: md5State.cancelled, text: '' };
+        if (!md5State.cancelled && Object.keys(opts.newKeys || {}).length) {
+          var plan = FaMusicLib.planRelocation(L, { newKeys: opts.newKeys || {} });
+          var applied = FaMusicLib.applyRelocation(L, plan);
+          await L.save();
+          summary.plan = plan; summary.applied = applied;
+          summary.text = FaMusicLib.describeRelocation(plan, applied);
+          if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
+        } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
+        else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
+        return summary;
+      } finally { md5State.running = false; md5State.current = ''; md5State.big = false; }
+    },
+    cancel: function () { md5State.cancelled = true; },
+    // 目前狀態（給主畫面一行）：算了多少、還有多少沒算（決定什麼時候可以安全重整資料夾）
+    state: function () {
+      var L = getLib(), pending = L.records.filter(FaMusicLib.needsHash).length;
+      return { running: md5State.running, done: md5State.done, total: md5State.total, current: md5State.current, big: md5State.big, startedAt: md5State.startedAt, pending: pending, fallback: md5State.fallback };
+    },
+    // 重新對應前先看一次現況：每筆紀錄的檔案還在不在（不在就標為消失，資料保留）；回傳 { missing, back }
+    refreshStatus: async function () {
+      var L = getLib(); await L.ready;
+      var paths = L.records.map(function (r) { return r.path; });
+      var m = await LIB_HOST.statMany(paths), missing = 0, back = 0;
+      L.records.forEach(function (r) {
+        var st = m[r.path];
+        if (!st && r.status === 'ok' && !r.pending) { r.status = 'missing'; missing++; }
+        else if (st && r.status === 'missing') { r.status = 'ok'; r.sizeBytes = st.size; r.mtimeMs = st.mtimeMs; back++; }
+      });
+      await L.save();
+      return { missing: missing, back: back };
+    }
+  };
+
   // 移除實體檔：只刪衍生資料夾裡的檔案（isDerivedPath 把關），刪完再 stat 確認真的消失
   var LIB_HOST = {
     isDerivedPath: isDerivedPath,
@@ -103705,7 +104036,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, md5: MD5_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
@@ -103916,7 +104247,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, md5: MD5_HOST, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消

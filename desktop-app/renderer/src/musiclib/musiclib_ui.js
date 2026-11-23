@@ -40,6 +40,7 @@
     + '.fml-dlg-tabs{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid #d0d7de;flex-wrap:wrap}'
     + '.fml-dlg-tabs button.on{background:#0969da;color:#fff;border-color:#0969da}'
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
+    + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
@@ -136,7 +137,16 @@
     xRow.appendChild(xRoot); xRow.appendChild(xBtn); xRow.appendChild(xCancel); xRow.appendChild(xStat);
     var xList = h('div', 'fml-foot fml-exp');
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; xStat.textContent = '擷取不可用（需要桌面版）'; }
-    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(xRow); tabPane.src.appendChild(xList);
+    // md5 指紋與重新對應：重整資料夾後用「重新對應」，選新的資料夾；重複檔列在下面（不自動刪除）
+    var mdRow = h('div', 'fml-bar');
+    var bRelocate = h('button', null, '重新對應（選新資料夾）');
+    bRelocate.title = '重整資料夾後用這個：先檢查哪些檔案消失了，再選新的資料夾；用 md5 把消失的紀錄對到新位置（保留索引、歌詞、衍生關係）';
+    var bMd5Cancel = h('button', null, '取消 md5'); bMd5Cancel.disabled = true;
+    var mdStat = h('span', 'fml-st');
+    mdRow.appendChild(bRelocate); mdRow.appendChild(bMd5Cancel); mdRow.appendChild(mdStat);
+    if (!host.md5) { bRelocate.disabled = true; mdStat.textContent = 'md5 對應不可用（需要桌面版）'; }
+    var dupBox = h('div', 'fml-foot');
+    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(mdRow); tabPane.src.appendChild(dupBox); tabPane.src.appendChild(xRow); tabPane.src.appendChild(xList);
 
     // ───── 歌詞分頁 ─────
     var lyr = h('div', 'fml-lyr');
@@ -294,6 +304,7 @@
     function render() {
       var V = visibleSet();
       var rows = M.buildTreeRows(V.recs, { expanded: expanded, forceExpand: V.searching });
+      var dupK = M.duplicateKeys(lib.records);
       thead.innerHTML = '';
       var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
       all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.rec.key]; });
@@ -318,6 +329,7 @@
           nameTd.appendChild(tg); nameTd.appendChild(document.createTextNode(' '));
         }
         nameTd.appendChild(document.createTextNode(r.name + (r.status === 'missing' ? '（已消失）' : '') + (x.orphan ? '（來源已移除）' : '')));
+        if (dupK[r.key]) nameTd.appendChild(h('span', 'fml-dup', ' 重複'));
         if (r.derivedFrom) nameTd.appendChild(h('div', 'fml-st', '擷取產物（不是檔案系統上的檔案）' + (r.derivedMethod ? '｜擷取方式：' + r.derivedMethod : '')));
         tr.appendChild(nameTd);
         tr.appendChild(h('td', null, r.album || ''));
@@ -340,7 +352,7 @@
       });
       var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
       stat.textContent = (V.searching ? '找到 ' + V.count + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
-      renderSources();
+      renderSources(); renderDups();
       renderLyr();
       renderWork();
       foot.textContent = selText();
@@ -384,6 +396,11 @@
       if (expRunning) items.push({ text: '輸出中 ' + expProg, tab: 'exp' });
       if (melRunning) items.push({ text: '旋律索引建立中', tab: 'mel' });
       if (ytRunning) items.push({ text: 'YouTube 清單處理中', tab: 'yt' });
+      if (host.md5 && host.md5.state) {
+        var ms = host.md5.state();
+        if (ms.running) items.push({ text: ms.big ? '正在算 ' + ms.current + ' 的 md5（大檔，需要一點時間，已 ' + Math.round((Date.now() - ms.startedAt) / 1000) + ' 秒）' : 'md5 計算中 ' + ms.done + '／' + ms.total, tab: 'src' });
+        else if (ms.pending) items.push({ text: 'md5 尚未算完 ' + ms.pending + ' 個（算完前先不要重整資料夾）', tab: 'src' });
+      }
       return items;
     }
     function renderWork() {
@@ -396,14 +413,52 @@
     }
     function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
+    // md5 背景計算：一次一個；算完才對應（搬家）。計算中又加了資料夾：新紀錄先累積，算完再跑一次
+    var mdPending = null;
+    function startMd5(newKeys) {
+      if (!host.md5 || !host.md5.run) return;
+      if (host.md5.state().running) { mdPending = Object.assign(mdPending || {}, newKeys || {}); return; }
+      bMd5Cancel.disabled = false;
+      host.md5.run({ newKeys: Object.assign({}, newKeys || {}), onEvent: function () { renderWork(); } }).then(function (s) {
+        var again = mdPending; mdPending = null; bMd5Cancel.disabled = true;
+        if (s.text) msg = s.text;
+        var st = host.md5.state();
+        mdStat.textContent = st.fallback ? '注意：這個 app 還不認得 hashFile，大檔是近似特徵（開頭 4 MB＋大小）；app 更新重啟後會自動重算成整檔。' : '';
+        render();
+        if (again && Object.keys(again).length) startMd5(again);
+      }, function (e) { mdPending = null; bMd5Cancel.disabled = true; msg = 'md5 計算出錯：' + errText(e); render(); });
+    }
+    bMd5Cancel.onclick = function () { if (host.md5) host.md5.cancel(); mdStat.textContent = '取消中（目前這個檔案算完就停）…'; };
+    function renderDups() {
+      dupBox.textContent = '';
+      var groups = M.duplicateGroups(lib.records);
+      if (!groups.length) { dupBox.textContent = '重複檔：目前沒有（只比對已算好 md5、內容完全相同的檔案）'; return; }
+      dupBox.appendChild(h('div', null, '重複檔（內容完全相同、路徑不同）：' + groups.length + ' 組。不會自動刪除任何檔案，請自己決定要留哪一份。'));
+      groups.slice(0, 30).forEach(function (g) {
+        dupBox.appendChild(h('div', null, '・' + g.recs.length + ' 份：' + g.recs.map(function (r) { return r.path; }).join('　｜　')));
+      });
+      if (groups.length > 30) dupBox.appendChild(h('div', null, '…還有 ' + (groups.length - 30) + ' 組'));
+    }
+    bRelocate.onclick = async function () {
+      if (!host.md5) return;
+      msg = '檢查檔案現況…'; render();
+      try { var rs = await host.md5.refreshStatus(); msg = '現況：' + rs.missing + ' 個紀錄的檔案消失了，' + rs.back + ' 個回來了。請選新的資料夾。'; }
+      catch (e) { msg = '檢查失敗：' + errText(e); render(); return; }
+      render();
+      await pick('folder');
+    };
+
     async function addFrom(type, src) {
       if (!src || !src.entries || !src.entries.length) { msg = '沒有可加入的檔案'; render(); return; }
+      var before = {}; lib.records.forEach(function (r) { before[r.key] = true; });
       var sid = lib.addSource(type, src.label);
       msg = '掃描中…'; render();
       try {
         var rep = await lib.scan(sid, src.entries, src.readHead);
         await lib.save();
         msg = '新增 ' + rep.added + '、變更 ' + rep.changed + '、未變 ' + rep.unchanged + '、消失 ' + rep.missing + '、略過 ' + rep.skipped;
+        var newKeys = {}; lib.records.forEach(function (r) { if (!before[r.key]) newKeys[r.key] = true; });
+        startMd5(newKeys);   // 掃描本身不算 md5；這裡交給背景計算，算完才對應
       } catch (e) {
         msg = '掃描失敗：' + (e && e.message);
       }
@@ -713,6 +768,7 @@
       renderWork();
     }, 1000);
     showTab(curTab);
+    if (host.md5) startMd5({});   // 開面板時把還沒算的 md5 在背景算完（沒有就什麼都不做）
     render();
     return {
       refresh: render,
