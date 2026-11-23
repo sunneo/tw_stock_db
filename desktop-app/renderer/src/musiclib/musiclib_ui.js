@@ -58,8 +58,11 @@
     + '.fml-dlgbg{position:fixed;inset:0;background:rgba(31,35,40,.35);z-index:2147482500;display:flex;align-items:center;justify-content:center}'
     + '.fml-dlg{background:#fff;color:#1f2328;border:1px solid #d0d7de;border-radius:8px;width:min(900px,92vw);height:min(640px,85vh);min-width:420px;min-height:300px;resize:both;overflow:auto;display:flex;flex-direction:column}'
     + '.fml-dlg-h{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #d0d7de;font-weight:600}'
-    + '.fml-dlg-tabs{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid #d0d7de;flex-wrap:wrap}'
+    + '.fml-dlg-main{flex:1;display:flex;min-height:0}'
+    + '.fml-dlg-tabs{display:flex;flex-direction:column;gap:4px;flex:0 0 150px;padding:8px;border-right:1px solid #d0d7de;overflow:auto;box-sizing:border-box;background:#f6f8fa}'
+    + '.fml-dlg-tabs button{text-align:left;width:100%;padding:6px 10px}'
     + '.fml-dlg-tabs button.on{background:#0969da;color:#fff;border-color:#0969da}'
+    + '@media (max-width:640px){.fml-dlg-main{flex-direction:column}.fml-dlg-tabs{flex:0 0 auto;flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid #d0d7de}.fml-dlg-tabs button{width:auto}}'
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
     + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
     + '.fml button.hon{background:#0969da;color:#fff;border-color:#0969da}'
@@ -124,7 +127,7 @@
     bar.appendChild(bHum); bar.appendChild(bDel); bar.appendChild(work); bar.appendChild(stat); bar.appendChild(bSet);
 
     // ───── 設定分頁視窗（置中對話框；內容一直在 DOM 裡，只切換顯示）─────
-    var dlg = h('div', 'fml-dlgbg'), box = h('div', 'fml-dlg'), dHead = h('div', 'fml-dlg-h'), dTabs = h('div', 'fml-dlg-tabs'), dBody = h('div', 'fml-dlg-body');
+    var dlg = h('div', 'fml-dlgbg'), box = h('div', 'fml-dlg'), dHead = h('div', 'fml-dlg-h'), dMain = h('div', 'fml-dlg-main'), dTabs = h('div', 'fml-dlg-tabs'), dBody = h('div', 'fml-dlg-body');
     var dX = h('button', null, '✕'); dX.title = '關閉（Esc）';
     dHead.appendChild(h('span', null, '音樂庫設定')); dHead.appendChild(dX);
     var tabBtn = {}, tabPane = {}, curTab = 'src';
@@ -132,7 +135,7 @@
       var b = h('button', null, t[1]); b.onclick = function () { showTab(t[0]); }; tabBtn[t[0]] = b; dTabs.appendChild(b);
       var p = h('div'); p.style.display = 'none'; tabPane[t[0]] = p; dBody.appendChild(p);
     });
-    box.appendChild(dHead); box.appendChild(dTabs); box.appendChild(dBody); dlg.appendChild(box); dlg.style.display = 'none';
+    dMain.appendChild(dTabs); dMain.appendChild(dBody); box.appendChild(dHead); box.appendChild(dMain); dlg.appendChild(box); dlg.style.display = 'none';
     function dlgOpen() { return dlg.style.display !== 'none'; }
     function showTab(k) { curTab = k; if (k === 'mel') refreshIdxInfo(); SET_TABS.forEach(function (t) { tabPane[t[0]].style.display = t[0] === k ? '' : 'none'; toggleCls(tabBtn[t[0]], 'on', t[0] === k); }); }
     function openSettings(tab) { showTab(tab || curTab); dlg.style.display = ''; }
