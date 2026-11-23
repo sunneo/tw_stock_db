@@ -35,6 +35,7 @@
       reg: new Uint8Array(256),
       phase: new Float64Array(32), env: new Float64Array(32), stage: new Uint8Array(32),
       fbHist: new Float64Array(9 * 2), chPhaseDummy: new Float64Array(9),
+      nz: new Float64Array(32), seed: 1,
       t: 0
     };
   }
@@ -68,16 +69,42 @@
       for (var c = 0; c < 9; c++) deriveChannel(c);
     }
 
+    // 節奏模式（$BD 第 5 位）：低 5 位是 BD／SD／TOM／CYM／HH 的觸發；寫入的上升緣開始攻擊、下降緣進入釋放。
+    // 運算元：BD＝通道 6 的兩個運算元（16、19）；HH＝17；TOM＝18；SD＝20；CYM＝21（位址與參考的表一致）。
+    var DRUM_BIT = [[0x10, [16, 19]], [0x08, [20]], [0x04, [18]], [0x02, [21]], [0x01, [17]]];
+    function drumEdge(old, v) {
+      for (var i = 0; i < DRUM_BIT.length; i++) {
+        var bit = DRUM_BIT[i][0], ops = DRUM_BIT[i][1], on = (v & bit) !== 0, was = (old & bit) !== 0;
+        if (on && !was) ops.forEach(function (o) { st.stage[o] = 1; st.env[o] = 0; });   // 上升緣：從零重新攻擊
+        else if (!on && was) ops.forEach(function (o) { if (st.stage[o]) st.stage[o] = 4; });
+      }
+    }
+    function rhythmOn() { return (st.reg[0xBD] & 0x20) !== 0; }
+    // 隨機正負（用來模擬雜訊位元）：線性同餘，狀態在 st.seed，可快照
+    function noiseSign() { st.seed = (st.seed * 1103515245 + 12345) & 0x7FFFFFFF; return ((st.seed >> 16) & 1) ? 1 : -1; }
+    // 節奏運算元：雜訊運算元在相位繞回時換一次正負（HH／SD／CYM），TOM 用正弦
+    function drumOp(o, noise, C, dt) {
+      var p = op[o]; if (!p || st.stage[o] === 0) return 0;
+      var old = st.phase[o], inc = C.hz * MULT[p.mult] * dt;
+      st.phase[o] = (old + inc) % 1;
+      if (st.phase[o] < old) st.nz[o] = noiseSign();
+      var keyScale = (C.block << 1) | ((C.fnum >> 9) & 1);
+      return stepOp(o, st.phase[o], dt, keyScale, noise ? st.nz[o] : undefined);
+    }
+
     function write(reg, val) {
-      reg &= 0xFF; val &= 0xFF; st.reg[reg] = val;
+      reg &= 0xFF; val &= 0xFF;
+      var old = st.reg[reg]; st.reg[reg] = val;
+      if (reg === 0xBD) { drumEdge(old, val); return; }
       if (reg === 0x01) { deriveAll(); return; }
       if (reg >= 0x20 && reg <= 0x35) return deriveOp(reg - 0x20);
       if (reg >= 0x40 && reg <= 0x55) return deriveOp(reg - 0x40);
       if (reg >= 0x60 && reg <= 0x75) return deriveOp(reg - 0x60);
       if (reg >= 0x80 && reg <= 0x95) return deriveOp(reg - 0x80);
       if (reg >= 0xE0 && reg <= 0xF5) return deriveOp(reg - 0xE0);
-      if (reg >= 0xA0 && reg <= 0xA8) { var c1 = reg - 0xA0; deriveChannel(c1); return keyChange(c1); }
-      if (reg >= 0xB0 && reg <= 0xB8) { var c2 = reg - 0xB0; deriveChannel(c2); return keyChange(c2); }
+      // 節奏模式下通道 6..8 的按鍵由 $BD 控制，B0 的按鍵位元不作用（只更新頻率）
+      if (reg >= 0xA0 && reg <= 0xA8) { var c1 = reg - 0xA0; deriveChannel(c1); return (rhythmOn() && c1 >= 6) ? undefined : keyChange(c1); }
+      if (reg >= 0xB0 && reg <= 0xB8) { var c2 = reg - 0xB0; deriveChannel(c2); return (rhythmOn() && c2 >= 6) ? undefined : keyChange(c2); }
       if (reg >= 0xC0 && reg <= 0xC8) { deriveChannel(reg - 0xC0); }
     }
     // 按鍵：0→1 開始攻擊，1→0 進入釋放
@@ -89,7 +116,7 @@
     }
 
     // 單一運算元：回傳 { y: 輸出（已乘包絡與音量） }
-    function stepOp(o, ph, dt, keyScale) {
+    function stepOp(o, ph, dt, keyScale, nzVal) {
       var p = op[o]; if (!p) return 0;
       // 包絡推進
       var sus = Math.pow(10, -(p.sl * 3) / 20); if (p.sl === 15) sus = 0;
@@ -117,7 +144,7 @@
       var kdb = p.ksl ? KSL_DB[p.ksl] * Math.max(0, (keyScale >> 1) - 2) : 0;
       var att = Math.pow(10, -(p.tl * 0.75 + kdb) / 20);
       if (p.am) att *= Math.pow(10, -(4.8 * (0.5 + 0.5 * Math.sin(TWO_PI * 3.7 * st.t))) / 20);
-      return wave(ph, p.ws) * e * att;
+      return (nzVal !== undefined ? nzVal : wave(ph, p.ws)) * e * att;
     }
 
     // 產生 count 個取樣到 out（從 out[start] 開始）
@@ -129,8 +156,14 @@
       for (var i = 0; i < count; i++) {
         var mix = 0;
         var vib = Math.sin(TWO_PI * 6.1 * st.t);   // 顫音 LFO（約 6 Hz）
+        var rh = rhythmOn();
         for (c = 0; c < 9; c++) {
           var mo = MOD_OFF[c], co = mo + 3, C = ch[c];
+          if (rh && c >= 7) {                        // 節奏：通道 7 ＝ HH（雜訊）＋ SD（雜訊）；通道 8 ＝ TOM（正弦）＋ CYM（雜訊）
+            if (c === 7) mix += drumOp(17, true, C, dt) + drumOp(20, true, C, dt);
+            else mix += drumOp(18, false, C, dt) + drumOp(21, true, C, dt);
+            continue;
+          }
           if (st.stage[mo] === 0 && st.stage[co] === 0) continue;
           var keyScale = (C.block << 1) | ((C.fnum >> 9) & 1);
           var pm = op[mo] ? op[mo].vib : 0, pc = op[co] ? op[co].vib : 0;
@@ -160,10 +193,10 @@
     }
 
     function snapshot() {
-      return { reg: st.reg.slice(), phase: st.phase.slice(), env: st.env.slice(), stage: st.stage.slice(), fbHist: st.fbHist.slice(), t: st.t };
+      return { reg: st.reg.slice(), phase: st.phase.slice(), env: st.env.slice(), stage: st.stage.slice(), fbHist: st.fbHist.slice(), nz: st.nz.slice(), seed: st.seed, t: st.t };
     }
     function restore(s) {
-      st.reg.set(s.reg); st.phase.set(s.phase); st.env.set(s.env); st.stage.set(s.stage); st.fbHist.set(s.fbHist); st.t = s.t;
+      st.reg.set(s.reg); st.phase.set(s.phase); st.env.set(s.env); st.stage.set(s.stage); st.fbHist.set(s.fbHist); st.nz.set(s.nz); st.seed = s.seed; st.t = s.t;
       deriveAll();
     }
     function reset() { st = newState(); deriveAll(); }

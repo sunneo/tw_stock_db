@@ -84228,7 +84228,8 @@ const holder = {};
   var SIG = 0x55AA, HDR_MIN = 0x0E, INS_SIZE = 0x40, INS_WORDS = 28;
   var PPQ = 480, TEMPO_BPM = 120;
   var TICKS_PER_BAND = (PPQ * 2) / 980;          // 1 拍 = 0.5 秒 = 480 tick；1 延遲單位 = 1/980 秒 = 0.98 tick（2 拍/秒）
-  var DRUM_NOTE = { 6: 36, 7: 42, 8: 38 };         // 打擊：6 底鼓 36、7 踩鑔 42、8 小鼓 38（GM）
+  // 節奏通道對應的 GM 打擊音：6 底鼓 36、7 小鼓 38（OPL2 的 $BD 位元 0x08 是小鼓）、8 通通鼓 45、9 銅鈸 49、10 高帽 42
+  var DRUM_NOTE = { 6: 36, 7: 38, 8: 45, 9: 49, 10: 42 };
   var PROGRAM_BY_WAVE = [73, 80, 81, 81];           // 載波波形 0 正弦→長笛 73；1 半正弦→方波主音 80；2/3 →鋸齒主音 81（近似）
 
   var OPL_MOD_OFF = [0, 1, 2, 8, 9, 10, 16, 17, 18];
@@ -84322,6 +84323,45 @@ const holder = {};
       reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));
       voice[c] = null;
     }
+    // 節奏模式（檔頭 soundMode ≠ 0）：$BD 第 5 位是節奏開關，低 5 位是觸發位元。
+    // 通道 6 的兩個運算元＝底鼓（BD）；通道 7 載波＝小鼓（SD）、通道 8 調變器＝通通鼓（TOM）、
+    // 通道 9 的載波位址（21）＝銅鈸（CYM）、通道 10 的調變器位址（17）＝高帽（HH）。
+    // 每個音符：先把該位元清掉，音符有效（資料 ≠ 0）再設回去 → 寫入 $BD 的上升緣即觸發一次。
+    var rhythm = soundMode !== 0, bdMod = 0;
+    var DRUM = { 6: { bit: 0x10, slot: 19 }, 7: { bit: 0x08, slot: 20 }, 8: { bit: 0x04, slot: 18 }, 9: { bit: 0x02, slot: 21 }, 10: { bit: 0x01, slot: 17 } };
+    var drumP = {};                                  // 節奏運算元的參數（slot → { p 欄位, w 波形 }），音量變動時用
+    function bdReg() { reg(0xBD, (rhythm ? 0x20 : 0) | bdMod); }
+    function drumInstrument(ch, n) {                 // 通道 7..10 的樂器只寫調變器參數到固定運算元（與通道 6 不同）
+      var ins = instrument(n), slot = DRUM[ch].slot;
+      drumP[slot] = { p: ins.mod, w: ins.wave[0] };
+      writeOp(slot, ins.mod, opVolume(ch));
+      reg(0xE0 + slot, ins.wave[0]);
+      if (ch === 8 || ch === 10) {                   // 回授由 mod 第 2 字給；通道 8 寫 C0+8，通道 10 寫 C0+7（與參考語意一致）
+        var fbCh = ch === 8 ? 8 : 7;
+        reg(0xC0 + fbCh, ((ins.mod[F.fb] & 7) << 1) | (ins.mod[F.cnt] ? 0 : 1));
+      }
+    }
+    function drumVolume(ch, v) {
+      vol[ch] = v;
+      var slot = DRUM[ch].slot, d = drumP[slot]; if (!d) return;
+      reg(0x40 + slot, ((d.p[F.ksl] & 3) << 6) | totalLevel(d.p[F.tl], v));
+    }
+    function drumPitch(ch, midi) {                   // 節奏通道的音高只寫頻率，不按鍵
+      var f = oplFreq(midi);
+      reg(0xA0 + ch, f.fnum & 0xFF);
+      reg(0xB0 + ch, (f.block << 2) | ((f.fnum >> 8) & 3));
+    }
+    function drumHit(ch, data) {
+      bdMod &= ~DRUM[ch].bit;                        // 先清掉並寫出（一次獨立的 $BD 寫入），音符有效再設回：造成上升緣
+      bdReg();
+      if (data !== 0) {
+        var n = Math.max(12, data);                  // 與旋律音同樣的 C0 音高基準
+        if (ch === 6) drumPitch(6, n);
+        if (ch === 8) { drumPitch(8, n); drumPitch(7, n + 7); }   // 通道 7 的頻率由通道 8 的音符帶（與參考一致）
+        bdMod |= DRUM[ch].bit;
+      }
+      bdReg();
+    }
     function noteOff(ch, at) {
       var a = active[ch]; if (!a) return;
       if (ch <= 8) keyOff(ch);
@@ -84330,13 +84370,20 @@ const holder = {};
     }
     var pos = musBlock + 1;
     var guard = 0;
+    if (rhythm) {                                   // 節奏模式初始化：通道 6..8 的頻率歸零、通道 7／8 的基準值（與參考一致）
+      [0xA6, 0xA7, 0xA8, 0xB6, 0xB7, 0xB8].forEach(function (r) { reg(r, 0); });
+      reg(0xA8, 0x87); reg(0xB8, 0x09); reg(0xA7, 0x03); reg(0xB7, 0x0F);
+      bdReg();
+    }
     while (pos < len && b[pos] !== 0x80) {
       var data = b[pos - 1], ctrl = b[pos];
       pos += 2;
       if (++guard > 2000000) throw new Error('解析失敗（樂譜）：字數超過 200 萬仍沒有結束字，疑似壞檔');
       var kind = ctrl & 0xF0, ch = ctrl & 0x0F;
       if (kind === 0x90) {                       // 選樂器
-        if (ch <= 10) { chIns[ch] = data; instrument(data); if (ch <= 8) loadIns(ch, data); }
+        if (ch <= 10) { chIns[ch] = data; instrument(data);
+          if (rhythm && ch >= 7) drumInstrument(ch, data);
+          else if (ch <= 8) loadIns(ch, data); }
         cmds++;
       } else if (kind === 0xA0) {                // 音高彎曲：資料 << 6，中心 0x2000
         var bend = Math.min(0x3FFF, data << 6);
@@ -84347,15 +84394,18 @@ const holder = {};
         }
         cmds++;
       } else if (kind === 0xB0) {                // 音量（0..0x7F）
-        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; if (ch <= 8) setVolume(ch, Math.min(0x7F, data)); }
+        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++;
+          if (rhythm && ch >= 7) drumVolume(ch, Math.min(0x7F, data));
+          else if (ch <= 8) setVolume(ch, Math.min(0x7F, data)); }
         cmds++;
       } else if (kind === 0xC0) {                // 音符：先關掉此頻道的音，yy != 0 才開新音
         if (ch <= 10) {
           noteOff(ch, t);
+          if (rhythm && DRUM[ch]) drumHit(ch, data);
           if (data !== 0) {
             var midi = data >= 12 ? data : 12;
-            active[ch] = { t0: t, n: midi, v: 100 };
-            if (ch <= 8) keyOn(ch, midi);
+            active[ch] = { t: t, t0: t, n: midi, v: 100 };
+            if (ch <= 8 && !(rhythm && ch >= 6)) keyOn(ch, midi);
           }
         }
         cmds++;
@@ -84367,6 +84417,7 @@ const holder = {};
     var stopped = pos < len && b[pos] === 0x80; // 找到結束字（0x80）才算完整；沒找到就是檔案被截斷
     // 結束：把還沒關的音在曲尾關掉
     Object.keys(active).forEach(function (k) { noteOff(+k, t); });
+    if (rhythm) { bdMod = 0; bdReg(); }             // 曲尾：節奏位元全部清掉（與參考的曲尾收尾一致）
 
     // 組成 MIDI 曲子（tick）：每個頻道一軌；打擊模式的 6..8 併到一條打擊軌
     var song = { ppq: PPQ, tempos: [{ t: 0, bpm: TEMPO_BPM }], timesig: { n: 4, d: 4 }, title: '', tracks: [] };
@@ -84378,7 +84429,7 @@ const holder = {};
       evs.forEach(function (e) {
         if (e.bend) bendList.push(e); else if (e.vol) volList.push(e); else nlist.push(e);
       });
-      if (soundMode === 1 && DRUM_NOTE[ch] != null) {
+      if (rhythm && DRUM_NOTE[ch] != null) {
         nlist.forEach(function (e) { drumNotes.push({ t: Math.round(e.t * TICKS_PER_BAND), d: Math.max(1, Math.round(PPQ / 8)), n: DRUM_NOTE[ch], v: 100 }); });
         totalNotes += nlist.length;
         return;
@@ -84460,6 +84511,7 @@ const holder = {};
       reg: new Uint8Array(256),
       phase: new Float64Array(32), env: new Float64Array(32), stage: new Uint8Array(32),
       fbHist: new Float64Array(9 * 2), chPhaseDummy: new Float64Array(9),
+      nz: new Float64Array(32), seed: 1,
       t: 0
     };
   }
@@ -84493,16 +84545,42 @@ const holder = {};
       for (var c = 0; c < 9; c++) deriveChannel(c);
     }
 
+    // 節奏模式（$BD 第 5 位）：低 5 位是 BD／SD／TOM／CYM／HH 的觸發；寫入的上升緣開始攻擊、下降緣進入釋放。
+    // 運算元：BD＝通道 6 的兩個運算元（16、19）；HH＝17；TOM＝18；SD＝20；CYM＝21（位址與參考的表一致）。
+    var DRUM_BIT = [[0x10, [16, 19]], [0x08, [20]], [0x04, [18]], [0x02, [21]], [0x01, [17]]];
+    function drumEdge(old, v) {
+      for (var i = 0; i < DRUM_BIT.length; i++) {
+        var bit = DRUM_BIT[i][0], ops = DRUM_BIT[i][1], on = (v & bit) !== 0, was = (old & bit) !== 0;
+        if (on && !was) ops.forEach(function (o) { st.stage[o] = 1; st.env[o] = 0; });   // 上升緣：從零重新攻擊
+        else if (!on && was) ops.forEach(function (o) { if (st.stage[o]) st.stage[o] = 4; });
+      }
+    }
+    function rhythmOn() { return (st.reg[0xBD] & 0x20) !== 0; }
+    // 隨機正負（用來模擬雜訊位元）：線性同餘，狀態在 st.seed，可快照
+    function noiseSign() { st.seed = (st.seed * 1103515245 + 12345) & 0x7FFFFFFF; return ((st.seed >> 16) & 1) ? 1 : -1; }
+    // 節奏運算元：雜訊運算元在相位繞回時換一次正負（HH／SD／CYM），TOM 用正弦
+    function drumOp(o, noise, C, dt) {
+      var p = op[o]; if (!p || st.stage[o] === 0) return 0;
+      var old = st.phase[o], inc = C.hz * MULT[p.mult] * dt;
+      st.phase[o] = (old + inc) % 1;
+      if (st.phase[o] < old) st.nz[o] = noiseSign();
+      var keyScale = (C.block << 1) | ((C.fnum >> 9) & 1);
+      return stepOp(o, st.phase[o], dt, keyScale, noise ? st.nz[o] : undefined);
+    }
+
     function write(reg, val) {
-      reg &= 0xFF; val &= 0xFF; st.reg[reg] = val;
+      reg &= 0xFF; val &= 0xFF;
+      var old = st.reg[reg]; st.reg[reg] = val;
+      if (reg === 0xBD) { drumEdge(old, val); return; }
       if (reg === 0x01) { deriveAll(); return; }
       if (reg >= 0x20 && reg <= 0x35) return deriveOp(reg - 0x20);
       if (reg >= 0x40 && reg <= 0x55) return deriveOp(reg - 0x40);
       if (reg >= 0x60 && reg <= 0x75) return deriveOp(reg - 0x60);
       if (reg >= 0x80 && reg <= 0x95) return deriveOp(reg - 0x80);
       if (reg >= 0xE0 && reg <= 0xF5) return deriveOp(reg - 0xE0);
-      if (reg >= 0xA0 && reg <= 0xA8) { var c1 = reg - 0xA0; deriveChannel(c1); return keyChange(c1); }
-      if (reg >= 0xB0 && reg <= 0xB8) { var c2 = reg - 0xB0; deriveChannel(c2); return keyChange(c2); }
+      // 節奏模式下通道 6..8 的按鍵由 $BD 控制，B0 的按鍵位元不作用（只更新頻率）
+      if (reg >= 0xA0 && reg <= 0xA8) { var c1 = reg - 0xA0; deriveChannel(c1); return (rhythmOn() && c1 >= 6) ? undefined : keyChange(c1); }
+      if (reg >= 0xB0 && reg <= 0xB8) { var c2 = reg - 0xB0; deriveChannel(c2); return (rhythmOn() && c2 >= 6) ? undefined : keyChange(c2); }
       if (reg >= 0xC0 && reg <= 0xC8) { deriveChannel(reg - 0xC0); }
     }
     // 按鍵：0→1 開始攻擊，1→0 進入釋放
@@ -84514,7 +84592,7 @@ const holder = {};
     }
 
     // 單一運算元：回傳 { y: 輸出（已乘包絡與音量） }
-    function stepOp(o, ph, dt, keyScale) {
+    function stepOp(o, ph, dt, keyScale, nzVal) {
       var p = op[o]; if (!p) return 0;
       // 包絡推進
       var sus = Math.pow(10, -(p.sl * 3) / 20); if (p.sl === 15) sus = 0;
@@ -84542,7 +84620,7 @@ const holder = {};
       var kdb = p.ksl ? KSL_DB[p.ksl] * Math.max(0, (keyScale >> 1) - 2) : 0;
       var att = Math.pow(10, -(p.tl * 0.75 + kdb) / 20);
       if (p.am) att *= Math.pow(10, -(4.8 * (0.5 + 0.5 * Math.sin(TWO_PI * 3.7 * st.t))) / 20);
-      return wave(ph, p.ws) * e * att;
+      return (nzVal !== undefined ? nzVal : wave(ph, p.ws)) * e * att;
     }
 
     // 產生 count 個取樣到 out（從 out[start] 開始）
@@ -84554,8 +84632,14 @@ const holder = {};
       for (var i = 0; i < count; i++) {
         var mix = 0;
         var vib = Math.sin(TWO_PI * 6.1 * st.t);   // 顫音 LFO（約 6 Hz）
+        var rh = rhythmOn();
         for (c = 0; c < 9; c++) {
           var mo = MOD_OFF[c], co = mo + 3, C = ch[c];
+          if (rh && c >= 7) {                        // 節奏：通道 7 ＝ HH（雜訊）＋ SD（雜訊）；通道 8 ＝ TOM（正弦）＋ CYM（雜訊）
+            if (c === 7) mix += drumOp(17, true, C, dt) + drumOp(20, true, C, dt);
+            else mix += drumOp(18, false, C, dt) + drumOp(21, true, C, dt);
+            continue;
+          }
           if (st.stage[mo] === 0 && st.stage[co] === 0) continue;
           var keyScale = (C.block << 1) | ((C.fnum >> 9) & 1);
           var pm = op[mo] ? op[mo].vib : 0, pc = op[co] ? op[co].vib : 0;
@@ -84585,10 +84669,10 @@ const holder = {};
     }
 
     function snapshot() {
-      return { reg: st.reg.slice(), phase: st.phase.slice(), env: st.env.slice(), stage: st.stage.slice(), fbHist: st.fbHist.slice(), t: st.t };
+      return { reg: st.reg.slice(), phase: st.phase.slice(), env: st.env.slice(), stage: st.stage.slice(), fbHist: st.fbHist.slice(), nz: st.nz.slice(), seed: st.seed, t: st.t };
     }
     function restore(s) {
-      st.reg.set(s.reg); st.phase.set(s.phase); st.env.set(s.env); st.stage.set(s.stage); st.fbHist.set(s.fbHist); st.t = s.t;
+      st.reg.set(s.reg); st.phase.set(s.phase); st.env.set(s.env); st.stage.set(s.stage); st.fbHist.set(s.fbHist); st.nz.set(s.nz); st.seed = s.seed; st.t = s.t;
       deriveAll();
     }
     function reset() { st = newState(); deriveAll(); }
