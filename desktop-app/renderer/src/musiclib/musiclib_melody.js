@@ -90,8 +90,36 @@
     }
     return clamp(1 - prev[n] / Math.max(m, n), 0, 1);
   }
-  // song → { mix: 合併旋律（同 melodyFromSong）, tracks: [{ track, channel, name, notes:[[t,d,n]], contour }] }
-  // 每個非鼓軌各一條線（合併重複音後至少 MIN_TRACK_NOTES 個音）；音程序列近乎相同（相似度 > SIMILAR_TRACK）的軌只留一條；最多 MAX_LINES－1 條軌線（合併線另計）
+  // ── 單軌的聲部線 ──
+  // 哼歌的查詢永遠是「單一條旋律線」：人不可能同時哼出兩個旋律（除非 beatbox）。所以索引端要把每首曲子拆成「所有可能被人哼出來的單線」，
+  // 而不是把整首壓成一條。拿音樂錄音當查詢時，查詢本身就是多聲部壓成的一條線，所以和合併線比對得上；哼歌不行。
+  // 單軌內同一起音群（CHORD_WIN 內）有多個音（和弦、琶音）時，該軌另外產生：
+  //   最高音線（hi）：每群取最高音；最低音線（lo）：每群取最低音（人也會哼低音）；
+  //   中聲部線（mid）：群內 3 個音以上時取中間那個（旋律常在中間，上面被高音琶音蓋住、下面有低音）。
+  // 沒有多音群的軌只有一條線（one）。
+  function voicesOf(ns) {
+    var sorted = ns.slice().sort(function (x, y) { return x.t - y.t || x.n - y.n; });
+    var groups = [], multi = false;
+    sorted.forEach(function (x) {
+      var g = groups[groups.length - 1];
+      if (g && x.t - g[0].t < CHORD_WIN) g.push(x); else groups.push([x]);
+    });
+    var hi = [], lo = [], mid = [];
+    groups.forEach(function (g) {
+      if (g.length > 1) multi = true;
+      g.sort(function (x, y) { return x.n - y.n; });
+      hi.push(g[g.length - 1]); lo.push(g[0]);
+      if (g.length >= 3) mid.push(g[(g.length - 1) >> 1]);
+    });
+    return { multi: multi, hi: hi, lo: lo, mid: mid };
+  }
+  var REG_MID = 64;   // 音域中段的參考音高（MIDI 音號）：每首線數超過上限時，離這裡近的線優先保留
+  var KIND_ORDER = { one: 0, hi: 1, mid: 2, lo: 3 };
+  var KIND_LABEL = { one: '', hi: ' 最高音', mid: ' 中聲部', lo: ' 最低音' };
+  // song → { mix: 合併旋律（同 melodyFromSong）, tracks: [{ track, channel, name, kind, label, notes:[[t,d,n]], contour }] }
+  // 每個非鼓軌：單聲部一條；多聲部再加最高音、最低音、中聲部（各自合併重複音後至少 MIN_TRACK_NOTES 個音）。
+  // 音程序列近乎相同（相似度 > SIMILAR_TRACK）只留一條；每首線數（含合併線）最多 MAX_LINES 條。
+  // 超過上限時的優先順序：音數多 → 音域離中段近 → 軌號小、kind 固定順序；再依序略過與已留下的線重複的。
   function songLines(song) {
     var mix = melodyFromSong(song), cand = [];
     ((song && song.tracks) || []).forEach(function (tr, i) {
@@ -100,21 +128,32 @@
         var t0 = ticksToSec(song, n.t), t1 = ticksToSec(song, n.t + n.d);
         return { t: t0, d: t1 - t0, n: n.n, v: n.v };
       });
-      var mel = melodyNotes(ns);
-      if (mel.length < MIN_TRACK_NOTES) return;
-      cand.push({ track: i, channel: tr.channel == null ? null : +tr.channel, name: String(tr.name || ''), mel: mel, contour: contourOf(mel) });
+      var v = voicesOf(ns), chName = tr.channel == null ? null : +tr.channel, name = String(tr.name || '');
+      var variants = [{ kind: v.multi ? 'hi' : 'one', list: v.hi }];
+      if (v.multi) { variants.push({ kind: 'lo', list: v.lo }); variants.push({ kind: 'mid', list: v.mid }); }
+      variants.forEach(function (vr) {
+        var mel = melodyNotes(vr.list);
+        if (mel.length < MIN_TRACK_NOTES) return;
+        var reg = mel.reduce(function (s, x) { return s + x.n; }, 0) / mel.length;
+        cand.push({ track: i, channel: chName, name: name, kind: vr.kind, mel: mel, reg: reg, contour: contourOf(mel) });
+      });
     });
-    cand.sort(function (a, b) { return b.mel.length - a.mel.length || a.track - b.track; });
+    cand.sort(function (x, y) {
+      return (y.mel.length - x.mel.length) || (Math.abs(x.reg - REG_MID) - Math.abs(y.reg - REG_MID)) ||
+        (x.track - y.track) || (KIND_ORDER[x.kind] - KIND_ORDER[y.kind]);
+    });
     var kept = [];
     cand.forEach(function (c) {
       var dup = kept.some(function (k) { return globalSim(k.contour.intervals, c.contour.intervals) > SIMILAR_TRACK; });
       if (!dup && kept.length < MAX_LINES - 1) kept.push(c);
     });
-    kept.sort(function (a, b) { return a.track - b.track; });
+    kept.sort(function (x, y) { return x.track - y.track || KIND_ORDER[x.kind] - KIND_ORDER[y.kind]; });
     return {
       mix: mix,
       tracks: kept.map(function (c) {
-        return { track: c.track, channel: c.channel, name: c.name, notes: c.mel.map(function (x) { return [round3(x.t), round3(x.d), x.n]; }), contour: c.contour };
+        var label = (c.channel != null ? '頻道 ' + c.channel : '軌 ' + c.track) + KIND_LABEL[c.kind];
+        return { track: c.track, channel: c.channel, name: c.name, kind: c.kind, label: label,
+          notes: c.mel.map(function (x) { return [round3(x.t), round3(x.d), x.n]; }), contour: c.contour };
       })
     };
   }

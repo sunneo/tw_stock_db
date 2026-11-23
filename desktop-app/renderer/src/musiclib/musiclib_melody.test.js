@@ -212,7 +212,7 @@ function songOf(list) {
 }
 function linesOf(key, name, song) {
   var L = MM.songLines(song);
-  return { key: key, name: name, lines: [{ label: '合併', contour: MM.contourOf(L.mix) }].concat(L.tracks.map(function (x) { return { label: '頻道 ' + x.channel, contour: x.contour }; })) };
+  return { key: key, name: name, lines: [{ label: '合併', contour: MM.contourOf(L.mix) }].concat(L.tracks.map(function (x) { return { label: x.label, contour: x.contour }; })) };
 }
 
 t('重複音合併：同音高、空隔小於 0.05 秒的連續音併成一個；空隔較大或音高不同不併', function () {
@@ -306,6 +306,47 @@ t('合成資料校準：6 首目標曲各 4 種哼歌變形（錯音、漏音、
     '；對照每查詢最高分 中位數 ' + med(distMax).toFixed(3) + '、最高 ' + Math.max.apply(null, distMax).toFixed(3) + '；對照平均 ' + avg.toFixed(3));
   assert.ok(top1 >= 18, '第一名正確應該至少 18/24（實測見上面的數字）：' + top1 + '/' + queries.length);
   assert.ok(med(tgtScores) > med(distMax) + 0.05, '目標分數的中位數要明顯高於對照的最高分中位數');
+});
+
+t('中間聲部：同一軌三聲部（低音、旋律在中間、上面高音琶音蓋住）→ 有中聲部線，哼歌命中中聲部而不是最高音或最低音線', function () {
+  var r = rng(91), mel = walkMelody(r, 40);
+  // 低音與高音都「不平行」於旋律（音程隨機），所以它們的線不會因為音程一樣而誤中
+  var notes = [];
+  mel.forEach(function (x) {
+    notes.push({ t: x.t, d: x.d, n: x.n - 10 - Math.floor(r() * 5) });        // 低音
+    notes.push({ t: x.t, d: x.d, n: x.n });                                    // 旋律（中間聲部）
+    notes.push({ t: x.t, d: x.d, n: x.n + 12 + Math.floor(r() * 5) });        // 高音琶音
+  });
+  var target = linesOf('A', '目標', songOf([{ notes: notes, channel: 0 }]));
+  var other = linesOf('B', '別首', songOf([{ notes: walkMelody(rng(93), 40), channel: 0 }]));
+  var labels = target.lines.map(function (x) { return x.label; });
+  assert.ok(labels.indexOf('頻道 0 中聲部') >= 0 && labels.indexOf('頻道 0 最高音') >= 0 && labels.indexOf('頻道 0 最低音') >= 0, '三聲部都要有線：' + labels.join('、'));
+  var q = humVariant(rng(92), mel.slice(6, 26), { drop: 1 });
+  var res = MM.searchMelody(q, [target, other]);
+  assert.equal(res.results[0].key, 'A', '排第一的是目標');
+  assert.equal(res.results[0].hitLine, '頻道 0 中聲部', '命中的是中聲部：' + res.results[0].hitLine);
+  var scoreOf = function (label) {
+    var one = { key: 'A', name: 'A', lines: target.lines.filter(function (x) { return x.label === label; }) };
+    var rr = MM.searchMelody(q, [one], { minScore: 0 });
+    return rr.results[0] ? rr.results[0].score : 0;
+  };
+  assert.ok(scoreOf('頻道 0 中聲部') > scoreOf('頻道 0 最高音') + 0.2, '中聲部線明顯高於最高音線：' + scoreOf('頻道 0 中聲部') + ' vs ' + scoreOf('頻道 0 最高音'));
+  assert.ok(scoreOf('頻道 0 中聲部') > scoreOf('頻道 0 最低音') + 0.2, '中聲部線明顯高於最低音線');
+});
+
+t('每首線數上限：超過 12 條時，音數多的優先、音域離中段近的優先，與已留下的重複的略過', function () {
+  // 一軌有很多音（音數最多）、音域偏高；另一軌音數少、在中段。上限 11 條軌線時，音數多的先留
+  var list = [];
+  for (var c = 0; c < 14; c++) list.push({ notes: walkMelody(rng(200 + c), 20 + c), channel: c });
+  var L = MM.songLines(songOf(list));
+  assert.equal(L.tracks.length, 11, '軌線上限 11 條');
+  // 音數以「合併重複音後」為準：保留的 11 條，音數都不少於被擠掉的 3 條
+  var cnt = function (c) { return MM.melodyNotes(list[c].notes).length; };
+  var keptCh = L.tracks.map(function (x) { return x.channel; }), dropCh = [];
+  for (var c2 = 0; c2 < 14; c2++) if (keptCh.indexOf(c2) < 0) dropCh.push(c2);
+  assert.equal(dropCh.length, 3, '被擠掉的應該是 3 條：' + keptCh.join(','));
+  var minKept = Math.min.apply(null, keptCh.map(cnt)), maxDrop = Math.max.apply(null, dropCh.map(cnt));
+  assert.ok(minKept >= maxDrop, '音數多的先留（保留最少 ' + minKept + '，被擠掉最多 ' + maxDrop + '）');
 });
 
 // ───── 執行 ─────

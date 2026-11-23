@@ -455,7 +455,7 @@ const FaMusicLibHost = (function () {
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
       // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
       var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
-      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: '頻道 ' + t.channel, contour: t.contour }); });
+      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), contour: t.contour }); });
       return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
     });
   }
