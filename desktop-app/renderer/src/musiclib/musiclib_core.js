@@ -952,7 +952,10 @@
     opts = opts || {};
     var newKeys = opts.newKeys || {}, recs = lib.records || [];
     var olds = recs.filter(function (r) { return r.status === 'missing' && !r.pending; });
-    var cands = recs.filter(function (r) { return newKeys[r.key] && r.status === 'ok' && hasFullMd5(r); });
+    // 候選：這一次新掃到的；另外，本機原有、還沒有旋律索引也沒有歌詞的檔案也算（先匯入、後來才算出 md5 的情況：匯入的紀錄帶著索引卻找不到檔案，
+    // 本機同內容的檔案沒有索引，配上後索引就接到本機這個檔案上）。本機已經有索引或歌詞的不當候選，不蓋掉現有資料。擷取產物與待擷取的不算。
+    var lacksData = function (r) { return !r.derivedFrom && !r.pending && !(r.melody && r.melody.status === 'ok') && !r.lyrics; };
+    var cands = recs.filter(function (r) { return (newKeys[r.key] || lacksData(r)) && r.status === 'ok' && hasFullMd5(r); });
     var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], pendingHash: recs.filter(needsHash).length };
     var oldBy = {}, candBy = {};
     olds.forEach(function (r) { if (hasFullMd5(r)) (oldBy[r.md5] = oldBy[r.md5] || []).push(r); else plan.noMd5.push(r); });

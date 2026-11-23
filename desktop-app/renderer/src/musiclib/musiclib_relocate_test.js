@@ -239,6 +239,39 @@ t('匯入：同 md5 在曲庫有兩筆（分不出來）→ 不亂配，當成�
   assert.equal(plan.stats.matchedByMd5, 0);
 });
 
+
+t('先匯入、後算出 md5：匯入的「找不到檔案」紀錄（帶索引）接到本機同內容、還沒有索引的檔案上，索引跟著過來', function () {
+  var imported = mkRec({ sourceId: 'imp', path: 'E:\other-pc\song.mp3', content: 'SAME', status: 'missing', melody: { sig: '100:500', status: 'ok', method: 'mid', contour: [1, 2, 3] } });
+  var local = mkRec({ sourceId: 'loc', path: 'D:\mine\copy-of-song.mp3', content: 'SAME' });
+  var other = mkRec({ sourceId: 'loc', path: 'D:\mine\other.mp3', content: 'DIFFERENT' });
+  var lib = libWith([imported, local, other], [{ id: 'imp', type: 'folder', label: 'imp' }, { id: 'loc', type: 'folder', label: 'loc' }]);
+  var plan = M.planRelocation(lib, { newKeys: {} });   // 沒有新掃到的檔案，單靠 md5 算完
+  assert.equal(plan.moves.length, 1, '應該配上一對：' + JSON.stringify(plan.moves.length));
+  var res = M.applyRelocation(lib, plan);
+  assert.equal(res.moved, 1);
+  assert.equal(lib.records.length, 2, '本機那筆被併進匯入的紀錄，不留兩筆');
+  var got = lib.records.filter(function (r) { return r.path === 'D:\mine\copy-of-song.mp3'; })[0];
+  assert.ok(got && got.status === 'ok' && got.melody && got.melody.status === 'ok', '路徑是本機的、旋律索引是匯入的');
+});
+
+t('本機同內容的檔案已經有旋律索引（或歌詞）：不當候選，不蓋掉現有資料', function () {
+  var imported = mkRec({ sourceId: 'imp', path: 'E:\other-pc\song.mp3', content: 'SAME', status: 'missing', melody: { sig: '1:1', status: 'ok', method: 'mid', contour: [9] } });
+  var local = mkRec({ sourceId: 'loc', path: 'D:\mine\song.mp3', content: 'SAME', melody: { sig: '100:500', status: 'ok', method: 'mid', contour: [1] } });
+  var lib = libWith([imported, local], [{ id: 'imp', type: 'folder', label: 'imp' }, { id: 'loc', type: 'folder', label: 'loc' }]);
+  var plan = M.planRelocation(lib, { newKeys: {} });
+  assert.equal(plan.moves.length, 0);
+  assert.equal(plan.notFound.length, 1);
+});
+
+t('本機有兩個同內容、都沒索引的檔案：歧義，不亂配', function () {
+  var imported = mkRec({ sourceId: 'imp', path: 'E:\pc\a\song.mp3', content: 'SAME', status: 'missing', melody: { sig: '1:1', status: 'ok', method: 'mid', contour: [9] } });
+  var l1 = mkRec({ sourceId: 'loc', path: 'D:\\x\\one.mp3', content: 'SAME' }), l2 = mkRec({ sourceId: 'loc', path: 'D:\\y\\two.mp3', content: 'SAME' });
+  var lib = libWith([imported, l1, l2], [{ id: 'imp', type: 'folder', label: 'imp' }, { id: 'loc', type: 'folder', label: 'loc' }]);
+  var plan = M.planRelocation(lib, { newKeys: {} });
+  assert.equal(plan.moves.length, 0);
+  assert.equal(plan.ambiguous.length, 1);
+});
+
 (function run() {
   var pass = 0, failed = [];
   tests.forEach(function (x) {

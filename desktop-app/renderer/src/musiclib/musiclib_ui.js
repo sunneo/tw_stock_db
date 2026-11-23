@@ -882,6 +882,7 @@
         M.applyImport(lib, plan);
         await lib.save();
         msg = '匯入完成：' + lib.records.length + ' 筆紀錄';
+        if (host.md5) startMd5({});   // 匯入的紀錄若是「找不到檔案」，本機檔案的 md5 算完後會自動接上（同內容、一對一才配）
         dbStat.textContent = msg;
       } catch (e) { msg = '匯入寫入失敗：' + errText(e); dbStat.textContent = msg; }
       render();

@@ -945,12 +945,14 @@ const FaMusicLibHost = (function () {
         }
         await L.save();
         var summary = { hashed: md5State.done, total: todo.length, failures: failures, cancelled: md5State.cancelled, text: '' };
-        if (!md5State.cancelled && Object.keys(opts.newKeys || {}).length) {
+        // 沒有新掃到的檔案也要對應：匯入資料庫後才算出 md5，匯入的「找不到檔案」紀錄要接到本機同內容的檔案上
+        var hasMissingWithMd5 = L.records.some(function (r) { return r.status === 'missing' && !r.pending && FaMusicLib.hasFullMd5(r); });
+        if (!md5State.cancelled && (Object.keys(opts.newKeys || {}).length || hasMissingWithMd5)) {
           var plan = FaMusicLib.planRelocation(L, { newKeys: opts.newKeys || {} });
           var applied = FaMusicLib.applyRelocation(L, plan);
           await L.save();
           summary.plan = plan; summary.applied = applied;
-          summary.text = FaMusicLib.describeRelocation(plan, applied);
+          summary.text = (plan.moves.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
           if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
         } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
         else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
