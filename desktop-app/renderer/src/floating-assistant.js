@@ -102433,7 +102433,7 @@ const FaMusicLibUI = (function () {
 const holder = {};
 (function (module, self) {
 /* 音樂庫的畫面（UMD）：像 library 的清單。
- *   主畫面只留常用的：＋加檔案、＋加資料夾、搜尋框、範圍、移除勾選、最大化、「⚙ 設定」、一行進行中工作狀態（點一下開對應分頁）。
+ *   主畫面只留常用的（另有工具列上的「🎤 哼歌找歌」，展開後是哼歌區塊）：＋加檔案、＋加資料夾、搜尋框、範圍、移除勾選、最大化、「⚙ 設定」、一行進行中工作狀態（點一下開對應分頁）。
  *   清單：樹狀。來源列下面可展開擷取產物（derivedFrom 指向來源），子列縮排並標「擷取產物（不是檔案系統上的檔案）」與擷取方式。
  *     搜尋命中子曲目時，它的來源會自動展開。每列都有「▶ 播放」（走通用播放模組 FaMediaPlay）與「移除」。
  *   移除：原始檔只從曲庫移除，絕不刪磁碟上的原始檔；擷取產物的衍生檔會刪（只刪衍生資料夾裡的，並確認真的消失）；
@@ -102442,7 +102442,7 @@ const holder = {};
  *     來源與擷取：來源管理（移除來源）、衍生資料夾、擷取選取的來源、擷取結果（失敗列出、成功收合）、取消擷取。
  *     歌詞：轉錄歌詞、暫停／續跑、取消轉錄、狀態。
  *     輸出：格式（mp3／mid）、分鐘數、整首、音訊轉 mid 用 Basic Pitch、批次輸出、取消輸出、結果。
- *     旋律搜尋：建立旋律索引、暫停／取消、錄哼歌／選音檔找相似、結果。
+ *     旋律索引：建立索引、暫停／取消、Basic Pitch 勾選、索引狀態（已建幾首、失敗幾首）。
  *     YouTube：貼網址、加入清單、暫停／取消、進度。
  *   設定值（衍生資料夾、輸出格式與分鐘數、整首、Basic Pitch 勾選、旋律用文字加分）存在 localStorage（fa.musiclib.*），重開面板會還原。
  *   搜尋時，歌詞命中的段落列在該曲目下面。已消失的檔案用刪除線顯示，搜尋時不出現。
@@ -102475,10 +102475,11 @@ const holder = {};
     + '.fml-dlg-tabs button.on{background:#0969da;color:#fff;border-color:#0969da}'
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
     + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
+    + '.fml button.hon{background:#0969da;color:#fff;border-color:#0969da}'
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}';
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
-  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律搜尋'], ['yt', 'YouTube'], ['db', '資料']];
+  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律索引'], ['yt', 'YouTube'], ['db', '資料']];
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function errText(e) { return String((e && e.message) || e); }
@@ -102525,14 +102526,15 @@ const holder = {};
     var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者、歌詞（空白分隔多個關鍵字）';
     var sSel = h('select');
     [['all', '全部（含歌詞）'], ['meta', '不含歌詞'], ['lyrics', '只查歌詞']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; sSel.appendChild(op); });
+    var bHum = h('button', null, '🎤 哼歌找歌'); bHum.title = '展開／收合哼歌找歌：錄哼歌或選音檔，找相似的歌';
     var bDel = h('button', null, '移除勾選');
     var work = h('button', 'fml-work'); work.style.display = 'none';
     var stat = h('span', 'fml-st');
-    var bSet = h('button', null, '⚙ 設定'); bSet.title = '開啟設定：來源與擷取、歌詞、輸出、旋律搜尋、YouTube';
+    var bSet = h('button', null, '⚙ 設定'); bSet.title = '開啟設定：來源與擷取、歌詞、輸出、旋律索引、YouTube、資料';
     function setMax(on) { maxOn = !!on; toggleCls(root, 'max', maxOn); bMax.textContent = maxOn ? '🗗 還原' : '⛶ 最大化'; }
     bMax.onclick = function () { setMax(!maxOn); };
     bar.appendChild(bMax); bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel);
-    bar.appendChild(bDel); bar.appendChild(work); bar.appendChild(stat); bar.appendChild(bSet);
+    bar.appendChild(bHum); bar.appendChild(bDel); bar.appendChild(work); bar.appendChild(stat); bar.appendChild(bSet);
 
     // ───── 設定分頁視窗（置中對話框；內容一直在 DOM 裡，只切換顯示）─────
     var dlg = h('div', 'fml-dlgbg'), box = h('div', 'fml-dlg'), dHead = h('div', 'fml-dlg-h'), dTabs = h('div', 'fml-dlg-tabs'), dBody = h('div', 'fml-dlg-body');
@@ -102545,7 +102547,7 @@ const holder = {};
     });
     box.appendChild(dHead); box.appendChild(dTabs); box.appendChild(dBody); dlg.appendChild(box); dlg.style.display = 'none';
     function dlgOpen() { return dlg.style.display !== 'none'; }
-    function showTab(k) { curTab = k; SET_TABS.forEach(function (t) { tabPane[t[0]].style.display = t[0] === k ? '' : 'none'; toggleCls(tabBtn[t[0]], 'on', t[0] === k); }); }
+    function showTab(k) { curTab = k; if (k === 'mel') refreshIdxInfo(); SET_TABS.forEach(function (t) { tabPane[t[0]].style.display = t[0] === k ? '' : 'none'; toggleCls(tabBtn[t[0]], 'on', t[0] === k); }); }
     function openSettings(tab) { showTab(tab || curTab); dlg.style.display = ''; }
     function closeSettings() { dlg.style.display = 'none'; }
     bSet.onclick = function () { openSettings(curTab); };
@@ -102629,28 +102631,47 @@ const holder = {};
     if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
     tabPane.yt.appendChild(yt); tabPane.yt.appendChild(ytList);
 
-    // ───── 旋律搜尋分頁：建立索引（可暫停、取消）、錄哼歌／選音檔找相似、結果 ─────
+    // ───── 旋律索引分頁（設定）：建立索引、暫停／續跑、取消、Basic Pitch、索引狀態 ─────
     var MEL = host.melody || null, melHum = null, melFound = null;
-    var melBox = h('div', 'fml-bar');
+    var idxBox = h('div', 'fml-bar');
     var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
+    var idxStat = h('span', 'fml-st');
+    var idxInfo = h('div', 'fml-foot');
+    // 「用 Basic Pitch」：設定（建索引）與主畫面哼歌區塊各一個勾選，同一個 localStorage 鍵（fa.musiclib.melodyBasicPitch），一改兩邊同步
+    var bpOn = lsGet('fa.musiclib.melodyBasicPitch', '0') === '1', bpBoxes = [];
+    function bpCheckbox() {
+      var cb = h('input'); cb.type = 'checkbox'; cb.checked = bpOn;
+      cb.onchange = function () { bpOn = !!cb.checked; lsSet('fa.musiclib.melodyBasicPitch', bpOn ? '1' : '0'); bpBoxes.forEach(function (x) { x.checked = bpOn; }); };
+      bpBoxes.push(cb);
+      return cb;
+    }
+    var mModelIdx = bpCheckbox();
+    var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
+    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat);
+    if (!MEL) { [mIdx, mModelIdx].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
+    mPause.disabled = true; mIdxCancel.disabled = true;
+    tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
+
+    // ───── 哼歌找歌區塊（主畫面，工具列下方，可收合）：錄哼歌、選音檔找、歌詞文字、找相似、結果、狀態 ─────
+    var humBox = h('div', 'fml-hum fml-foot');
+    humBox.style.display = 'none';
+    var hBar = h('div', 'fml-bar');
     var mRec = h('button', null, '錄哼歌（8 秒）'), mPick = h('button', null, '選音檔找');
     var mText = h('input'); mText.type = 'text'; mText.placeholder = '歌詞文字（選填，用來加分）'; mText.style.width = '160px';
     var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = lsGet('fa.musiclib.melodyUseText', '0') === '1';
     var mUseLbl = h('label', null, '用文字加分'); mUseLbl.appendChild(mUseText);
-    var mModel = h('input'); mModel.type = 'checkbox'; mModel.checked = lsGet('fa.musiclib.melodyBasicPitch', '0') === '1';
-    var mModelLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelLbl.appendChild(mModel);
-    mModel.onchange = function () { lsSet('fa.musiclib.melodyBasicPitch', mModel.checked ? '1' : '0'); };
     mUseText.onchange = function () { lsSet('fa.musiclib.melodyUseText', mUseText.checked ? '1' : '0'); };
-    var mFind = h('button', null, '找相似'), mStat = h('span', 'fml-st');
+    var hModel = bpCheckbox();
+    var hModelLbl = h('label', null, '用 Basic Pitch（與 ⚙ 設定 → 旋律索引 同步）'); hModelLbl.appendChild(hModel);
+    var mFind = h('button', null, '找相似'), hStat = h('span', 'fml-st');
+    var bOpenMel = h('button', null, '開啟設定'); bOpenMel.title = '開到 ⚙ 設定 → 旋律索引'; bOpenMel.style.display = 'none';
+    bOpenMel.onclick = function () { openSettings('mel'); };
     var mFile = h('input'); mFile.type = 'file'; mFile.accept = 'audio/*,video/*'; mFile.style.display = 'none';
-    var mRes = h('div', 'fml-foot'), mMidi = h('button', null, '找不到？用 MIDI 演奏這段旋律'); mMidi.style.display = 'none';
-    melBox.appendChild(mIdx); melBox.appendChild(mPause); melBox.appendChild(mIdxCancel);
-    melBox.appendChild(mModelLbl); melBox.appendChild(mRec); melBox.appendChild(mPick); melBox.appendChild(mText); melBox.appendChild(mUseLbl); melBox.appendChild(mFind);
-    melBox.appendChild(mStat); melBox.appendChild(mFile);
-    if (!MEL) { [mIdx, mPause, mIdxCancel, mRec, mPick, mFind].forEach(function (b) { b.disabled = true; }); mStat.textContent = '哼歌找歌不可用（需要桌面版）'; }
-    mPause.disabled = true; mIdxCancel.disabled = true;
-    tabPane.mel.appendChild(melBox); tabPane.mel.appendChild(mRes); tabPane.mel.appendChild(mMidi);
-
+    var mRes = h('div', 'fml-foot fml-exp'), mMidi = h('button', null, '找不到？用 MIDI 演奏這段旋律'); mMidi.style.display = 'none';
+    hBar.appendChild(mRec); hBar.appendChild(mPick); hBar.appendChild(mText); hBar.appendChild(mUseLbl); hBar.appendChild(hModelLbl);
+    hBar.appendChild(mFind); hBar.appendChild(hStat); hBar.appendChild(bOpenMel); hBar.appendChild(mFile);
+    humBox.appendChild(hBar); humBox.appendChild(mRes); humBox.appendChild(mMidi);
+    if (!MEL) { [mRec, mPick, mFind, hModel].forEach(function (b) { b.disabled = true; }); hStat.textContent = '哼歌找歌不可用（需要桌面版）'; }
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
     var thead = h('thead'), tbody = h('tbody');
@@ -102659,7 +102680,7 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
+    root.appendChild(bar); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
     container.appendChild(root);
 
     // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
@@ -103021,53 +103042,69 @@ const holder = {};
     };
     xCancel.onclick = function () { if (host.extract) host.extract.cancel(); xStat.textContent = '取消擷取中（目前這個來源的下一步停止）…'; };
 
-    // 哼歌找歌：旋律索引（逐首，可暫停續跑、取消）＋錄哼歌或選音檔找相似（找不到時可用 MIDI 演奏查到的旋律）
-    function melStatus(s) { mStat.textContent = s; }
+    // 旋律索引（逐首，可暫停續跑、取消）：索引狀態＝已建幾首、失敗幾首
+    function idxStatus(s) { idxStat.textContent = s; }
+    function refreshIdxInfo() {
+      if (!MEL) return;
+      var done = MEL.entries().length;
+      var failed = lib.records.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).length;
+      idxInfo.textContent = '已建索引 ' + done + ' 首，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
+    }
     function idxLine(ev) {
-      if (ev.status === 'running') melStatus('旋律索引：建立中…');
-      else if (ev.status === 'failed') melStatus('旋律索引：有一首失敗（' + ev.reason + '）');
+      if (ev.status === 'running') idxStatus('旋律索引：建立中…');
+      else if (ev.status === 'failed') idxStatus('旋律索引：有一首失敗（' + ev.reason + '）');
     }
     mIdx.onclick = function () {
       if (!MEL || MEL.indexState().running) return;
-      mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…'); melRunning = true; renderWork();
-      MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
+      mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; idxStatus('旋律索引：開始…'); melRunning = true; renderWork();
+      MEL.buildIndex(idxLine, mModelIdx.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork();
-        melStatus(M.describeMelodySummary(sum, sum.groups || {}));
-      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork(); melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
+        idxStatus(M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
+      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork(); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
     };
-    mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
-    mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); melStatus('旋律索引：取消中…'); };
+    mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; idxStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; idxStatus('旋律索引：續跑'); } };
+    mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); idxStatus('旋律索引：取消中…'); };
+
+    // 哼歌找歌（主畫面的區塊）：工具列的「🎤 哼歌找歌」展開／收合，狀態記在 localStorage
+    var humOn = lsGet('fa.musiclib.humOpen', '0') === '1';
+    function setHum(on) { humOn = !!on; lsSet('fa.musiclib.humOpen', humOn ? '1' : '0'); humBox.style.display = humOn ? '' : 'none'; toggleCls(bHum, 'hon', humOn); }
+    bHum.onclick = function () { setHum(!humOn); };
     var melBlob = null, melMethod = '';
-    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; mStat.textContent = '哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'; }
+    function hStatus(s) { hStat.textContent = s; }
+    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; hStatus('哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'); }
     mRec.onclick = function () {
-      if (!MEL) return; mRec.disabled = true; melStatus('錄音中（8 秒）…');
+      if (!MEL) return; mRec.disabled = true; hStatus('錄音中（8 秒）…');
       var blobNow = null;
-      MEL.recordHum(8).then(function (blob) { blobNow = blob; melStatus('轉譜中…'); return MEL.notesFromHum(blob, mModel.checked); })
-        .then(function (r) { showHum(r, blobNow); }, function (e) { melStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); })
+      MEL.recordHum(8).then(function (blob) { blobNow = blob; hStatus('轉譜中…'); return MEL.notesFromHum(blob, hModel.checked); })
+        .then(function (r) { showHum(r, blobNow); }, function (e) { hStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); })
         .then(function () { mRec.disabled = false; });
     };
     mPick.onclick = function () { mFile.value = ''; mFile.click(); };
     mFile.onchange = function () {
-      var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; melStatus('解碼並轉譜 ' + f.name + '…');
-      MEL.notesFromHum(f, mModel.checked).then(function (r) { showHum(r, f); }, function (e) { melStatus('轉譜失敗：' + String((e && e.message) || e)); });
+      var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; hStatus('解碼並轉譜 ' + f.name + '…');
+      MEL.notesFromHum(f, hModel.checked).then(function (r) { showHum(r, f); }, function (e) { hStatus('轉譜失敗：' + String((e && e.message) || e)); });
     };
     mFind.onclick = function () {
       if (!MEL) return;
-      if (!melHum) { melStatus('先錄哼歌或選音檔'); return; }
+      bOpenMel.style.display = 'none';
+      // 沒有索引：明講去哪建立，並給「開啟設定」直接開到旋律索引分頁
+      if (!MEL.entries().length) { hStatus('還沒有旋律索引，請到 ⚙ 設定 → 旋律索引 建立'); bOpenMel.style.display = ''; return; }
+      if (!melHum) { hStatus('先錄哼歌或選音檔'); return; }
       mFind.disabled = true; mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
       // 結果顯示（先出旋律比對的結果；有文字加分時，文字轉錄完成後再更新一次）
       function showFound(r) {
         mRes.textContent = ''; mMidi.style.display = 'none';
-        if (!r.ok) { melStatus(r.reason); return; }
+        if (!r.ok) { hStatus(r.reason); return; }
         var timing = '，旋律比對 ' + (r.entryCount != null ? r.entryCount : MEL.entries().length) + ' 首用了 ' + (r.matchMs || 0) + ' 毫秒' + (r.transcribeMs != null ? '，文字轉錄 ' + (r.transcribeMs / 1000).toFixed(1) + ' 秒' : '');
         var textNote = r.partial ? '；文字轉錄中（語音模型第一次要載入，可能要幾分鐘，目前是只看旋律的結果）'
           : (mUseText.checked ? (r.textUsed ? '；文字加分用「' + r.textUsed.slice(0, 30) + '」' : (r.textError ? '；文字轉錄失敗：' + r.textError : '；沒有文字可加分')) : '');
         if (!r.results.length) {
           var n = MEL.entries().length;
-          melStatus((n ? '找不到相似的歌（' + n + ' 首已建索引' + textNote + timing + '）' : '還沒有旋律索引，請先按「建立旋律索引」'));
+          if (n) hStatus('找不到相似的歌（' + n + ' 首已建索引' + textNote + timing + '）');
+          else { hStatus('還沒有旋律索引，請到 ⚙ 設定 → 旋律索引 建立'); bOpenMel.style.display = ''; }
           mMidi.style.display = ''; melFound = melHum; return;
         }
-        melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
+        hStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + timing + '）');
         var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
         r.results.forEach(function (x) {
           var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
@@ -103077,19 +103114,18 @@ const holder = {};
             if (line._clip) { if (line._clip.parentNode) line._clip.parentNode.removeChild(line._clip); line._clip = null; return; }
             MEL.playClip(paths[x.key], x.startSec, x.endSec).then(function (res) {
               if (res && res.node) { line._clip = res.node; line.parentNode.insertBefore(res.node, line.nextSibling); }
-            }).catch(function (e) { melStatus('試聽失敗：' + String((e && e.message) || e)); });
+            }).catch(function (e) { hStatus('試聽失敗：' + String((e && e.message) || e)); });
           };
           line.appendChild(document.createTextNode(' ')); line.appendChild(play);
           mRes.appendChild(line);
         });
       }
-      melStatus('比對中…');
+      hStatus('比對中…');
       MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked, blob: melBlob, onPartial: showFound }).then(function (r) {
         mFind.disabled = false; showFound(r);
-      }, function (e) { mFind.disabled = false; melStatus('找歌失敗：' + String((e && e.message) || e)); });
+      }, function (e) { mFind.disabled = false; hStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
-    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
-
+    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); hStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { hStatus('演奏失敗：' + String((e && e.message) || e)); } };
     // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
     var YT_LIST_MAX = 200;
     function ytShowItems(job) {
@@ -103215,6 +103251,7 @@ const holder = {};
       renderWork();
     }, 1000);
     showTab(curTab);
+    setHum(humOn);
     if (host.md5) startMd5({});   // 開面板時把還沒算的 md5 在背景算完（沒有就什麼都不做）
     render();
     return {

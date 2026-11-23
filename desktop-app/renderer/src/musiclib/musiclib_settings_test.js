@@ -44,7 +44,23 @@ function all(el, out) { out = out || []; out.push(el); (el.children || []).forEa
 function buttonsIn(el) { return all(el).filter(function (x) { return x.tagName === 'button'; }); }
 function findBtn(el, text) { return buttonsIn(el).filter(function (b) { return b.textContent === text; })[0] || null; }
 function dlgOf(root) { return root.children.filter(function (c) { return c.className === 'fml-dlgbg'; })[0]; }
-function paneOf(dlg, idx) { return dlg.children[0].children[2].children[idx]; }   // 0 來源與擷取 1 歌詞 2 輸出 3 旋律搜尋 4 YouTube
+function paneOf(dlg, idx) { return dlg.children[0].children[2].children[idx]; }   // 0 來源與擷取 1 歌詞 2 輸出 3 旋律索引 4 YouTube 5 資料
+function humBoxOf(root) { return all(root).filter(function (x) { return x.className === 'fml-hum fml-foot'; })[0]; }
+function cbByLabel(el, prefix) { return all(el).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox' && x.parentNode && String(x.parentNode.textContent || '').indexOf(prefix) === 0; })[0]; }
+// 假的旋律模組（只給面板掛載與索引狀態用；哼歌實際流程不在這裡測）
+function stubMelody(entries) {
+  return {
+    entries: function () { return entries; },
+    indexState: function () { return { running: false, paused: false }; },
+    buildIndex: function () { return new Promise(function () {}); },
+    pauseIndex: function () {}, resumeIndex: function () {}, cancelIndex: function () {},
+    recordHum: function () { return new Promise(function () {}); },
+    notesFromHum: function () { return new Promise(function () {}); },
+    search: function () { return Promise.resolve({ ok: false, reason: 'stub' }); },
+    playClip: function () { return Promise.resolve({}); },
+    humAsMidi: function () {}
+  };
+}
 function tabBtnOf(dlg, text) { return dlg.children[0].children[1].children.filter(function (b) { return b.textContent === text; })[0]; }
 function fakeRecs() {
   return [
@@ -106,7 +122,7 @@ t('五個分頁：切換時只顯示被選的那一頁，並標示目前分頁',
   resetDom();
   var p = mountPanel();
   findBtn(p.root, '⚙ 設定').click();
-  var names = ['來源與擷取', '歌詞', '輸出', '旋律搜尋', 'YouTube', '資料'];
+  var names = ['來源與擷取', '歌詞', '輸出', '旋律索引', 'YouTube', '資料'];
   names.forEach(function (n, i) {
     tabBtnOf(p.dlg, n).click();
     names.forEach(function (_, j) {
@@ -117,7 +133,7 @@ t('五個分頁：切換時只顯示被選的那一頁，並標示目前分頁',
   p.m.destroy();
 });
 
-t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋律搜尋、YouTube）', function () {
+t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋律索引、YouTube、資料）', function () {
   resetDom();
   var p = mountPanel({ extract: { run: function () { return new Promise(function () {}); }, cancel: function () {} } });
   var pane = function (i) { return paneOf(p.dlg, i); };
@@ -125,7 +141,7 @@ t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋�
     [0, ['擷取選取的來源', '取消擷取'], '來源管理（還沒有來源時的提示）'],
     [1, ['轉錄歌詞', '暫停', '取消轉錄']],
     [2, ['批次輸出', '取消輸出']],
-    [3, ['建立旋律索引', '暫停索引', '取消索引', '錄哼歌（8 秒）', '選音檔找', '找相似']],
+    [3, ['建立旋律索引', '暫停索引', '取消索引']],
     [4, ['＋加入 YouTube 清單', '暫停', '取消']],
     [5, ['匯出資料庫', '匯入資料庫…']]
   ];
@@ -141,8 +157,8 @@ t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋�
   assert.ok(outTexts.indexOf('音訊轉 mid 用 Basic Pitch') >= 0, '輸出缺 Basic Pitch');
   assert.ok(outTexts.indexOf('整首') >= 0 && outTexts.indexOf('分鐘') >= 0, '輸出缺整首或分鐘');
   assert.ok(all(pane(2)).some(function (x) { return x.tagName === 'select'; }), '輸出缺格式選單');
-  // 旋律搜尋：文字加分、Basic Pitch 勾選
-  assert.ok(all(pane(3)).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '旋律缺文字加分');
+  // 旋律索引：Basic Pitch 勾選（索引用）
+  assert.ok(cbByLabel(pane(3), '用 Basic Pitch'), '旋律索引缺 Basic Pitch 勾選');
   p.m.destroy();
 });
 
@@ -239,6 +255,96 @@ t('進行中工作：擷取中時主畫面顯示一行，點一下開「來源�
   assert.equal(p.dlg.style.display, '');
   assert.equal(paneOf(p.dlg, 0).style.display, '');
   if (resolveRun) resolveRun({ results: [] });
+  p.m.destroy();
+});
+
+t('主畫面有「🎤 哼歌找歌」按鈕：點一下展開哼歌區塊、再點收合，狀態記在 localStorage', function () {
+  resetDom();
+  Object.keys(store).forEach(function (k) { delete store[k]; });
+  var p = mountPanel();
+  var hb = humBoxOf(p.root);
+  assert.ok(hb, '找不到哼歌區塊');
+  assert.ok(!isInside(hb, p.dlg), '哼歌區塊應該在主畫面，不在設定視窗裡');
+  assert.equal(hb.style.display, 'none', '一開始應收合');
+  var bh = findBtn(p.root, '🎤 哼歌找歌');
+  assert.ok(bh, '主畫面缺「🎤 哼歌找歌」');
+  assert.ok(!isInside(bh, p.dlg), '哼歌按鈕應該在主畫面');
+  bh.click();
+  assert.equal(hb.style.display, '', '點了應該展開');
+  assert.equal(store['fa.musiclib.humOpen'], '1');
+  bh.click();
+  assert.equal(hb.style.display, 'none', '再點應該收合');
+  assert.equal(store['fa.musiclib.humOpen'], '0');
+  p.m.destroy();
+});
+
+t('哼歌區塊有錄哼歌、選音檔找、歌詞文字、用文字加分、找相似；設定的「旋律索引」分頁不再有這些', function () {
+  resetDom();
+  var p = mountPanel({ melody: stubMelody([]) });
+  var hb = humBoxOf(p.root);
+  var hbTexts = buttonsIn(hb).map(function (b) { return b.textContent; });
+  ['錄哼歌（8 秒）', '選音檔找', '找相似'].forEach(function (k) { assert.ok(hbTexts.indexOf(k) >= 0, '哼歌區塊缺「' + k + '」'); });
+  assert.ok(all(hb).some(function (x) { return x.tagName === 'input' && x.type === 'text' && /歌詞文字/.test(x.placeholder || ''); }), '哼歌區塊缺歌詞文字輸入');
+  assert.ok(all(hb).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '哼歌區塊缺用文字加分');
+  findBtn(p.root, '⚙ 設定').click();
+  tabBtnOf(p.dlg, '旋律索引').click();
+  var pane = paneOf(p.dlg, 3);
+  var paneBtns = buttonsIn(pane).map(function (b) { return b.textContent; });
+  ['錄哼歌（8 秒）', '選音檔找', '找相似'].forEach(function (k) { assert.equal(paneBtns.indexOf(k), -1, '旋律索引分頁不該再有「' + k + '」'); });
+  assert.ok(!all(pane).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '旋律索引分頁不該再有「用文字加分」');
+  ['建立旋律索引', '暫停索引', '取消索引'].forEach(function (k) { assert.ok(paneBtns.indexOf(k) >= 0, '旋律索引分頁缺「' + k + '」'); });
+  p.m.destroy();
+});
+
+t('「用 Basic Pitch」：設定與哼歌區塊兩處同步，同一個 localStorage 鍵，重開面板兩處都還原', function () {
+  resetDom();
+  Object.keys(store).forEach(function (k) { delete store[k]; });
+  var p = mountPanel({ melody: stubMelody([]) });
+  findBtn(p.root, '⚙ 設定').click();
+  tabBtnOf(p.dlg, '旋律索引').click();
+  var cbIdx = cbByLabel(paneOf(p.dlg, 3), '用 Basic Pitch');
+  var cbHum = cbByLabel(humBoxOf(p.root), '用 Basic Pitch');
+  assert.ok(cbIdx && cbHum, '兩處都要有 Basic Pitch 勾選');
+  assert.equal(cbIdx.checked, false); assert.equal(cbHum.checked, false);
+  cbIdx.checked = true; cbIdx.onchange({ target: cbIdx });
+  assert.equal(cbHum.checked, true, '哼歌區塊的勾選沒跟著變');
+  assert.equal(store['fa.musiclib.melodyBasicPitch'], '1');
+  cbHum.checked = false; cbHum.onchange({ target: cbHum });
+  assert.equal(cbIdx.checked, false, '設定的勾選沒跟著變');
+  assert.equal(store['fa.musiclib.melodyBasicPitch'], '0');
+  cbHum.checked = true; cbHum.onchange({ target: cbHum });
+  p.m.destroy();
+
+  var p2 = mountPanel({ melody: stubMelody([]) });
+  assert.equal(cbByLabel(humBoxOf(p2.root), '用 Basic Pitch').checked, true, '哼歌區塊沒還原');
+  findBtn(p2.root, '⚙ 設定').click();
+  tabBtnOf(p2.dlg, '旋律索引').click();
+  assert.equal(cbByLabel(paneOf(p2.dlg, 3), '用 Basic Pitch').checked, true, '旋律索引分頁沒還原');
+  p2.m.destroy();
+});
+
+t('沒有旋律索引時，找相似明講去哪建立，並給「開啟設定」直接開到旋律索引分頁', function () {
+  resetDom();
+  var p = mountPanel({ melody: stubMelody([]) });
+  var hb = humBoxOf(p.root);
+  findBtn(p.root, '🎤 哼歌找歌').click();
+  findBtn(hb, '找相似').click();
+  var hint = all(hb).some(function (x) { return x.textContent === '還沒有旋律索引，請到 ⚙ 設定 → 旋律索引 建立'; });
+  assert.ok(hint, '沒有提示文字');
+  var open = findBtn(hb, '開啟設定');
+  assert.ok(open && open.style.display === '', '「開啟設定」按鈕應該出現');
+  open.click();
+  assert.equal(p.dlg.style.display, '', '應該開啟設定視窗');
+  assert.equal(paneOf(p.dlg, 3).style.display, '', '應該切到旋律索引分頁');
+  p.m.destroy();
+});
+
+t('旋律索引分頁顯示索引狀態：已建幾首、失敗幾首', function () {
+  resetDom();
+  var p = mountPanel({ melody: stubMelody([{ key: 'a' }, { key: 'b' }]) });
+  findBtn(p.root, '⚙ 設定').click();
+  tabBtnOf(p.dlg, '旋律索引').click();
+  assert.ok(all(paneOf(p.dlg, 3)).some(function (x) { return x.textContent === '已建索引 2 首，失敗 0 首'; }), '索引狀態文字不對');
   p.m.destroy();
 });
 
