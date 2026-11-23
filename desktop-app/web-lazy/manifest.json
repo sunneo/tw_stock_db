@@ -2074,16 +2074,16 @@
    "names": [
     "FaMusicLibSpcCore"
    ],
-   "size": 16336,
-   "md5": "6d212947cce63ffcb10722e358470b91"
+   "size": 16489,
+   "md5": "096425f01050203910e1bc4aaea5f05d"
   },
   "mlchipspc": {
    "file": "chunks/mlchipspc.js",
    "names": [
     "FaChipSpc"
    ],
-   "size": 2154,
-   "md5": "b0b37b95e40bf191cdd9d2fff0f7ad78"
+   "size": 5101,
+   "md5": "01fd95b0b3af4845168cee751f7deab1"
   },
   "mxlz": {
    "file": "chunks/mxlz.js",
@@ -2106,8 +2106,8 @@
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 39919,
-   "md5": "437b4578cbb05b589b62ac1c5eaffc6c"
+   "size": 40054,
+   "md5": "fa90eca438d21f3dec04616fd3ed45d1"
   }
  },
  "core": {
