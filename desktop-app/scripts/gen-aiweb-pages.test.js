@@ -71,7 +71,9 @@ test('路徑深度：全螢幕頁在 aiweb/<指令>/，相對路徑解析後要�
   const page = plan.files.find((f) => f.abs.endsWith(path.join('aiweb', 'musiclib', 'index.html')));
   assert.ok(page, '要產生 aiweb/musiclib/index.html');
   const pageDir = path.dirname(page.abs); // 相當於 URL 結尾有斜線的 .../aiweb/musiclib/
-  const js = /<script src="([^"]+)" defer>/.exec(page.content)[1];
+  const jsRaw = /<script src="([^"]+)" defer>/.exec(page.content)[1];
+  assert.ok(/\?v=[0-9a-f]{8}$/.test(jsRaw), '載入器網址要帶版本標記（GitHub Pages 的快取是 10 分鐘，不帶就會看到舊版）：' + jsRaw);
+  const js = jsRaw.replace(/\?.*$/, '');
   const coi = /<script src="([^"]+)"><\/script>/.exec(page.content)[1];
   assert.equal(path.resolve(pageDir, js), path.join(web, 'web', 'aiweb', 'fa-gui.js'));
   assert.equal(path.resolve(pageDir, coi), path.join(web, 'web', 'coi-serviceworker.js'));

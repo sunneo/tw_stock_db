@@ -71,7 +71,7 @@ function esc(s) {
 function dirOf(cmd) { return cmd.slice(1); }
 
 // 全螢幕頁。相對路徑依深度計算：aiweb/<指令>/ 往上兩層是 web/
-function pageHtml(cmd, desc) {
+function pageHtml(cmd, desc, sha) {
   return `<!DOCTYPE html>
 <html lang="zh-Hant" data-theme="dark">
 <head>
@@ -87,7 +87,7 @@ function pageHtml(cmd, desc) {
 <div id="app"></div>
 <noscript>這個全螢幕 GUI 需要 JavaScript。</noscript>
 <!-- 指令說明：${esc(desc)} -->
-<script src="../fa-gui.js" defer></script>
+<script src="../fa-gui.js?v=${String(sha || '').slice(0, 8)}" defer></script>
 </body>
 </html>
 `;
@@ -198,7 +198,7 @@ function buildPlan({ registrySrc, sha, webRoot, guiList, templateText, aiIndexHt
   const aiweb = path.join(webRoot, 'web', 'aiweb');
   const files = [];
   files.push({ abs: path.join(aiweb, 'fa-gui.js'), content: faGuiScript(sha, templateText) });
-  for (const e of entries) files.push({ abs: path.join(aiweb, dirOf(e.cmd), 'index.html'), content: pageHtml(e.cmd, e.desc) });
+  for (const e of entries) files.push({ abs: path.join(aiweb, dirOf(e.cmd), 'index.html'), content: pageHtml(e.cmd, e.desc, sha) });
   files.push({ abs: path.join(aiweb, 'gui', 'index.html'), content: listHtml(entries) });
   files.push({ abs: path.join(aiweb, 'index.html'), content: injectRouter(aiIndexHtml, routerBlock(guiList)) });
 
