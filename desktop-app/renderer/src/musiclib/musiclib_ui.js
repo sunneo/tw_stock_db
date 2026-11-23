@@ -39,7 +39,9 @@
     + '@media (max-width:640px){.fml-hero .cd2{display:none}.fml-hero h2{font-size:20px}}'
     + '.fml{background:#faf9ff}.fml-wrap{background-color:rgba(255,255,255,.94);background-image:url("' + BG_NOTE + '"),url("' + BG_CD + '");background-repeat:no-repeat,no-repeat;background-position:left 18px top 52px,right 16px bottom 14px;background-size:150px,240px}'
     + '.fml-bar{background:#f1eeff;border-bottom-color:#ddd6fb}.fml-tbl th{background:#f1eeff}.fml button:hover:not(:disabled){background:#ece7ff;border-color:#c9bdf7}'
-    + '.fml.max .fml-hero{min-height:96px}';
+    + '.fml.max .fml-hero{min-height:96px}'
+    + '.fml-hero>button{position:absolute;top:8px;z-index:3;width:28px;height:28px;padding:0;border:1px solid #ffffff66;border-radius:6px;background:#00000033;color:#fff;cursor:pointer;font-size:14px;line-height:1}.fml-hero>button:hover{background:#00000066}'
+    + '.fml-hero>button:nth-last-of-type(1){right:10px}.fml-hero>button:nth-last-of-type(2){right:44px}.fml-hero>button:nth-last-of-type(3){right:78px}';
   var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'
     + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
     + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
@@ -282,6 +284,11 @@
     hero.appendChild(ttl);
     root.appendChild(hero); root.appendChild(bar); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
     container.appendChild(root);
+    // 視窗控制鈕（☐ 最大化、⤢ 彈出、⛶ 全螢幕）跟其他介面一樣放在標題列右邊：由呼叫端（opts.decorate，桌面版／網頁版接 FaWin）
+    // 把控制鈕加進標題區；有接上就不再顯示工具列上自己的「最大化」，沒接（單獨使用）才保留它。
+    if (typeof opts.decorate === 'function') {
+      try { if (opts.decorate(container, hero)) bMax.style.display = 'none'; } catch (_) { /* 外殼失敗就留著自己的最大化鈕 */ }
+    }
 
     // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
     function visibleSet() {

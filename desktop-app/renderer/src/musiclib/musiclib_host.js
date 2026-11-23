@@ -1034,7 +1034,9 @@ const FaMusicLibHost = (function () {
           note.remove();
           if (L.loadError) { var er = document.createElement('div'); er.style.cssText = 'font-size:12px;color:#cf222e;padding:4px 8px'; er.textContent = '讀取音樂庫失敗：' + (L.loadError.message || L.loadError); wrap.appendChild(er); }
           if (!L.persistent) { var pn = document.createElement('div'); pn.style.cssText = 'font-size:12px;color:#9a6700;padding:4px 8px'; pn.textContent = '注意：這個環境沒有 IndexedDB，音樂庫只存在記憶體，重新開啟會不見。'; wrap.appendChild(pn); }
-          FaMusicLibUI.mount(wrap, { library: L, host: PICK_HOST, queue: L.queue || null });
+          FaMusicLibUI.mount(wrap, { library: L, host: PICK_HOST, queue: L.queue || null,
+            // 跟其他介面一樣用視窗外殼（FaWin）：☐ 最大化、⤢ 彈出、⛶ 全螢幕放在標題列右邊；沒有外殼時回傳 false，畫面保留自己的最大化鈕
+            decorate: function (el, bar) { if (typeof FaWin === 'undefined' || !FaWin.decorate) return false; FaWin.decorate(el, { id: 'musiclib', title: '🎵 音樂庫', bar: bar, minW: 560, minH: 380 }); return true; } });
         });
       });
     },
