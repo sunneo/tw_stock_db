@@ -102202,8 +102202,13 @@ const holder = {};
       render();
     }
     async function pick(kind) {
-      var fn = kind === 'folder' ? host.pickFolder : null;
-      if (fn) { var src = await fn(); if (src) addFrom('folder', src); return; } // 取消（null）就什麼都不做
+      var fn = kind === 'folder' ? host.pickFolder : host.pickFiles;
+      if (fn) {
+        var src = await fn();
+        if (src === undefined && kind !== 'folder') { fIn.click(); return; } // 非桌面版：用瀏覽器選檔
+        if (src) addFrom(kind === 'folder' ? 'folder' : 'file', src);
+        return; // 取消（null）就什麼都不做
+      }
       (kind === 'folder' ? dIn : fIn).click();
     }
 
@@ -102525,6 +102530,64 @@ const FaMusicLibHost = (function () {
     };
   }
 
+  // 絕對路徑：磁碟機開頭（C:\ 或 C:/）、網路路徑（\\）、或 / 開頭。瀏覽器選檔只給檔名，不算絕對路徑。
+  function isAbsPath(p) { return /^([a-zA-Z]:[\\\/]|\\\\|\/)/.test(String(p || '')); }
+  // 讀檔前確認是完整路徑；只有檔名的舊紀錄（舊版選檔加入）會被 app 資料夾當成相對路徑而找不到，先講清楚原因
+  function absPath(p) {
+    if (!isAbsPath(p)) throw new Error('這筆紀錄只有檔名、沒有完整路徑（' + p + '），無法讀取。請把它移除後，用「＋加檔案」重新加入。');
+    return p;
+  }
+
+  // 勾選檔案的小視窗：列出資料夾內認得的檔案，回傳勾選的項目陣列；取消回傳 null
+  function chooseFilesDialog(dir, files) {
+    return new Promise(function (resolve) {
+      var ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2147483000;display:flex;align-items:center;justify-content:center';
+      var box = document.createElement('div');
+      box.style.cssText = 'background:#fff;color:#1f2328;border-radius:8px;padding:12px;width:min(560px,92vw);max-height:80vh;display:flex;flex-direction:column;gap:8px;font:13px sans-serif';
+      var title = document.createElement('div'); title.textContent = '勾選要加入的檔案（資料夾：' + dir + '）'; title.style.cssText = 'word-break:break-all';
+      var listBox = document.createElement('div'); listBox.style.cssText = 'overflow:auto;border:1px solid #d0d7de;padding:4px;flex:1';
+      var boxes = files.map(function (f) {
+        var row = document.createElement('label'); row.style.cssText = 'display:block;padding:2px 4px;cursor:pointer';
+        var cb = document.createElement('input'); cb.type = 'checkbox'; cb.style.marginRight = '6px';
+        row.appendChild(cb); row.appendChild(document.createTextNode(f.name)); listBox.appendChild(row);
+        return cb;
+      });
+      var bar = document.createElement('div'); bar.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center';
+      var all = document.createElement('button'); all.textContent = '全選／全不選';
+      var ok = document.createElement('button'); ok.textContent = '加入';
+      var no = document.createElement('button'); no.textContent = '取消';
+      var allOn = false;
+      all.onclick = function () { allOn = !allOn; boxes.forEach(function (c) { c.checked = allOn; }); };
+      function done(v) { try { document.body.removeChild(ov); } catch (_) { /* */ } resolve(v); }
+      ok.onclick = function () { var got = files.filter(function (f, i) { return boxes[i].checked; }); done(got.length ? got : null); };
+      no.onclick = function () { done(null); };
+      bar.appendChild(all); bar.appendChild(no); bar.appendChild(ok);
+      box.appendChild(title); box.appendChild(listBox); box.appendChild(bar); ov.appendChild(box); document.body.appendChild(ov);
+    });
+  }
+
+  // 按「加檔案」：桌面版的選檔框拿不到完整路徑（Electron 新版 File 沒有 path），
+  // 所以改成先用資料夾瀏覽器選資料夾，再勾選裡面的檔案，每個檔案都帶完整路徑。
+  // 回傳 { label, entries, readHead }；取消回傳 null；不是桌面版回傳 undefined（畫面改用瀏覽器選檔）。
+  async function pickFiles() {
+    if (!hasDesktopFs()) return undefined;
+    var p = await api().roots.browse();
+    if (!p) return null;
+    var list;
+    try { list = await api().rawfs.readdir(p); } catch (e) { if (typeof alert === 'function') alert('讀不到這個資料夾：' + String((e && e.message) || e)); return null; }
+    var files = list.filter(function (e) { return e.isFile && FaMusicLib.isSupportedName(e.name); }).sort(function (x, y) { return x.name.localeCompare(y.name); });
+    if (!files.length) { if (typeof alert === 'function') alert('這個資料夾裡沒有認得的音樂、影片或遊戲檔案'); return null; }
+    var chosen = await chooseFilesDialog(p, files);
+    if (!chosen) return null;
+    var sep = /\\/.test(p) ? '\\' : '/';
+    return {
+      label: chosen.length === 1 ? chosen[0].name : chosen.length + ' 個檔案',
+      entries: chosen.map(function (e) { return { path: p + (/[\\\/]$/.test(p) ? '' : sep) + e.name, size: e.size || 0, mtimeMs: e.mtimeMs || 0 }; }),
+      readHead: function (path, n) { return api().rawfs.readHead(path, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+    };
+  }
+
   // ───── 預設轉錄：接 app 既有的 Whisper 流程 ─────
   // 回傳 { segments:[{start,end,text}], language, durationSeconds, device }；暫停時丟出 err.paused = true
   // ffmpeg.wasm 的同意完全沿用 app 既有流程（_decodeAudioForWhisperWithFallback → _ffmpegWasmConsent，
@@ -102544,7 +102607,7 @@ const FaMusicLibHost = (function () {
       if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
       report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
       var r;
-      try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+      try { r = await a.rawfs.readFile(absPath(record.path), 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
       if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
       blob = new Blob([b64ToBytes(r.base64)]);
     }
@@ -102632,7 +102695,7 @@ const FaMusicLibHost = (function () {
     var a = api(), fa = window.fa, rec = ctx.item.record, st = { expectSec: null, expectNotes: null, bytes: null, buf: null, view: null, song: null };
     if (!a || !a.rawfs) throw new Error('讀寫檔案的通道不存在（需要桌面版）');
     function checkCancel() { if (exportCancelled || ctx.isCancelled()) { var e = new Error('已取消'); e.cancelled = true; throw e; } }
-    async function readSource() { var r = await a.rawfs.readFile(rec.path, 'base64'); if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容'); return b64ToBytes(r.base64); }
+    async function readSource() { var r = await a.rawfs.readFile(absPath(rec.path), 'base64'); if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容'); return b64ToBytes(r.base64); }
     for (var i = 0; i < ctx.steps.length; i++) {
       checkCancel();
       var step = ctx.steps[i];
@@ -102744,7 +102807,7 @@ const FaMusicLibHost = (function () {
   async function extractMelody(rec, useModel) {
     var a = api(), fa = window.fa;
     var r;
-    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+    try { r = await a.rawfs.readFile(absPath(rec.path), 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
     var u8 = b64ToBytes(r.base64);
     if (/\.midi?$/i.test(rec.name)) {
@@ -102905,7 +102968,7 @@ const FaMusicLibHost = (function () {
       return { skipped: true, reason: '來源沒變，沿用上次的子曲目', children: existing.map(function (r) { return r.key; }), skippedParts: [], method: existing[0].derivedMethod, dir: dirOf(existing[0].path) };
     }
     var r;
-    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗（讀取階段）：' + String((e && e.message) || e)); }
+    try { r = await a.rawfs.readFile(absPath(rec.path), 'base64'); } catch (e) { throw new Error('讀檔失敗（讀取階段）：' + String((e && e.message) || e)); }
     if (!r || r.base64 == null) throw new Error('讀檔失敗（讀取階段）：讀不到這個檔案的內容');
     var u8 = b64ToBytes(r.base64);
     var dir = derivedDirFor(rec, opts.userRoot), stem = stemOf(rec.name);
@@ -103107,7 +103170,7 @@ const FaMusicLibHost = (function () {
   async function readBytesOf(rec) {
     if (rec.file) return new Uint8Array(await rec.file.arrayBuffer());
     var a = api(); if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取檔案的通道不存在（需要桌面版）');
-    var r = await a.rawfs.readFile(rec.path, 'base64');
+    var r = await a.rawfs.readFile(absPath(rec.path), 'base64');
     if (!r || r.base64 == null) throw new Error('讀不到這個檔案的內容（' + rec.path + '）');
     return b64ToBytes(r.base64);
   }
@@ -103183,7 +103246,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
@@ -103221,7 +103284,13 @@ const FaMusicLibHost = (function () {
     },
     // 沒給路徑：開檔案選擇器（renderer 的 <input type=file>，拿到的是 File，不是實體路徑）
     _mpPickFiles() {
-      var self = this, inp = document.createElement('input');
+      var self = this;
+      // 桌面版：用帶完整路徑的選檔（來源 ROM 才能擷取、重新整理後也能繼續播）；不是桌面版（undefined）才用瀏覽器選檔
+      if (hasDesktopFs()) {
+        pickFiles().then(function (src) { if (src) src.entries.forEach(function (e) { self._mpPushItem({ path: e.path, name: basename(e.path), kind: self._mpExt(e.path) }); }); });
+        return;
+      }
+      var inp = document.createElement('input');
       inp.type = 'file'; inp.multiple = true;
       inp.onchange = function () {
         Array.prototype.slice.call(inp.files || []).forEach(function (f) { self._mpPushItem({ file: f, name: f.name, kind: self._mpExt(f.name) }); });
@@ -103284,7 +103353,7 @@ const FaMusicLibHost = (function () {
     if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取檔案的通道不存在（需要桌面版）');
     if (typeof FaChipPlayer === 'undefined' || typeof FaChipNsf === 'undefined' || typeof FaChipPlayerUI === 'undefined') throw new Error('晶片播放器還沒有內嵌（缺 FaChipPlayer／FaChipNsf／FaChipPlayerUI）');
     try { FaChipPlayer.getBackend('nsf'); } catch (_) { FaChipPlayer.registerBackend(FaChipNsf.createBackend(FaJsnes.NES)); }
-    var r = await a.rawfs.readFile(rec.path, 'base64');
+    var r = await a.rawfs.readFile(absPath(rec.path), 'base64');
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個 NSF 的內容');
     var player = FaChipPlayer.createPlayer('nsf', b64ToBytes(r.base64), { sampleRate: 44100 });
     return FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST });
@@ -103388,7 +103457,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, pickFiles: pickFiles, isAbsPath: isAbsPath, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
