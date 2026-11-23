@@ -195,7 +195,16 @@
     ytList.style.display = 'none';
     bYtPause.disabled = true; bYtCancel.disabled = true;
     if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
+    // 設定：下載後自動建旋律索引（預設開；同一個索引佇列，不會和手動索引同時跑）
+    var ytAutoRow = h('div', 'fml-bar'), ytAuto = h('input');
+    ytAuto.type = 'checkbox'; ytAuto.checked = lsGet('fa.musiclib.ytAutoIndex', '1') === '1';
+    ytAuto.onchange = function () { lsSet('fa.musiclib.ytAutoIndex', ytAuto.checked ? '1' : '0'); };
+    var ytAutoLbl = h('label', null, '下載後自動建旋律索引（排進同一個索引佇列，一支一支序列跑）'); ytAutoLbl.appendChild(ytAuto);
+    ytAutoRow.appendChild(ytAutoLbl);
+    tabPane.yt.appendChild(ytAutoRow);
     tabPane.yt.appendChild(yt); tabPane.yt.appendChild(ytList);
+    // 貼上網址時就提示：清單網址裡夾了單支影片，會展開整個清單（可取消）
+    ytIn.oninput = function () { if (!ytRunning && host.youtubeInputNote) ytStat.textContent = host.youtubeInputNote(ytIn.value); };
 
     // ───── 旋律索引分頁（設定）：建立索引、暫停／續跑、取消、Basic Pitch、索引狀態 ─────
     var MEL = host.melody || null, melHum = null, melFound = null;
@@ -726,7 +735,8 @@
     }
     bYt.onclick = function () {
       if (!host.startYoutubeList || ytRunning) return;
-      ytRunning = true; bYt.disabled = true; ytStat.textContent = '展開清單中…（第一次會載入 yt-dlp，可能要 1～2 分鐘）'; renderWork();
+      var ytNote = host.youtubeInputNote ? host.youtubeInputNote(ytIn.value) : '';
+      ytRunning = true; bYt.disabled = true; bYtCancel.disabled = false; ytStat.textContent = '展開清單中…（第一次會載入 yt-dlp，可能要 1～2 分鐘）' + (ytNote ? '｜' + ytNote : ''); renderWork();
       ytList.style.display = 'none'; ytList.textContent = '';
       host.startYoutubeList(ytIn.value, function (job, sum) {
         ytStat.textContent = sum.text;
