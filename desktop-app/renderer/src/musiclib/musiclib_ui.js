@@ -101,7 +101,7 @@
     opts = opts || {};
     var lib = opts.library, host = opts.host || {}, queue = opts.queue || null;
     var q = '', scope = 'all', msg = '', sel = {}, unsub = null, expanded = {}, playTr = null, maxOn = false;
-    var xRunning = false, xProg = '', expRunning = false, expProg = '', melRunning = false, ytRunning = false;
+    var xRunning = false, xProg = '', expRunning = false, expProg = '', melRunning = false, melProg = '', ytRunning = false;
     var root = h('div', 'fml');
     var style = h('style'); style.textContent = CSS; root.appendChild(style);
 
@@ -233,6 +233,8 @@
     var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
     var idxStat = h('span', 'fml-st');
     var idxInfo = h('div', 'fml-foot');
+    var idxBar = h('progress'); idxBar.max = 1; idxBar.value = 0; idxBar.style.cssText = 'width:100%;max-width:420px;display:none;vertical-align:middle';
+    var idxName = h('div', 'fml-foot'); idxName.style.display = 'none';
     // 「用 Basic Pitch」：設定（建索引）與主畫面哼歌區塊各一個勾選，同一個 localStorage 鍵（fa.musiclib.melodyBasicPitch），一改兩邊同步
     var bpOn = lsGet('fa.musiclib.melodyBasicPitch', '0') === '1', bpBoxes = [];
     function bpCheckbox() {
@@ -243,7 +245,7 @@
     }
     var mModelIdx = bpCheckbox();
     var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
-    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat);
+    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
     if (!MEL) { [mIdx, mModelIdx].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
     tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
@@ -458,7 +460,7 @@
       if (xRunning) items.push({ text: '擷取中 ' + xProg, tab: 'src' });
       if (queue) { var s = queue.state(); if (s.running) items.push({ text: '轉錄中' + (s.progress != null ? ' ' + Math.round(s.progress * 100) + '%' : ''), tab: 'lyr' }); }
       if (expRunning) items.push({ text: '輸出中 ' + expProg, tab: 'exp' });
-      if (melRunning) items.push({ text: '旋律索引建立中', tab: 'mel' });
+      if (melRunning) items.push({ text: '旋律索引建立中' + (melProg ? ' ' + melProg : ''), tab: 'mel' });
       if (ytRunning) items.push({ text: 'YouTube 清單處理中', tab: 'yt' });
       if (host.md5 && host.md5.state) {
         var ms = host.md5.state();
@@ -659,17 +661,27 @@
       var failed = lib.records.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).length;
       idxInfo.textContent = '已建索引 ' + done + ' 首，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
     }
+    // 進度：第 N／共 M 首（已建／跳過／失敗），進度條跟著動；主畫面的工作列也顯示 N／M
+    function idxProgress(ev) {
+      if (!ev.total) return;
+      var s = ev.summary || {}, n = ev.status === 'running' ? ev.index - 1 : ev.index;
+      idxBar.style.display = ''; idxBar.max = ev.total; idxBar.value = Math.max(0, n);
+      idxStat.textContent = '旋律索引：第 ' + ev.index + '／' + ev.total + ' 首（已建 ' + (s.done || 0) + '、沿用 ' + (s.skipped || 0) + '、失敗 ' + (s.failed || 0) + '）';
+      idxName.style.display = ''; idxName.textContent = (ev.status === 'running' ? '處理中：' : '剛處理：') + (ev.name || '');
+      melProg = ev.index + '／' + ev.total; renderWork();
+    }
     function idxLine(ev) {
-      if (ev.status === 'running') idxStatus('旋律索引：建立中…');
-      else if (ev.status === 'failed') idxStatus('旋律索引：有一首失敗（' + ev.reason + '）');
+      idxProgress(ev);
+      if (ev.status === 'running') { /* 進度已顯示 */ }
+      else if (ev.status === 'failed') idxName.textContent = '失敗：' + (ev.name || '') + '（' + ev.reason + '）';
     }
     mIdx.onclick = function () {
       if (!MEL || MEL.indexState().running) return;
       mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; idxStatus('旋律索引：開始…'); melRunning = true; renderWork();
       MEL.buildIndex(idxLine, mModelIdx.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork();
-        idxStatus(M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
-      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork(); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
+        idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; idxStatus(M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
+      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; renderWork(); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; idxStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; idxStatus('旋律索引：續跑'); } };
     mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); idxStatus('旋律索引：取消中…'); };

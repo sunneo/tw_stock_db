@@ -337,13 +337,13 @@
   function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < INDEX_VERSION); }
   async function runMelodyIndex(recs, opts) {
     opts = opts || {};
-    var emit = opts.onEvent || function () {}, cancelled = opts.isCancelled || function () { return false; };
+    var emit0 = opts.onEvent || function () {}, emit = function (ev) { ev.index = curIndex; ev.total = recs.length; ev.name = curName; ev.summary = { done: summary.done, skipped: summary.skipped, failed: summary.failed }; emit0(ev); }, cancelled = opts.isCancelled || function () { return false; };
     var wait = opts.waitIfPaused || function () { return Promise.resolve(); };
     var sleep = opts.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
     var retries = opts.retries == null ? 3 : opts.retries;
-    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0, rebuilt: 0 };
+    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0, rebuilt: 0 }, curIndex = 0, curName = '';
     for (var i = 0; i < recs.length; i++) {
-      var rec = recs[i];
+      var rec = recs[i]; curIndex = i + 1; curName = rec.name;
       if (cancelled()) { summary.cancelled++; continue; }
       await wait();
       if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }

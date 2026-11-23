@@ -490,6 +490,20 @@ t('多種轉法（query.alts）：每首取所有版本中最高的分數；主�
   assert.ok(plain.results[0].key === 'A');
 });
 
+
+t('索引進度事件：每個事件帶第幾首（index）、共幾首（total）、檔名與累計已建／沿用／失敗', async function () {
+  var recs = [1, 2, 3].map(function (i) { return { key: 'k' + i, name: 'song' + i + '.mid', size: i, mtimeMs: i }; });
+  var evs = [];
+  await MM.runMelodyIndex(recs, {
+    extract: async function (rec) { if (rec.key === 'k2') throw new Error('壞檔'); return { notes: makeMelody(5 + rec.size, 12), method: 'mid' }; },
+    onEvent: function (e) { evs.push(e); }, retries: 1
+  });
+  assert.ok(evs.every(function (e) { return e.total === 3 && e.index >= 1 && e.index <= 3 && e.name; }), JSON.stringify(evs));
+  var last = evs[evs.length - 1];
+  assert.equal(last.index, 3); assert.deepEqual(last.summary, { done: 2, skipped: 0, failed: 1 });
+  assert.equal(evs.filter(function (e) { return e.status === 'running'; }).map(function (e) { return e.index; }).join(','), '1,2,3');
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];
