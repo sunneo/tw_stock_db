@@ -676,15 +676,18 @@ const FaMusicLibHost = (function () {
     var results = [];
     for (var i = 0; i < recs.length; i++) {
       var rec = recs[i], t0 = Date.now();
-      if (extractCancelled) { results.push({ name: rec.name, status: 'cancelled', reason: '', stage: null, elapsedMs: 0 }); continue; }
+      // 每做完一個就通知一次（含序號與總數），畫面才能逐筆更新，不用等全部做完
+      var emitDone = function () { if (opts.onEvent) { try { opts.onEvent({ type: 'result', index: i, total: recs.length, result: results[results.length - 1] }); } catch (_) { /* 畫面出錯不影響擷取 */ } } };
+      if (extractCancelled) { results.push({ name: rec.name, status: 'cancelled', reason: '', stage: null, elapsedMs: 0 }); emitDone(); continue; }
       var stage = null;
       try {
-        var out = await extractGameSource(rec, Object.assign({}, opts, { onStage: function (s) { stage = s; if (opts.onEvent) opts.onEvent({ key: rec.key, stage: s }); } }));
+        var out = await extractGameSource(rec, Object.assign({}, opts, { onStage: function (s) { stage = s; if (opts.onEvent) opts.onEvent({ key: rec.key, stage: s, index: i, total: recs.length, name: rec.name }); } }));
         results.push({ name: rec.name, kind: rec.kind, status: out.skipped ? 'skipped' : 'done', reason: out.reason || '', stage: stage, children: out.children.length, skippedParts: out.skippedParts, method: out.method, dir: out.dir, elapsedMs: Date.now() - t0 });
       } catch (e) {
         var cancelledNow = !!(e && e.cancelled) || extractCancelled;
         results.push({ name: rec.name, kind: rec.kind, status: cancelledNow ? 'cancelled' : 'failed', reason: String((e && e.message) || e), stage: stage, children: 0, elapsedMs: Date.now() - t0 });
       }
+      emitDone();
     }
     var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0 };
     results.forEach(function (x) { summary[x.status] = (summary[x.status] || 0) + 1; });

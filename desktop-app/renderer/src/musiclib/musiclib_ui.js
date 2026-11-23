@@ -22,7 +22,7 @@
     + '.fml-lyr input[type=text]{flex:1;min-width:180px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml.max{position:fixed;inset:0;z-index:2147482000;border-radius:0;border:none;display:flex;flex-direction:column;overflow:auto}.fml.max .fml-wrap{max-height:none;flex:1;min-height:200px}'
-    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
+    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px;min-height:120px;resize:vertical}.fml-exp{max-height:40vh;overflow:auto;resize:vertical;min-height:40px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
     + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
     + '.fml-tbl td.bad{color:#cf222e}.fml-hit td{white-space:normal;color:#59636e;font-size:12px;padding-left:28px}'
@@ -98,7 +98,7 @@
     var bExpCancel = h('button', null, '取消輸出');
     var expStat = h('span', 'fml-st');
     exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(bExp); exp.appendChild(bExpCancel); exp.appendChild(expStat);
-    var expList = h('div', 'fml-foot');
+    var expList = h('div', 'fml-foot fml-exp');
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
     bExpCancel.disabled = true;
 
@@ -385,21 +385,38 @@
       var root = xRoot.value.trim();
       try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
       xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
+      // 結果顯示：失敗與取消的逐筆列出（紅字、要處理的）；成功與沿用的收進可展開的清單，不洗版。每做完一個就即時更新。
+      var cnt = { done: 0, skipped: 0, failed: 0, cancelled: 0 }, total = recs.length, live = 0;
+      var badBox = h('div'), okBtn = h('button', null, ''), okBox = h('div');
+      okBtn.style.display = 'none'; okBtn.style.margin = '4px 0';
+      okBox.style.cssText = 'display:none;height:200px;min-height:60px;max-height:80vh;resize:vertical;overflow:auto;border:1px solid #d0d7de;padding:4px;color:#59636e'; // 右下角可拖曳調整高度
+      okBtn.onclick = function () { var open = okBox.style.display === 'none'; okBox.style.display = open ? '' : 'none'; okBtn.textContent = (open ? '收起' : '展開') + '成功／沿用清單（' + (cnt.done + cnt.skipped) + ' 個）'; };
+      expList.appendChild(badBox); expList.appendChild(okBtn); expList.appendChild(okBox);
+      function countText() { return '完成 ' + cnt.done + '、沿用 ' + cnt.skipped + '、失敗 ' + cnt.failed + (cnt.cancelled ? '、取消 ' + cnt.cancelled : ''); }
+      function addResult(x) {
+        cnt[x.status] = (cnt[x.status] || 0) + 1;
+        var d;
+        if (x.status === 'done') d = '→ 子曲目 ' + x.children + ' 個：' + x.method + (x.skippedParts && x.skippedParts.length ? '；略過：' + x.skippedParts.join('；') : '') + '　（' + x.dir + '）';
+        else if (x.status === 'skipped') d = '來源沒變，沿用上次的子曲目';
+        else d = (x.stage ? '［' + x.stage + '］' : '') + x.reason;
+        var line = h('div', x.status === 'failed' ? 'bad' : null, '[' + (STATUS_X[x.status] || x.status) + '] ' + x.name + ' ' + d);
+        if (x.status === 'done' || x.status === 'skipped') {
+          okBox.appendChild(line);
+          okBtn.style.display = '';
+          okBtn.textContent = (okBox.style.display === 'none' ? '展開' : '收起') + '成功／沿用清單（' + (cnt.done + cnt.skipped) + ' 個）';
+        } else badBox.appendChild(line);
+      }
       host.extract.run(recs, {
         userRoot: root || null,
-        onEvent: function (ev) { expStat.textContent = '擷取中（' + ev.stage + '）'; }
+        onEvent: function (ev) {
+          if (ev.type === 'result') { live++; addResult(ev.result); expStat.textContent = '擷取中 ' + (ev.index + 1) + '／' + ev.total + '：' + countText(); }
+          else expStat.textContent = '擷取中 ' + ((ev.index != null ? ev.index + 1 : live + 1)) + '／' + total + (ev.name ? '：' + ev.name : '') + '（' + ev.stage + '）｜' + countText();
+        }
       }).then(function (res) {
         xBtn.disabled = false; xCancel.disabled = true;
-        var s = res.summary || {};
-        expStat.textContent = '擷取完成：完成 ' + (s.done || 0) + '、沿用 ' + (s.skipped || 0) + '、失敗 ' + (s.failed || 0) + '、取消 ' + (s.cancelled || 0);
-        (res.results || []).forEach(function (x) {
-          var d;
-          if (x.status === 'done') d = '→ 子曲目 ' + x.children + ' 個：' + x.method + (x.skippedParts && x.skippedParts.length ? '；略過：' + x.skippedParts.join('；') : '') + '　（' + x.dir + '）';
-          else if (x.status === 'skipped') d = '來源沒變，沿用上次的子曲目';
-          else d = (x.stage ? '［' + x.stage + '］' : '') + x.reason;
-          var line = h('div', x.status === 'failed' ? 'bad' : null, '[' + (STATUS_X[x.status] || x.status) + '] ' + x.name + ' ' + d);
-          expList.appendChild(line);
-        });
+        // 舊版宿主不會即時通知：沒有收到任何即時結果時，結束後一次補上
+        if (!live) (res.results || []).forEach(addResult);
+        expStat.textContent = '擷取完成：' + countText() + (cnt.failed ? '（失敗的列在下面）' : '');
         render();
       }, function (e) { xBtn.disabled = false; xCancel.disabled = true; expStat.textContent = '擷取出錯：' + String((e && e.message) || e); });
     };
