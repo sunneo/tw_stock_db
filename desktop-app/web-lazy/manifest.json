@@ -2106,16 +2106,16 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 36825,
-   "md5": "84a88facff969c4c33a031b0d7b3840f"
+   "size": 37291,
+   "md5": "2bdde18e2014fa5fbe95a7d032399471"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 44157,
-   "md5": "8a20e46ddcaabae066d4211cfbfb6f7b"
+   "size": 44656,
+   "md5": "594554ebd597b2fe2f07ca79fdb798ec"
   }
  },
  "core": {
