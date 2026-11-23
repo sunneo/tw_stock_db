@@ -34,13 +34,15 @@ function makeDom(pickIndexes) {
 function makeSandbox(opts) {
   var sandbox = { console: { log: function () {} }, setTimeout: setTimeout, clearTimeout: clearTimeout, btoa: btoa, atob: atob, Promise: Promise };
   sandbox.window = sandbox;
+  var store = opts.store || {};
+  if (!opts.noStorage) sandbox.localStorage = { getItem: function (k) { return k in store ? store[k] : null; }, setItem: function (k, v) { store[k] = String(v); } };
   var doc = makeDom(opts.pick || []);
   var origAppend = doc.body.appendChild;
   doc.body.appendChild = function (e) { origAppend.call(doc.body, e); if (e.__overlay && !opts.noAuto) setTimeout(function () { doc.__pick(e); }, 0); };
   sandbox.document = doc;
   if (opts.desktop !== false) {
     sandbox.desktopAPI = {
-      roots: { browse: async function () { return opts.folder; } },
+      roots: { browse: async function (start) { (sandbox.__starts = sandbox.__starts || []).push(start); return opts.folder; } },
       rawfs: {
         readdir: async function () { return opts.list || []; },
         readFile: async function (p) { sandbox.__readPath = p; return { base64: '' }; },
@@ -100,6 +102,31 @@ t('isAbsPath：磁碟機、網路路徑、斜線開頭算完整；只有檔名�
   var env = makeSandbox({ folder: 'D:\\x' });
   ['C:\\a\\b.nes', 'C:/a/b.nes', '\\\\srv\\share\\b.nes', '/home/a.nes'].forEach(function (p) { assert.ok(env.H.isAbsPath(p), p); });
   ['NinjaRyuKenDen.nes', 'a\\b.nes', './b.nes', '', null].forEach(function (p) { assert.ok(!env.H.isAbsPath(p), String(p)); });
+});
+
+
+t('記住上一次的位置：加檔案選過的資料夾，下次（加檔案或加資料夾）的瀏覽器從那裡開始；第一次沒有記錄就用預設起點', async function () {
+  var store = {};
+  var env = makeSandbox({ folder: 'D:\games\nes', list: LIST, pick: [0], store: store });
+  await env.H.pickFiles();
+  assert.deepStrictEqual(env.sandbox.__starts, [undefined], '第一次沒有記錄');
+  assert.strictEqual(Object.keys(store).length, 1, '有存下來');
+  var env2 = makeSandbox({ folder: 'D:\other', list: LIST, pick: [0], store: store });
+  await env2.H.pickFiles();
+  assert.deepStrictEqual(env2.sandbox.__starts, ['D:\games\nes'], '第二次從上次的資料夾開始');
+  var env3 = makeSandbox({ folder: 'D:\\x', list: [], store: store });
+  await env3.H.pickFolder();
+  assert.deepStrictEqual(env3.sandbox.__starts, ['D:\other'], '加資料夾也從最近一次開始');
+});
+
+t('取消不覆蓋記錄；localStorage 不能用（無痕視窗）時照常運作、只是記不住', async function () {
+  var store = { 'fa.musiclib.lastDir': 'D:\keep' };
+  var env = makeSandbox({ folder: null, list: LIST, store: store });
+  await env.H.pickFiles();
+  assert.strictEqual(store['fa.musiclib.lastDir'], 'D:\keep');
+  var env2 = makeSandbox({ folder: 'D:\games\nes', list: LIST, pick: [0], noStorage: true });
+  var src = await env2.H.pickFiles();
+  assert.ok(src && src.entries.length === 1, '沒有 localStorage 也能選檔');
 });
 
 (async function () {
