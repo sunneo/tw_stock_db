@@ -130175,11 +130175,6 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             value: { id, filename, mimeType: mimeType || blob.type, sizeBytes: blob.size },
             enumerable: false, configurable: true,
         });
-        // MIDI 檔另外放成播放卡片：斜線指令（/media-midi 等）的「對話中的檔案」只認播放卡片與編輯器，認不得下載卡片，
-        // 只有下載連結的話，使用者輸入指令會看到清單裡沒有剛產生的檔案。讀不懂的 MIDI 就只留下載連結。
-        if (/\.midi?$/i.test(filename) && typeof FaMidi !== 'undefined') {
-            try { const song = FaMidi.parse(new Uint8Array(await blob.arrayBuffer())); this._midiPushCard(song, filename.replace(/\.[^.]+$/, ''), '🎹 這個 MIDI 也放成播放卡片：可以試聽、轉成 mp3、用 /media-midi 處理，或在指令裡選「對話中的」這一首。'); } catch (_) { /* 讀不懂就只留下載連結 */ }
-        }
         this._persistChatHistory();
         this._renderMessageHistory();
         return { id, filename };
