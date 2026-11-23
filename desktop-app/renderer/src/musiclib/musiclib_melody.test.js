@@ -136,7 +136,7 @@ t('索引：建好的跳過；檔案變了重建；暫時性失敗重試後成�
   };
   var events = [];
   var sum = await MM.runMelodyIndex(recs, { extract: extract, save: async function (r) { saved.push(r.key); }, onEvent: function (e) { events.push(e); }, sleep: function () { return Promise.resolve(); } });
-  assert.deepEqual(sum, { done: 3, skipped: 0, failed: 1, cancelled: 0 });
+  assert.deepEqual(sum, { done: 3, skipped: 0, failed: 1, cancelled: 0, rebuilt: 0 });
   assert.equal(recs[1].melody.status, 'failed');
   assert.ok(/解碼失敗/.test(recs[1].melody.reason));
   assert.equal(calls.bad, 1, '永久失敗不重試');
@@ -168,6 +168,144 @@ t('索引：取消後剩下的不跑；暫停等待由呼叫端控制', async fu
     waitIfPaused: async function () { paused++; }
   });
   assert.equal(paused, 1, '每首開始前都會呼叫暫停等待');
+});
+
+// ───── v2：每軌旋律線、重複音合併、離群音、粗輪廓、多線命中、索引版本、合成資料校準 ─────
+// 三軌合成曲：主旋律（隨機游走，步進式，最像真的旋律）、高音琶音（主旋律上方和弦音）、低音（慢）。游走比均勻隨機更難分，較接近真實旋律。
+function walkMelody(r, n) {
+  var out = [], p = 60 + Math.floor(r() * 12), t = 0;
+  for (var i = 0; i < n; i++) {
+    var x = r(), step = x < 0.75 ? Math.floor(r() * 9) - 4 : Math.floor(r() * 15) - 7;
+    p = Math.max(52, Math.min(81, p + step));
+    var d = [0.25, 0.25, 0.5, 0.375][Math.floor(r() * 4)];
+    out.push({ t: t, d: d, n: p }); t += d;
+  }
+  return out;
+}
+function songSet(r, n) {
+  var mel = walkMelody(r, n), arp = [], bass = [];
+  mel.forEach(function (x) { for (var k = 0; k < 2; k++) arp.push({ t: x.t + k * x.d / 2, d: x.d / 2, n: Math.min(100, x.n + 12 + [0, 4, 7, 12][Math.floor(r() * 4)]) }); });
+  for (var b = 0; b < mel[mel.length - 1].t + 0.5; b += 1) bass.push({ t: b, d: 0.9, n: 36 + Math.floor(r() * 5) * 2 });
+  return { mel: mel, tracks: [mel, arp, bass] };
+}
+// 哼歌變形（相對於片段）：每個音 20% 機率錯 ±1 半音；丟 1–2 個音；多 1 個音；音長抖動 ±15%；整體拉伸 1.2 倍；可選：尾端離群音 +24、一個音拆成兩段重複音
+function humVariant(r, seg, o) {
+  o = o || {};
+  var out = [], drop = o.drop == null ? 2 : o.drop, dropSet = {}, extra = Math.floor(r() * seg.length);
+  for (var q = 0; q < drop; q++) dropSet[Math.floor(r() * seg.length)] = true;
+  seg.forEach(function (x, i) {
+    if (dropSet[i]) return;
+    var n = x.n + (o.wrong === false ? 0 : (r() < 0.2 ? (r() < 0.5 ? -1 : 1) : 0));
+    var jit = o.noJitter ? 1 : 1 + (r() - 0.5) * 0.3;
+    out.push({ t: x.t * 1.2, d: x.d * 1.2 * jit, n: n });
+    if (o.split && i === 3) { out[out.length - 1].d /= 2; out.push({ t: (x.t + x.d / 2) * 1.2, d: x.d * 1.2 / 2 * 0.95, n: n }); }
+    if (i === extra && o.extra !== false) out.push({ t: (x.t + x.d * 0.5) * 1.2, d: x.d * 0.6, n: n + (r() < 0.5 ? 3 : -3) });
+  });
+  if (o.outlier) { var last = out[out.length - 1]; out.push({ t: last.t + last.d + 0.1, d: 0.3, n: last.n + 24 }); }
+  return out;
+}
+function songOf(list) {
+  return { ppq: 480, tempos: [{ t: 0, bpm: 120 }], tracks: list.map(function (x, i) {
+    return { name: x.name || ('T' + i), channel: x.channel == null ? i : x.channel, drum: !!x.drum,
+      notes: x.notes.map(function (n) { return { t: Math.round(n.t * 960), d: Math.max(1, Math.round(n.d * 960)), n: n.n, v: 90 }; }) };
+  }) };
+}
+function linesOf(key, name, song) {
+  var L = MM.songLines(song);
+  return { key: key, name: name, lines: [{ label: '合併', contour: MM.contourOf(L.mix) }].concat(L.tracks.map(function (x) { return { label: '頻道 ' + x.channel, contour: x.contour }; })) };
+}
+
+t('重複音合併：同音高、空隔小於 0.05 秒的連續音併成一個；空隔較大或音高不同不併', function () {
+  var out = MM.melodyNotes([{ t: 0, d: 0.25, n: 60 }, { t: 0.26, d: 0.2, n: 60 }, { t: 0.7, d: 0.2, n: 60 }, { t: 1.0, d: 0.2, n: 62 }]);
+  assert.deepEqual(out.map(function (x) { return x.n; }), [60, 60, 62], '前兩個 60 併成一個，第三個 60 空隔 0.24 秒不併');
+  assert.ok(Math.abs(out[0].d - 0.46) < 1e-9, '併起來的長度蓋到第二個音的結尾：' + out[0].d);
+});
+
+t('離群音：查詢最前或最後一個音與鄰音相差 18 半音以上就丟掉；中間的大跳不丟', function () {
+  var base = makeMelody(61, 10);
+  var tail = base.concat([{ t: base[9].t + 0.5, d: 0.25, n: base[9].n + 24 }]);
+  var head = [{ t: -0.5, d: 0.25, n: base[0].n - 24 }].concat(base);
+  var mid = base.slice(0, 5).concat([{ t: base[4].t + 0.5, d: 0.25, n: base[4].n + 24 }], base.slice(5));
+  assert.equal(MM.dropOutliers(MM.melodyNotes(tail)).length, 10, '尾端離群丟掉');
+  assert.equal(MM.dropOutliers(MM.melodyNotes(head)).length, 10, '頭端離群丟掉');
+  assert.equal(MM.dropOutliers(MM.melodyNotes(mid)).length, 11, '中間的大跳不丟（可能是真的旋律）');
+});
+
+t('粗輪廓：音程分 7 級（持平 0、小 ±1、中 ±2、大 ±3；上下分開）', function () {
+  assert.deepEqual([0, 1, -2, 3, -5, 6, -12].map(MM.levelOf), [0, 1, -1, 2, -2, 3, -3]);
+});
+
+t('每軌旋律線：每個非鼓軌一條、帶 channel；鼓軌不算；音數少於 8 的軌略過；音程近乎相同的軌只留一條（八度複製）；最多 11 條軌線', function () {
+  var a = makeMelody(81, 30), short = makeMelody(82, 5);
+  var s = songOf([
+    { notes: a, channel: 0 },
+    { notes: a.map(function (x) { return { t: x.t, d: x.d, n: x.n + 12 }; }), channel: 1 },   // 八度複製：音程序列完全相同，只留第一條
+    { notes: short, channel: 2 },                                                                  // 少於 8 個音，略過
+    { notes: a, channel: 9, drum: true }                                                           // 鼓軌不算
+  ]);
+  var L = MM.songLines(s);
+  assert.deepEqual(L.tracks.map(function (x) { return x.channel; }), [0], '只剩第 0 軌');
+  assert.equal(L.tracks[0].notes.length > 0, true, '每軌帶音符（秒、音高）');
+  var many = []; for (var i = 0; i < 15; i++) many.push({ notes: makeMelody(100 + i, 20), channel: i });
+  assert.ok(MM.songLines(songOf(many)).tracks.length <= 11, '每首軌線最多 11 條（加上合併線共 12 條）');
+});
+
+t('多線命中：每首取所有線中最高分那條，回報命中的線（主旋律在頻道 0；合併線與其他軌不命中）', function () {
+  var r = rng(71), set = songSet(r, 40), others = songSet(rng(72), 40);
+  var ents = [linesOf('A', '目標', songOf([{ notes: set.tracks[0], channel: 0 }, { notes: set.tracks[1], channel: 3 }, { notes: set.tracks[2], channel: 4 }])),
+    linesOf('B', '別首', songOf([{ notes: others.tracks[0], channel: 0 }, { notes: others.tracks[1], channel: 3 }]))];
+  var q = humVariant(rng(73), set.mel.slice(5, 25), { drop: 1 });
+  var res = MM.searchMelody(q, ents);
+  assert.equal(res.results[0].key, 'A', '排第一的是目標');
+  assert.equal(res.results[0].hitLine, '頻道 0', '命中的是主旋律軌：' + res.results[0].hitLine);
+});
+
+t('索引格式版本：沒有版本或版本較舊的索引，下次建立時自動重建，並計入 rebuilt；版本相同的沿用', async function () {
+  var recs = [
+    { key: 'new', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', version: MM.INDEX_VERSION, contour: null, tracks: [] } },
+    { key: 'old', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', method: 'mid', contour: null } }
+  ];
+  var calls = [];
+  var sum = await MM.runMelodyIndex(recs, {
+    extract: async function (rec) { calls.push(rec.key); return { notes: makeMelody(3, 12), method: 'mid', tracks: [] }; },
+    sleep: function () { return Promise.resolve(); }
+  });
+  assert.deepEqual(calls, ['old'], '只有舊格式的那首重建');
+  assert.equal(sum.rebuilt, 1);
+  assert.equal(sum.skipped, 1);
+  assert.equal(recs[1].melody.version, MM.INDEX_VERSION, '重建後寫入新版本');
+});
+
+t('合成資料校準：6 首目標曲各 4 種哼歌變形（錯音、漏音、離群音、重複音拆分）＋ 20 首隨機對照，第一名命中目標的主旋律軌；印出分數分布', function () {
+  var r = rng(7), tg = [], dist = [], queries = [];
+  for (var i = 0; i < 6; i++) tg.push(songSet(r, 48 + i));
+  for (var j = 0; j < 20; j++) dist.push(songSet(r, 48 + j));
+  var ents = tg.map(function (s, k) { return linesOf('T' + k, 'T' + k, songOf([{ notes: s.tracks[0], channel: 0 }, { notes: s.tracks[1], channel: 3 }, { notes: s.tracks[2], channel: 4 }])); })
+    .concat(dist.map(function (s, k) { return linesOf('D' + k, 'D' + k, songOf([{ notes: s.tracks[0], channel: 0 }, { notes: s.tracks[1], channel: 3 }, { notes: s.tracks[2], channel: 4 }])); }));
+  tg.forEach(function (s, k) {
+    var seg = s.mel.slice(8, 30);
+    queries.push({ k: k, kind: '錯音（20% 機率 ±1）', q: humVariant(r, seg, { drop: 0, extra: false, noJitter: true }) });
+    queries.push({ k: k, kind: '漏 2 音＋音長抖動', q: humVariant(r, seg, { drop: 2, extra: false }) });
+    queries.push({ k: k, kind: '多 1 音＋尾端離群', q: humVariant(r, seg, { drop: 0, outlier: true, wrong: false }) });
+    queries.push({ k: k, kind: '重複音拆分＋拉伸 1.2 倍', q: humVariant(r, seg, { drop: 1, split: true }) });
+  });
+  var top1 = 0, tgtScores = [], distMax = [], distAll = [];
+  queries.forEach(function (x) {
+    var res = MM.searchMelody(x.q, ents, { minScore: 0, limit: 40 });
+    var ok = res.results[0].key === 'T' + x.k && res.results[0].hitLine === '頻道 0';
+    if (ok) top1++;
+    var tgtR = res.results.filter(function (y) { return y.key === 'T' + x.k; })[0];
+    tgtScores.push(tgtR ? tgtR.score : 0);
+    var ds = res.results.filter(function (y) { return y.key[0] === 'D'; }).map(function (y) { return y.score; });
+    distMax.push(ds.length ? Math.max.apply(null, ds) : 0);
+    distAll = distAll.concat(ds);
+  });
+  var avg = distAll.reduce(function (a, b) { return a + b; }, 0) / (distAll.length || 1);
+  var med = function (a) { var s = a.slice().sort(function (x, y) { return x - y; }); return s[s.length >> 1]; };
+  console.log('    校準：第一名正確 ' + top1 + '/' + queries.length + '；目標分數 中位數 ' + med(tgtScores).toFixed(3) + '、最低 ' + Math.min.apply(null, tgtScores).toFixed(3) +
+    '；對照每查詢最高分 中位數 ' + med(distMax).toFixed(3) + '、最高 ' + Math.max.apply(null, distMax).toFixed(3) + '；對照平均 ' + avg.toFixed(3));
+  assert.ok(top1 >= 18, '第一名正確應該至少 18/24（實測見上面的數字）：' + top1 + '/' + queries.length);
+  assert.ok(med(tgtScores) > med(distMax) + 0.05, '目標分數的中位數要明顯高於對照的最高分中位數');
 });
 
 // ───── 執行 ─────
