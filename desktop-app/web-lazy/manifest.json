@@ -1946,16 +1946,16 @@
    "names": [
     "FaMusicLibMelody"
    ],
-   "size": 9845,
-   "md5": "7f5e67cef8c12afd43932b0193c2ae3e"
+   "size": 10493,
+   "md5": "0be8671d940bc46fad62bdc2c2d68c81"
   },
   "mlaud": {
    "file": "chunks/mlaud.js",
    "names": [
     "FaMusicLibAudio"
    ],
-   "size": 2996,
-   "md5": "8eb010df06ee270b7ce1ca3199ae2a9e"
+   "size": 3243,
+   "md5": "de3dbdaf96f478fea81fa379155da256"
   },
   "mlrix": {
    "file": "chunks/mlrix.js",
@@ -2114,16 +2114,16 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 44315,
-   "md5": "74405c37f9461da29f079876a542117f"
+   "size": 44371,
+   "md5": "2841f3b4f34649220d091dbbb6dfca9a"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 49393,
-   "md5": "c36514f3e95f16cdaaf17a915e813e03"
+   "size": 49669,
+   "md5": "75f3daa6746c4041dd94f0e44234ac7c"
   }
  },
  "core": {
