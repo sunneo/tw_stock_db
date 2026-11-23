@@ -504,6 +504,26 @@ t('索引進度事件：每個事件帶第幾首（index）、共幾首（total�
   assert.equal(evs.filter(function (e) { return e.status === 'running'; }).map(function (e) { return e.index; }).join(','), '1,2,3');
 });
 
+
+t('強制重建：不管索引是不是最新都重做；新的做不出來就保留原本的索引並回報失敗原因', async function () {
+  var rec = { key: 'k1', name: 'a.mid', size: 1, mtimeMs: 1 };
+  var calls = 0;
+  await MM.runMelodyIndex([rec], { extract: async function () { calls++; return { notes: makeMelody(11, 12), method: 'mid' }; } });
+  assert.equal(calls, 1); var firstContour = rec.melody.contour;
+  await MM.runMelodyIndex([rec], { extract: async function () { calls++; return { notes: makeMelody(12, 12), method: 'mid' }; } });
+  assert.equal(calls, 1, '沒強制：最新的索引會被跳過');
+  var evs = [];
+  var sum = await MM.runMelodyIndex([rec], { force: true, onEvent: function (e) { evs.push(e); }, extract: async function () { calls++; return { notes: makeMelody(13, 12), method: 'mid' }; } });
+  assert.equal(calls, 2, '強制：重做'); assert.equal(sum.done, 1); assert.equal(sum.skipped, 0);
+  assert.notDeepEqual(rec.melody.contour, firstContour, '索引內容換成新的');
+  var good = rec.melody;
+  var evs2 = [];
+  var sum2 = await MM.runMelodyIndex([rec], { force: true, retries: 1, onEvent: function (e) { evs2.push(e); }, extract: async function () { throw new Error('解碼失敗：壞檔'); } });
+  assert.equal(sum2.failed, 1);
+  assert.strictEqual(rec.melody, good, '失敗時保留原本能用的索引');
+  assert.ok(evs2.some(function (e) { return e.status === 'failed' && /壞檔/.test(e.reason); }), '失敗事件帶原因');
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];

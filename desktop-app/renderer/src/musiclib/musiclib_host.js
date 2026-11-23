@@ -466,6 +466,7 @@ const FaMusicLibHost = (function () {
       save: async function () { if (++saveCount % 10 === 0) await L.save(); },
       onEvent: onEvent,
       isCancelled: function () { return melodyState.cancelled; },
+      force: !!batch.force,
       waitIfPaused: melodyGate
     });
     if (batch.keys) Object.keys(batch.keys).forEach(function (k) {
@@ -498,9 +499,9 @@ const FaMusicLibHost = (function () {
     return melodyRunLoop({ keys: null, onEvent: onEvent, useModel: useModel });
   }
   // 排入一批指定的影片記錄（YouTube 自動索引）：正在跑就併入佇列（回傳的 Promise 在它跑完時 resolve），否則立刻開始
-  function melodyQueueKeys(keyList, onEvent, useModel) {
+  function melodyQueueKeys(keyList, onEvent, useModel, force) {
     var keys = {}; keyList.forEach(function (k) { keys[k] = true; });
-    var batch = { keys: keys, onEvent: onEvent, useModel: !!useModel };
+    var batch = { keys: keys, onEvent: onEvent, useModel: !!useModel, force: !!force };
     if (melodyState.running) return new Promise(function (resolve, reject) { batch.resolve = resolve; batch.reject = reject; melodyPending.push(batch); });
     return melodyRunLoop(batch);
   }
@@ -574,6 +575,17 @@ const FaMusicLibHost = (function () {
 
   var MELODY_HOST = {
     buildIndex: buildMelodyIndex,
+    // 強制重建指定的幾首（不管索引是不是最新）：keyList＝曲目 key；做不出來的保留原本的索引。排進同一個索引佇列
+    rebuildKeys: function (keyList, onEvent, useModel) { return melodyQueueKeys(keyList, onEvent, useModel, true); },
+    // 選一個資料夾（資料夾瀏覽器，從上次的位置開始），回傳路徑與在這個資料夾底下（含子資料夾）的曲目 key；取消回傳 null
+    pickDirKeys: async function () {
+      if (!hasDesktopFs()) return null;
+      var p = await api().roots.browse(lastDir()); if (!p) return null; rememberDir(p);
+      var norm = function (x) { return String(x || '').replace(/\\/g, '/').toLowerCase(); }, base = norm(p).replace(/\/+$/, '') + '/';
+      var L = getLib(); await L.ready;
+      var keys = L.records.filter(function (r) { return norm(r.path).indexOf(base) === 0 && FaMusicLib.melodyEligible(r).ok; }).map(function (r) { return r.key; });
+      return { path: p, keys: keys };
+    },
     cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
     pauseIndex: function () { melodyState.paused = true; },
     resumeIndex: function () { melodyResume(); },

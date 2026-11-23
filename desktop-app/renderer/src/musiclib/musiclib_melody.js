@@ -346,10 +346,11 @@
       var rec = recs[i]; curIndex = i + 1; curName = rec.name;
       if (cancelled()) { summary.cancelled++; continue; }
       await wait();
-      if (rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
+      if (!opts.force && rec.melody && rec.melody.sig === sigOf(rec) && rec.melody.status === 'ok' && !isStaleFormat(rec)) { summary.skipped++; emit({ key: rec.key, status: 'skipped' }); continue; }
       var stale = isStaleFormat(rec);
+      var prevMelody = opts.force && rec.melody && rec.melody.status === 'ok' ? rec.melody : null;   // 強制重建：新的做不出來就保留原本能用的索引
       emit({ key: rec.key, status: 'running' });
-      var attempt = 0, done = false;
+      var attempt = 0, done = false, lastFailReason = null;
       for (;;) {
         attempt++;
         try {
@@ -362,7 +363,8 @@
           var msg = String((err && err.message) || err);
           if (cancelled()) break;
           if (TRANSIENT_RE.test(msg) && attempt < retries) { emit({ key: rec.key, status: 'retry', attempt: attempt, reason: msg }); await sleep(1000 * attempt); continue; }
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'failed', reason: msg };
+          rec.melody = prevMelody || { sig: sigOf(rec), version: INDEX_VERSION, status: 'failed', reason: msg };
+          if (prevMelody) lastFailReason = msg;
           break;
         }
       }
@@ -370,7 +372,7 @@
       if (stale) summary.rebuilt++;
       if (opts.save) await opts.save(rec);
       if (done) { summary.done++; emit({ key: rec.key, status: 'done', method: rec.melody.method }); }
-      else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: rec.melody.reason }); }
+      else { summary.failed++; emit({ key: rec.key, status: 'failed', reason: lastFailReason || rec.melody.reason }); }
     }
     return summary;
   }

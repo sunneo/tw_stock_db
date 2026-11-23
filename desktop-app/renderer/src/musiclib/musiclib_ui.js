@@ -234,6 +234,9 @@
     var MEL = host.melody || null, melHum = null, melFound = null;
     var idxBox = h('div', 'fml-bar');
     var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
+    var mForceSel = h('button', null, '強制重建勾選的'), mForceDir = h('button', null, '強制重建資料夾…');
+    mForceSel.title = '先在主畫面清單勾選曲目，再按這裡：不管索引是不是最新都重做；做不出來的保留原本的索引';
+    mForceDir.title = '選一個資料夾：底下（含子資料夾）所有可建索引的曲目都重做；做不出來的保留原本的索引';
     var idxStat = h('span', 'fml-st');
     var idxInfo = h('div', 'fml-foot');
     var idxBar = h('progress'); idxBar.max = 1; idxBar.value = 0; idxBar.style.cssText = 'width:100%;max-width:420px;display:none;vertical-align:middle';
@@ -248,8 +251,8 @@
     }
     var mModelIdx = bpCheckbox();
     var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
-    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
-    if (!MEL) { [mIdx, mModelIdx].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
+    idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
+    if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
     tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
 
@@ -685,6 +688,26 @@
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; renderWork();
         idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; idxStatus(M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melRunning = false; idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; renderWork(); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
+    };
+    // 強制重建：指定的幾首（勾選的，或某個資料夾底下的）不管索引是不是最新都重做；排進同一個索引佇列
+    function forceBusy(on) { mIdx.disabled = on; mForceSel.disabled = on; mForceDir.disabled = on; mPause.disabled = !on; mIdxCancel.disabled = !on; melRunning = on; if (!on) { idxBar.style.display = 'none'; idxName.style.display = 'none'; melProg = ''; } renderWork(); }
+    function runForce(keys, what) {
+      if (!MEL) return;
+      if (MEL.indexState().running) { idxStatus('旋律索引正在建立中，請等它跑完或先取消'); return; }
+      if (!keys.length) { idxStatus('旋律索引：' + what + '沒有可建索引的曲目（遊戲來源檔、已消失的檔案不建索引）'); return; }
+      forceBusy(true); idxStatus('旋律索引：強制重建 ' + keys.length + ' 首（' + what + '）…');
+      MEL.rebuildKeys(keys, idxLine, mModelIdx.checked).then(function (sum) {
+        forceBusy(false); idxStatus('強制重建完成（' + what + '）：' + M.describeMelodySummary(sum, sum.groups || {})); refreshIdxInfo();
+      }, function (e) { forceBusy(false); idxStatus('旋律索引出錯：' + String((e && e.message) || e)); refreshIdxInfo(); });
+    }
+    mForceSel.onclick = function () {
+      var picked = Object.keys(sel), keys = lib.records.filter(function (r) { return sel[r.key] && M.melodyEligible(r).ok; }).map(function (r) { return r.key; });
+      if (!picked.length) { idxStatus('旋律索引：主畫面清單還沒有勾選任何曲目；先勾選要重做的，再按「強制重建勾選的」'); return; }
+      runForce(keys, '勾選的 ' + picked.length + ' 首中可建索引的');
+    };
+    mForceDir.onclick = function () {
+      if (!MEL || !MEL.pickDirKeys) return;
+      MEL.pickDirKeys().then(function (r) { if (r) runForce(r.keys, '資料夾 ' + r.path); }, function (e) { idxStatus('選資料夾失敗：' + String((e && e.message) || e)); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; idxStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; idxStatus('旋律索引：續跑'); } };
     mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); idxStatus('旋律索引：取消中…'); };
