@@ -1954,8 +1954,8 @@
    "names": [
     "FaMusicLibAudio"
    ],
-   "size": 2324,
-   "md5": "012b3a354d95dcb5a23404029374e8bf"
+   "size": 2996,
+   "md5": "8eb010df06ee270b7ce1ca3199ae2a9e"
   },
   "mlrix": {
    "file": "chunks/mlrix.js",
@@ -2114,16 +2114,16 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 44290,
-   "md5": "f61d67c34a051835a7b4516d8ebb62c6"
+   "size": 44315,
+   "md5": "74405c37f9461da29f079876a542117f"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 49182,
-   "md5": "82363826670d3b62ce79c023c048d629"
+   "size": 49393,
+   "md5": "c36514f3e95f16cdaaf17a915e813e03"
   }
  },
  "core": {

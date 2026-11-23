@@ -84772,7 +84772,23 @@ const holder = {};
       var vs = notes.map(function (x) { return x.v; }).sort(function (x, y) { return x - y; }), med = vs[vs.length >> 1];
       notes = notes.filter(function (x) { return x.v >= med * 0.5; });
     }
-    return { notes: notes, gate: gate, ref: ref };
+    // 後處理：人哼的旋律不會跨很大的音域。以中位音高為準：離中位 13 半音以上多半是低頻底噪／誤判，丟掉；
+    // 9～12 半音多半是掉了／多了一個八度，折回來；孤立（兩側音高都差 3 半音以上）又很短（< 0.15 秒）的碎音丟掉。
+    var dropped = { far: 0, folded: 0, blip: 0 };
+    if (notes.length >= 4) {
+      var ps0 = notes.map(function (x) { return x.n; }).sort(function (x, y) { return x - y; }), md = ps0[ps0.length >> 1];
+      notes = notes.filter(function (x) { return Math.abs(x.n - md) < 13 || (dropped.far++, false); }).map(function (x) {
+        var df = x.n - md; if (Math.abs(df) >= 9) { dropped.folded++; return Object.assign({}, x, { n: x.n - 12 * Math.sign(df) }); } return x;
+      });
+      notes = notes.filter(function (x, i) {
+        var pv = notes[i - 1], nx = notes[i + 1];
+        var blip = x.d < 0.15 && (!pv || Math.abs(x.n - pv.n) >= 3) && (!nx || Math.abs(x.n - nx.n) >= 3);
+        if (blip) dropped.blip++; return !blip;
+      });
+    }
+    var tot = orig.length, vOrig = 0, vKept = 0; for (var q = 0; q < tot; q++) { if (orig[q]) vOrig++; if (tr.voiced[q]) vKept++; }
+    var ps = notes.map(function (x) { return x.n; });
+    return { notes: notes, gate: gate, ref: ref, frames: tot, voicedRaw: vOrig, voicedKept: vKept, lo: ps.length ? Math.min.apply(null, ps) : null, hi: ps.length ? Math.max.apply(null, ps) : null, dropped: dropped };
   }
 
   return { humNotes: humNotes, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
@@ -103441,7 +103457,7 @@ const holder = {};
     bHum.onclick = function () { setHum(!humOn); };
     var melBlob = null, melMethod = '';
     function hStatus(s) { hStat.textContent = s; }
-    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; hStatus('哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'); }
+    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; hStatus('哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）' + (r.diag ? '　' + r.diag : '')); }
     mRec.onclick = function () {
       if (!MEL) return; mRec.disabled = true; hStatus('錄音中（8 秒）…');
       var blobNow = null;
@@ -104028,7 +104044,8 @@ const FaMusicLibHost = (function () {
     if (!useModel && typeof FaAudioToMidi !== 'undefined') {
       // 哼歌專用路徑：先消雜音（音量門檻、去衰減尾）再轉音符，不跑鼓／貝斯分離
       var hn = FaMusicLibAudio.humNotes({ channels: chansOf(buf), sampleRate: buf.sampleRate }, { AudioToMidi: FaAudioToMidi });
-      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音' };
+      return { notes: hn.notes.map(function (x) { return { t: x.t, d: x.d, n: x.n, v: x.v }; }), method: FaMusicLibAudio.METHOD_PITCH + '，已消雜音',
+        diag: '音量基準 ' + hn.ref.toFixed(3) + '、門檻 ' + hn.gate.toFixed(3) + '；有音高的幀 ' + hn.voicedRaw + '→消雜音後 ' + hn.voicedKept + '／共 ' + hn.frames + '；音域 ' + (hn.lo == null ? '無' : hn.lo + '–' + hn.hi) };
     }
     var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
