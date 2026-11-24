@@ -1712,10 +1712,10 @@ select:focus { outline: 2px solid var(--acc); }
         放進 window.__FA_PREFETCH；沒有預抓到的區塊照舊由核心同步載入（行為不變）。
      3. preconnect／preload 讓核心下載在這段 script 執行前就開始。 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@2de84dc3c8dc89f0a6e586344dc126d31ecfd646/desktop-app/web-lazy/core.js">
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@4b1cdbb2cd174d9652fcb2d78aafb3e09cf03ba8/desktop-app/web-lazy/core.js">
 <script>
 (function () {
-  var SHA = '2de84dc3c8dc89f0a6e586344dc126d31ecfd646';
+  var SHA = '4b1cdbb2cd174d9652fcb2d78aafb3e09cf03ba8';
   var JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + SHA + '/desktop-app/web-lazy/';
   var RAWB = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + SHA + '/desktop-app/web-lazy/';
   var TIMEOUT_MS = 8000;
@@ -9123,6 +9123,22 @@ function registerAiCapabilities(ai) {
   }
 }
 
+// 台股量化工具包（市場廣度、上升趨勢比例、跟進日、出貨日、VCP粗篩、部位試算）：只有這個台股網頁的AI帶它，
+// 桌面版與其他頁面的一般AI不內建（使用者 2026-11-24：「不是啟用 不要內建，只有台股頁面ai內建」）。
+// 技能全文放在這個網站自己的 web/skills/tw-trading/SKILL.md（同網站、同來源），背景載入，
+// 載到才登記成領域；載不到只在主控台警告，不影響其他功能。
+function registerTwTradingDomain(ai) {
+  if (!ai || typeof ai.register_domain !== 'function') return;
+  fetch('skills/tw-trading/SKILL.md').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }).then(text => {
+    ai.register_domain('tw_trading', {
+      label: '台股量化工具包（市場廣度、上升趨勢比例、跟進日與反彈、出貨日計數、VCP粗篩、部位試算；教學用途）',
+      category: 'host_app',
+      toolNames: ['list_uploaded_files', 'list_file_access_points', 'fap_list_files', 'fap_read_file', 'python_execute'],
+      systemPrompt: text,
+    });
+  }).catch(e => console.warn('[台股量化工具包] 技能全文載入失敗，這次的AI沒有這個技能：' + ((e && e.message) || e)));
+}
+
 // 把 AI_CAPABILITIES 灌進 <head> 那段 JSON-LD（給只解析結構化資料、不解析
 // HTML註解的外部AI用），不含 handler 函式本體（函式無法序列化，且外部AI
 // 本來就該透過內嵌AI分頁或 window.AI_CAPABILITIES 呼叫，不是自己反序列化
@@ -13750,6 +13766,7 @@ async function renderAiTab() {
     // 這個選項。
   }).setSystemPrompt(AI_SYSTEM_PROMPT);
   registerAiCapabilities(aiConsoleInstance);
+  registerTwTradingDomain(aiConsoleInstance);
   registerAiSlashCommands(aiConsoleInstance);
   aiConsoleInstance.toggleWindow();
 }
