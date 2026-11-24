@@ -1930,8 +1930,8 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 34973,
-   "md5": "0febb5b79ee6514ed14ab7fe675d4499"
+   "size": 35217,
+   "md5": "ef31eb016ed9cbf8fd655ea5f96bb84d"
   },
   "mlmd5": {
    "file": "chunks/mlmd5.js",
@@ -2122,8 +2122,8 @@
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 50812,
-   "md5": "435fcc89d746f90117c51ba954e0ca97"
+   "size": 50987,
+   "md5": "19d98cecfc18981a730d8c0d8a54ad56"
   }
  },
  "core": {

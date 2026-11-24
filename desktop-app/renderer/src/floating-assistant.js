@@ -83735,6 +83735,9 @@ const holder = {};
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
+  // 其他常見的音訊／影片副檔名：同一條解碼路線（瀏覽器原生解碼；這台機器解不開的格式會在「解碼」階段明講原因，不是一開始就說不支援）
+  ['flac', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'wma', 'aif', 'aiff', 'aifc', 'weba', 'amr', 'caf', 'ac3', 'mka', 'mp2', 'ape', 'wv'].forEach(function (e) { SOURCE_CLASS[e] = 'audio'; });
+  ['mkv', 'avi', 'flv', 'wmv', '3gp', 'ts', 'mpg', 'mpeg', 'ogv'].forEach(function (e) { SOURCE_CLASS[e] = 'video'; });
   var ROM_EXT = {};
   var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1, pce: 1, sfc: 1, smc: 1 };
 
@@ -104851,7 +104854,10 @@ const FaMusicLibHost = (function () {
   };
 
   var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, md5: MD5_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
-    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
+    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); },
+    // 批次輸出（mp3／mid，含音訊轉 mid）與取消、YouTube 網址提示：面板用的是這個物件，漏掉就會顯示「批次輸出不可用（需要桌面版）」
+    exportBatch: function (recs, o) { return exportBatch(recs, o); }, cancelExport: function () { exportCancelled = true; },
+    youtubeInputNote: function (text) { return FaMusicLibYoutube.inputNote(FaMusicLibYoutube.parseInput(text)); } };
 
   var methods = {
     _mlLib() { return getLib(); },
