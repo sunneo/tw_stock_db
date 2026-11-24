@@ -1712,10 +1712,10 @@ select:focus { outline: 2px solid var(--acc); }
         放進 window.__FA_PREFETCH；沒有預抓到的區塊照舊由核心同步載入（行為不變）。
      3. preconnect／preload 讓核心下載在這段 script 執行前就開始。 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@e54ca85d524085a387189d84abdb7560a1dd9333/desktop-app/web-lazy/core.js">
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@178b57cde5e5290daf7f494935f5345a1641c79d/desktop-app/web-lazy/core.js">
 <script>
 (function () {
-  var SHA = 'e54ca85d524085a387189d84abdb7560a1dd9333';
+  var SHA = '178b57cde5e5290daf7f494935f5345a1641c79d';
   var JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + SHA + '/desktop-app/web-lazy/';
   var RAWB = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + SHA + '/desktop-app/web-lazy/';
   var TIMEOUT_MS = 8000;
@@ -4580,6 +4580,20 @@ const DBMgr = (() => {
     getStockInfo, getPriceHistory, getBatchSparklines, getBatchIntradaySeries,
     getMarketIndexHistory, getMarketIndexLatest, getMarketIndexPrevClose,
     getLatestDate, hasDailyRow, upsertLiveDailyRow,
+    // 整批匯出本機資料庫的表（給AI用python_execute批次計算，例如台股量化工具包的市場廣度）：只開白名單表、只讀。
+    // days＝最近N個交易日（依該表自己的日期欄位）；indexCode只對market_index有效。
+    exportRows(table, { days = 70, indexCode = '' } = {}) {
+      if (!db) return [];
+      const dayN = Math.max(1, Math.min(750, Math.floor(Number(days)) || 70));
+      if (table === 'stocks') return query('SELECT * FROM stocks');
+      if (['daily_prices', 'technical_indicators', 'market_index'].indexOf(table) < 0) return [];
+      const where = (table === 'market_index' && indexCode) ? 'AND index_code = ?' : '';
+      const idx = (table === 'market_index' && indexCode) ? ' WHERE index_code = ?' : '';
+      const sinceParams = (table === 'market_index' && indexCode) ? [String(indexCode), dayN] : [dayN];
+      const since = query(`SELECT MIN(trade_date) AS d FROM (SELECT DISTINCT trade_date FROM ${table}${idx} ORDER BY trade_date DESC LIMIT ?)`, sinceParams);
+      if (!since.length || !since[0].d) return [];
+      return query(`SELECT * FROM ${table} WHERE trade_date >= ? ${where} ORDER BY trade_date, ${table === 'market_index' ? 'index_code' : 'stock_code'}`, [since[0].d].concat(where ? [String(indexCode)] : []));
+    },
     isReady: () => !!db,
   };
 })();
@@ -8513,6 +8527,29 @@ const AI_CAPABILITIES = [
     handler: async () => { await DBMgr.syncDaily(() => {}, false); return { ok: true, latestDate: DBMgr.getLatestDate() }; },
   },
   {
+    name: 'export_table_jsonl', category: '資料庫',
+    description: '把本機資料庫的整張表（最近N個交易日）匯出成JSONL檔，存進persistentStorage回傳file_id，**不把資料列塞進對話**。給需要「全市場、多日」資料的批次計算用（市場廣度、上升趨勢比例、出貨日…）：拿到file_id後，用python_execute的attachment_files參數（例如 {"daily_prices.jsonl":"<file_id>"}）把檔案放進工作目錄，再用Python讀 /work/<檔名>（完整路徑，工作目錄不是 /work；每行一個JSON物件）。可匯出的表：daily_prices（stock_code,trade_date,open,high,low,close,volume）、technical_indicators（ma5/10/20/60、KD、MACD、RSI、ma_alignment、rs_rating…）、market_index（index_code,trade_date,OHLCV；index_code例如TAIEX）、stocks（股票基本資料含market、sector_id）。',
+    params: { table: '必填：daily_prices｜technical_indicators｜market_index｜stocks', days: '選填，最近幾個交易日，預設70，最多750（stocks不分日期）', index_code: '選填，只對market_index有效，例如TAIEX' },
+    handler: async (a) => {
+      const table = String(a.table || '');
+      if (['daily_prices', 'technical_indicators', 'market_index', 'stocks'].indexOf(table) < 0) return { ok: false, error: 'table必須是 daily_prices、technical_indicators、market_index、stocks 其中之一' };
+      const days = aiClampInt(a.days, 70, 1, 750);
+      // 要的天數可能超過目前載入的月份：多載幾個月（已載入的月份不會重抓）；失敗不擋匯出，照現有資料匯出並在回傳註明
+      let loadNote = '';
+      if (table !== 'stocks') {
+        try { await DBMgr.ensureRecentMonths(Math.min(27, Math.ceil(days / 20) + 1)); } catch (e) { loadNote = `（補載較早月份失敗：${e && e.message || e}，只用目前已載入的資料）`; }
+      }
+      const rows = DBMgr.exportRows(table, { days, indexCode: a.index_code });
+      if (!rows.length) return { ok: false, error: `${table} 沒有資料列${a.index_code ? '（index_code=' + a.index_code + '）' : ''}，本機資料庫可能還沒載入（先呼叫ensure_data_loaded）` };
+      const text = rows.map(r => JSON.stringify(r)).join('\n') + '\n';
+      const blob = new Blob([text], { type: 'application/x-ndjson' });
+      const filename = `${table}${a.index_code ? '_' + a.index_code : ''}_last${days}d.jsonl`;
+      const fileId = await aiConsoleInstance.fileCache.put(filename, 'application/x-ndjson', blob, 'uploaded');
+      const dates = table === 'stocks' ? null : { from: rows[0].trade_date, to: rows[rows.length - 1].trade_date, distinct: new Set(rows.map(r => r.trade_date)).size };
+      return { ok: true, file_id: fileId, filename, rows: rows.length, sizeBytes: blob.size, dates, note: `已存成JSONL（每行一列資料）。用python_execute的attachment_files: {"${filename}":"${fileId}"} 放進工作目錄，再逐行json.loads讀取；檔案在 /work/${filename}（工作目錄不是 /work，要用完整路徑）。${loadNote}` };
+    },
+  },
+  {
     name: 'select_stock', category: 'UI操作',
     description: '在網頁上選取某檔股票（等同使用者從清單點選），會連動更新圖表/持股診斷等分頁內容。',
     params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
@@ -9133,9 +9170,28 @@ function registerTwTradingDomain(ai) {
     ai.register_domain('tw_trading', {
       label: '台股量化工具包（市場廣度、上升趨勢比例、跟進日與反彈、出貨日計數、VCP粗篩、部位試算；教學用途）',
       category: 'host_app',
-      toolNames: ['list_uploaded_files', 'list_file_access_points', 'fap_list_files', 'fap_read_file', 'python_execute'],
+      // 工具數要 ≤ 20：超過時引擎會依任務文字只留「最相關」的幾個，python_execute 跟「大盤廣度」字面不相關就被濾掉，
+      // 模型才會說「python_execute 無法使用」（實測）。所以只列這個技能真的會用到的：資料匯出、Python 計算、單檔K線、大盤指數、
+      // 以及 delegate_to_subagent（要用其他技能／領域時由它叫用，不整批繼承 100 多個工具）。
+      toolNames: ['export_table_jsonl', 'python_execute', 'get_price_history', 'get_market_index_history', 'get_market_index_latest', 'diagnose_market', 'get_stock_info', 'get_current_datetime', 'ensure_data_loaded', 'list_uploaded_files', 'list_file_access_points', 'fap_list_files', 'fap_read_file', 'delegate_to_subagent'],
       systemPrompt: text,
     });
+    // 斜線指令：直接把整個工作交給這個領域（跳過主助理自己判斷要不要委派；寫法同桌面版 /media-presentation）
+    ai.register_slash_command('/tw-trading', '<問題：大盤廣度、上升趨勢比例、跟進日、出貨日、VCP、部位試算…>',
+      '台股量化工具包（教學用途，不構成投資建議），例如 /tw-trading 看今天大盤廣度、/tw-trading 資金100萬、買進50、停損46、風險1%，該買幾張',
+      async (argsText, run) => {
+        const me = run || ai;
+        const q = String(argsText || '').trim();
+        me.messages.push({ role: 'user', content: '/tw-trading' + (q ? ' ' + q : '') });
+        me._renderMessageHistory();
+        if (!q) {
+          me._pushAssistantMessage('用法：/tw-trading <問題>\n例如：\n- /tw-trading 看今天大盤廣度\n- /tw-trading 大盤現在有沒有出貨日\n- /tw-trading 資金100萬、買進價50、停損價46、單筆風險1%，該買幾張', null);
+        } else {
+          const r = await me._delegateToSubagentDomain('tw_trading', q);
+          me._pushAssistantMessage(r.ok ? (r.result || r.note || '（沒有內容）') : '⚠️ 委派給「台股量化工具包」失敗：' + r.error, null);
+        }
+        me._persistChatHistory(); me._renderMessageHistory();
+      });
   }).catch(e => console.warn('[台股量化工具包] 技能全文載入失敗，這次的AI沒有這個技能：' + ((e && e.message) || e)));
 }
 
