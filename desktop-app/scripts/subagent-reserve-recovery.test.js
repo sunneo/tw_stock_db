@@ -30,5 +30,13 @@ assert.deepStrictEqual(f('', ['python_execute'], []), []);
 
 // 接線檢查：最終回覆路徑真的呼叫它，而且有次數上限
 assert.ok(/reserveRecoveries < 2 \? this\._reserveRecoveryTools\(finalText, options\.focusReserve, allowedToolNames\)/.test(src), '最終回覆路徑沒有接上備用區補救（或沒有次數上限）');
+// python_execute 接受 code／source／python 當 script 的別名（同 bash_execute）
+const pyStart = src.indexOf("registerOptional('python_execute',");
+assert.ok(pyStart > 0, '找不到 python_execute 註冊');
+const pyBody = src.slice(pyStart, src.indexOf('let inputFiles;', pyStart));
+assert.ok(/parsed\.script \|\| parsed\.code \|\| parsed\.source \|\| parsed\.python/.test(pyBody), 'python_execute 沒有接受 code 別名');
+// 自動追加：領域自己的備用區工具，高風險名單也放行（領域本來就授權）
+assert.ok(/const inReserve = Array\.isArray\(options\.focusReserve\) && options\.focusReserve\.indexOf\(fnName\) >= 0;/.test(src) && /\(!inReserve && \/\^\(run_command\|bash_execute\|python_execute/.test(src), '自動追加沒有備用區例外');
+
 console.log('ok - 備用區補救：說備用區工具不能用就補進；已在名單、沒提名稱、沒備用區都不亂補；已接線且最多兩次');
 console.log('1 項通過');

@@ -112321,7 +112321,8 @@ ${fnData.code}
             async function (rawArgs) {
                 let parsed = {};
                 try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
-                const script = String(parsed.script || '');
+                // 弱模型常把程式碼放在 code／source／python（bash_execute 早就接受這些別名；2026-11-25 台股技能實測 python_execute 因此第一次失敗）
+                const script = String(parsed.script || parsed.code || parsed.source || parsed.python || '');
                 if (!script.trim()) return JSON.stringify({ ok: false, error: '缺少script參數' });
                 let inputFiles;
                 try {
@@ -161908,9 +161909,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 結果被當成「找不到工具」或文字回覆被丟掉。這裡不等它申請：它叫的是一個真的存在的工具、而且不是高風險工具，就替它追加（跟申請同一條上限 SUBAGENT_MAX_TOOL_ESCALATIONS），並在追蹤裡寫明。
         function autoGrantTool(fnName) {
             if (!canRequestMore || !fnName || allowedToolNames.includes(fnName)) return false;
-            if (!self_tools()[fnName] || /^(run_command|bash_execute|python_execute|fs_write_file|fs_delete|fs_move|tmux_|delegate_to_machine|coding_workspace|delegate_to_subagent)/.test(fnName)) return false;
+            // 高風險工具不自動追加；但這個領域自己宣告的備用區工具（只是一開始被聚焦濾掉）例外——領域本來就授權它用
+            const inReserve = Array.isArray(options.focusReserve) && options.focusReserve.indexOf(fnName) >= 0;
+            if (!self_tools()[fnName] || (!inReserve && /^(run_command|bash_execute|python_execute|fs_write_file|fs_delete|fs_move|tmux_|delegate_to_machine|coding_workspace|delegate_to_subagent)/.test(fnName))) return false;
             if (toolEscalationCount >= SUBAGENT_MAX_TOOL_ESCALATIONS) return false;
             toolEscalationCount++; allowedToolNames.push(fnName);
+            if (inReserve) options.focusReserve = options.focusReserve.filter((n) => n !== fnName);
             if (onProgress) onProgress('🔧 自動追加工具：' + fnName); if (onTrace) onTrace('🔧 模型直接叫了名單外的工具 ' + fnName + '：它是真的工具、不是高風險，已替它追加（不必再申請）');
             return true;
         }
