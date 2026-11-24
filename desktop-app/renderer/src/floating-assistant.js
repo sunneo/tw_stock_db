@@ -156104,6 +156104,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (FaVlm.wantsNativeBackend(this._omDevicePrefOf({ id: 'audio-' + id }), gpu.available)) return null;   // 選 CPU＝原生／wasm：維持原路徑
             if (!window.FaGpuCore) (new Function(FA_GPU_CORE_SRC))();
             const M = this._qwenModule(), bytes = await c.dl(), t0 = Date.now(), ops = this._gpuRouteOps();
+            const host = this;   // session 物件的方法裡 this 是 session 本身，要記住「太慢」得用主程式
             const Ctor = c.ort && c.ort.Tensor ? c.ort.Tensor : class { constructor(type, data, dims) { this.type = type; this.data = data; this.dims = dims; } };
             const gs = M.graph.create(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), { ops, TensorCtor: Ctor });
             let gpuOn = true, fb = null;
@@ -156118,7 +156119,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                             const sh = M.graph.gpuShare(gs.info.tiers);
                             if (!sh.ok) throw new Error('重運算沒有跑在 GPU：' + JSON.stringify(gs.info.tiers));   // 少數超過緩衝區上限的運算退 CPU 可以接受，退層超過 20% 或完全沒用到 GPU 就退回 wasm
                             return r;
-                        } catch (e) { gpuOn = false; const why = String((e && e.message) || e).slice(0, 200); if (/太慢/.test(why)) this._gpuBrokenSet('audioGpuSlow:' + id, why); c.notes.push(label + ' GPU 執行失敗，已退回網頁版 WASM：' + why); console.log('[audio] ' + label + ' GPU 失敗，退回 WASM：' + why); }
+                        } catch (e) { gpuOn = false; const why = String((e && e.message) || e).slice(0, 200); if (/太慢/.test(why)) host._gpuBrokenSet('audioGpuSlow:' + id, why); c.notes.push(label + ' GPU 執行失敗，已退回網頁版 WASM：' + why); console.log('[audio] ' + label + ' GPU 失敗，退回 WASM：' + why); }
                     }
                     if (!c.ort) throw new Error('GPU 失敗且網頁版 onnxruntime 沒載入');
                     if (!fb) { const b2 = await c.dl(); fb = (await FaAudioRuntime.createSession(c.ort, b2, ['wasm'], { opt: c.opt })).session; }

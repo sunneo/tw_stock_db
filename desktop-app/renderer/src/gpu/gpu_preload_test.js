@@ -108,6 +108,8 @@ function fakePyodide(opts) {
     assert.ok(src.indexOf('let audioOn = this._audioGpuOn();') > 0 && src.indexOf('await this._gpuAutoProbe();') > 0, '沒有等探測');
     assert.ok(src.indexOf("GPU 路徑太慢") > 0 && src.indexOf("'audioGpuSlow:' + id") > 0, '沒有看門狗或沒有記住太慢');
     assert.ok(src.indexOf('_audioGpuWhyNot()') > 0, '沒用 GPU 沒有寫原因');
+    // session 物件的方法裡 this 是 session 自己：用 this._gpuBrokenSet 會丟「is not a function」把退回 WASM 一起弄壞（v577 出過）
+    assert.ok(src.indexOf("host._gpuBrokenSet('audioGpuSlow:'") > 0 && src.indexOf("this._gpuBrokenSet('audioGpuSlow:'") < 0, '記住太慢要用主程式（host），不能用 this');
   });
 
   await check('run_command 接線：GPU-only 模式、cwd_abs 傳入、選項順序、只接受 gpu.* 操作、結果帶 gpu 欄位', async () => {
