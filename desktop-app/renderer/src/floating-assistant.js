@@ -108294,12 +108294,10 @@ class FloatingAssistant {
     _ensureBuiltinSkillBundles() {
         if (!Array.isArray(this.advancedSettings.skillBundles)) this.advancedSettings.skillBundles = [];
         let changed = false;
-        // 已退役的內建技能：v568 曾把台股量化技能內建給所有人（使用者 2026-11-24：「不是啟用 不要內建，只有台股頁面ai內建」）。
-        // 台股技能現在由台股網頁自己用 register_domain 帶（見該站 index.html），這裡把舊版已裝進設定的那筆清掉。
-        const RETIRED_BUILTIN_IDS = ['builtin-skill-tw-trading'];
+        // 已退役的內建技能：目前程式碼的 BUILTIN_SKILLS 已經沒有的內建項目（舊版曾內建、後來拿掉），從設定裡清掉，避免殘留。
         {
             const before = this.advancedSettings.skillBundles.length;
-            this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter((b) => RETIRED_BUILTIN_IDS.indexOf(b.builtinId) < 0);
+            this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter((b) => !b.builtinId || BUILTIN_SKILLS.some((d) => d.id === b.builtinId));
             if (this.advancedSettings.skillBundles.length !== before) changed = true;
         }
         for (const def of BUILTIN_SKILLS) {
