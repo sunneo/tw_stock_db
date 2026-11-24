@@ -112053,7 +112053,7 @@ ${fnData.code}
                 for (const name of neededCommands) {
                     const kind = SANDBOX_COMMAND_REGISTRY[name].kind;
                     try {
-                        if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._ensurePyodideLoaded();
+                        if (kind === 'pyodide' && !resolvedEngines.pyodide) { resolvedEngines.pyodide = await this._ensurePyodideLoaded(); await this._gpuPreloadForShell(resolvedEngines.pyodide, script); }
                         if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
                         if (kind === 'xq') {
                             if (!resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
@@ -120248,6 +120248,17 @@ ${fnData.code}
             return lines;
         } catch (e) { return ['[pyopencl] 準備失敗：' + String((e && e.message) || e).slice(0, 300)]; }
     }
+    // 終端機／bash_execute 的 `python -c '…'`、`python x.py` 走同步執行（host builtin 不能 await），
+    // 所以要在「解析好 Python 環境」的當下先載入 numpy：掃整段 shell 文字有墊片 import 就載入；
+    // 腳本在檔案裡掃不到時，第一次失敗會記下 _gpuNumpyWanted，之後同一個頁面的每次執行都先載入。
+    async _gpuPreloadForShell(pyodide, script) {
+        try {
+            if (!pyodide) return;
+            if (this._gpuNumpyWanted || this._gpuPreloadApi().scriptNeedsNumpy(script)) {
+                await pyodide.loadPackage('numpy', { messageCallback: () => {}, errorCallback: () => {} });
+            }
+        } catch (_) { /* 載入失敗不擋腳本，之後的錯誤訊息會說明 */ }
+    }
     async _gpuPrepareRun(pyodide, text, installErr) {
         try { return await this._gpuPreloadApi().prepareRun(pyodide, text, installErr || ''); }
         catch (e) { return { lines: ['[fa-bridge] CUDA 相容層：執行前準備失敗（' + String((e && e.message) || e) + '）'], numpy: { needed: false, loaded: false } }; }
@@ -124936,7 +124947,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const engines = {};
         for (const n of needed) {
             const kind = SANDBOX_COMMAND_REGISTRY[n].kind;
-            if (kind === 'pyodide' && !engines.pyodide) engines.pyodide = await this._ensurePyodideLoaded();
+            if (kind === 'pyodide' && !engines.pyodide) { engines.pyodide = await this._ensurePyodideLoaded(); await this._gpuPreloadForShell(engines.pyodide, script); }
             if (kind === 'jq' && !engines.jq) engines.jq = await this._ensureJqLoaded();
             if (kind === 'xq') { if (!engines.jq) engines.jq = await this._ensureJqLoaded(); if (!engines.xmlParser) engines.xmlParser = await this._ensureXqXmlParserLoaded(); }
         }
@@ -139094,7 +139105,7 @@ ${sourceTool.handlerScript}
         const resolvedEngines = {};
         for (const name of neededCommands) {
             const kind = SANDBOX_COMMAND_REGISTRY[name].kind;
-            if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._terminalLoadRuntime(session, 'python', !!this._pyodideInstance, () => this._ensurePyodideLoaded());
+            if (kind === 'pyodide' && !resolvedEngines.pyodide) { resolvedEngines.pyodide = await this._terminalLoadRuntime(session, 'python', !!this._pyodideInstance, () => this._ensurePyodideLoaded()); await this._gpuPreloadForShell(resolvedEngines.pyodide, script); }
             if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._terminalLoadRuntime(session, 'jq', !!this._jqLoaded, () => this._ensureJqLoaded());
             if (kind === 'xq') {
                 if (!resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
@@ -143481,7 +143492,10 @@ _result
         try {
             pyodide.runPython(scriptText);
         } catch (err) {
-            stderrChunks.push(String(err && err.message || err));
+            const msg = String(err && err.message || err);
+            stderrChunks.push(msg);
+            // 同步執行不能中途載入套件：腳本在檔案裡、事前掃不到時，記下來，之後每次執行前都先載入 numpy
+            if (/No module named 'numpy'/.test(msg) && /fa_gpu/.test(msg)) { this._gpuNumpyWanted = true; stderrChunks.push('[fa-bridge] numpy 已改成之後每次執行前先載入，請再執行一次'); }
             returncode = 1;
         } finally {
             this._pySyncDepth--;

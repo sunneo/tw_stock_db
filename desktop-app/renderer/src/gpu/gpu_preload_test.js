@@ -96,6 +96,13 @@ function fakePyodide(opts) {
     assert.ok(src.indexOf("fa_gpu.register_script(__fa_script_src__)") > 0, '_gpuRegisterScript 沒有呼叫 fa_gpu.register_script');
   });
 
+  await check('終端機／bash 的同步 python（python -c）：解析 Python 環境後先載入 numpy（三個呼叫點）', async () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8');
+    const n = src.split('await this._gpuPreloadForShell(').length - 1;
+    assert.strictEqual(n, 3, '終端機、bash_execute、檔案夾執行三個呼叫點都要接上：' + n);
+    assert.ok(src.indexOf('this._gpuNumpyWanted = true') > 0, '腳本在檔案裡掃不到時，失敗要記下來讓之後先載入');
+  });
+
   await check('run_command 接線：GPU-only 模式、cwd_abs 傳入、選項順序、只接受 gpu.* 操作、結果帶 gpu 欄位', async () => {
     const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
     const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
