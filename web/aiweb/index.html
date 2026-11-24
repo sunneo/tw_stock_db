@@ -9,7 +9,7 @@
 <!-- 2026-11-15 冷載入優化：先建立到 jsDelivr 與 raw 的連線，並讓核心下載在這段 script 執行前就開始（網址與下方載入器一致）。 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin>
-<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@fdd8da0d167c7b014477b8829251f18fc41c887e/desktop-app/web-lazy/core.js">
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@c8c50960737a30f6f2d8d66700ed11bc22123335/desktop-app/web-lazy/core.js">
 <style>
   :root {
     --bar-bg: #161b22; --bar-border: #30363d; --bar-fg: #cbd5e1;
@@ -203,7 +203,7 @@ try {
 // 中途斷線由瀏覽器回報錯誤。失敗寫 console.warn（檔名、來源、錯誤、耗時）。
 // 核心下載時更新骨架進度（分母 = 解壓後的核心位元組數，來自 boot.json 的 coreBytes）；
 // 開機區塊（boot.json 的 names）並行預抓進 window.__FA_PREFETCH，核心執行時直接用，不再同步 XHR 逐一載入。
-var FA_SHA = 'fdd8da0d167c7b014477b8829251f18fc41c887e';
+var FA_SHA = 'c8c50960737a30f6f2d8d66700ed11bc22123335';
 var FA_JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + FA_SHA + '/desktop-app/web-lazy/';
 var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
 var FA_ROOTS = [FA_JSD, FA_RAWB];
