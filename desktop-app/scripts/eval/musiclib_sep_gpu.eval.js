@@ -25,4 +25,5 @@ try {
     out.stems = Object.keys(st || {}); out.segmentSec = sep.segmentSec;
   }
 } catch (e) { out.error = String((e && e.stack) || e); }
+try { out.slowFlag = localStorage.getItem('fa_gpu_broken:audioGpuSlow:demucs-6s'); } catch (_) { out.slowFlag = 'unreadable'; }
 return out;
