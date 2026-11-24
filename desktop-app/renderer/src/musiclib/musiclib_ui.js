@@ -664,9 +664,12 @@
     function idxStatus(s) { idxStat.textContent = s; }
     function refreshIdxInfo() {
       if (!MEL) return;
-      var done = MEL.entries().length;
+      var ents = MEL.entries(), done = ents.length;
       var failed = lib.records.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).length;
-      idxInfo.textContent = '已建索引 ' + done + ' 首，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
+      // 檔案不在本機的（匯入來的、或搬走的）也有索引、也能哼歌比對，但打不開播放：分開列出，數字才對得上「共 N 個檔案」
+      var gone = {}; lib.records.forEach(function (r) { if (r.status === 'missing') gone[r.key] = true; });
+      var away = ents.filter(function (e) { return gone[e.key]; }).length;
+      idxInfo.textContent = '已建索引 ' + done + ' 首' + (away ? '（其中 ' + away + ' 首的檔案不在這台電腦，只能比對、不能播放；等檔案放進來、md5 算完會自動接上）' : '') + '，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
     }
     // 進度：第 N／共 M 首（已建／跳過／失敗），進度條跟著動；主畫面的工作列也顯示 N／M
     function idxProgress(ev) {

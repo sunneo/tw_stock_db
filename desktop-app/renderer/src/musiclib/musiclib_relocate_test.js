@@ -260,7 +260,23 @@ t('本機同內容的檔案已經有旋律索引（或歌詞）：不當候選�
   var lib = libWith([imported, local], [{ id: 'imp', type: 'folder', label: 'imp' }, { id: 'loc', type: 'folder', label: 'loc' }]);
   var plan = M.planRelocation(lib, { newKeys: {} });
   assert.equal(plan.moves.length, 0);
-  assert.equal(plan.notFound.length, 1);
+  assert.equal(plan.absorb.length, 1, '匯入的分身要併進本機那筆，不留著重複計數');
+  var res = M.applyRelocation(lib, plan);
+  assert.equal(res.absorbed, 1);
+  assert.equal(lib.records.length, 1, '只剩本機那筆');
+  assert.deepEqual(lib.records[0].melody.contour, [1], '本機現有索引不被蓋掉');
+});
+
+t('匯入 100 首（本機同內容 60 首已建索引、20 首沒索引、20 首根本沒有這檔案）：算完 md5 後 紀錄＝100，不在本機的剛好 20，已建索引不重複計數', function () {
+  var imp = [], loc = [], i;
+  for (i = 0; i < 100; i++) imp.push(mkRec({ sourceId: 'imp', path: '/home/x/m/s' + i + '.mp3', content: 'S' + i, status: 'missing', melody: { sig: '1:1', status: 'ok', method: 'mid', contour: [i] } }));
+  for (i = 0; i < 80; i++) loc.push(mkRec({ sourceId: 'loc', path: 'D:\\m\\t' + i + '.mp3', content: 'S' + i, melody: i < 60 ? { sig: '1:1', status: 'ok', method: 'mid', contour: [1000 + i] } : null }));
+  var lib = libWith(imp.concat(loc), [{ id: 'imp', type: 'folder', label: 'imp' }, { id: 'loc', type: 'folder', label: 'loc' }]);
+  var res = M.applyRelocation(lib, M.planRelocation(lib, { newKeys: {} }));
+  assert.equal(res.moved, 20); assert.equal(res.absorbed, 60);
+  assert.equal(lib.records.length, 100, '80 個本機檔案＋20 個本機沒有的');
+  assert.equal(lib.records.filter(function (r) { return r.status === 'missing'; }).length, 20);
+  assert.equal(lib.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).length, 100, '每首只算一次');
 });
 
 t('本機有兩個同內容、都沒索引的檔案：歧義，不亂配', function () {

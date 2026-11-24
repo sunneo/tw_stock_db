@@ -964,7 +964,7 @@ const FaMusicLibHost = (function () {
           var applied = FaMusicLib.applyRelocation(L, plan);
           await L.save();
           summary.plan = plan; summary.applied = applied;
-          summary.text = (plan.moves.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
+          summary.text = (plan.moves.length || plan.absorb.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
           if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
         } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
         else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
