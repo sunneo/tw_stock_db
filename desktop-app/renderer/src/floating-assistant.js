@@ -74176,6 +74176,9 @@ const BUILTIN_SKILLS = [
     {
         id: 'builtin-skill-tw-trading',
         name: 'tw-trading-market-tools',
+        // 只在台股網頁啟用（使用者 2026-11-24：「台股那個技能我沒有要安裝在 desktop app跟一般ai，他是台股網頁only」）。
+        // 宿主頁要在 new FloatingAssistant({ hostSkills: ['builtin-skill-tw-trading'] }) 明講才會裝；桌面版與 aiweb 頁不傳就不會有，已裝過的會被移除。
+        hostOnly: true,
         // 台股量化工具包（概念改寫自 tradermonty/claude-trading-skills，MIT；見 desktop-app/skills/tw-trading/THIRD-PARTY-NOTICE.md）
         builtinToolNames: ['list_uploaded_files', 'list_file_access_points', 'fap_list_files', 'fap_read_file', 'python_execute'],
         personaPrompt: `---
@@ -106370,6 +106373,8 @@ class FloatingAssistant {
         // tw_stock_db客製: 2026-09-26——host用options.chatList:true開啟左邊對話清單（桌面版、aiweb；台股頁不開），
         // 見_buildChatListUI。要在最前面決定，因為後面的載入/初始化流程都看這個旗標。
         this._chatListEnabled = !!(options && options.chatList);
+        // 宿主頁授權的「只限宿主」內建技能（BUILTIN_SKILLS 裡 hostOnly:true 的項目 id）；沒傳就一個都不裝。
+        this._hostSkills = Array.isArray(options && options.hostSkills) ? options.hostSkills.slice() : [];
         // 每個對話各自一份的執行狀態（見FA_CHAT_CTX_KEYS的說明）。存取器必須在建構子其餘部分
         // 開始寫this.messages/this.isResponding…之前建立，之後這些賦值就會落進目前對話的ctx。
         this._chatCtxs = new Map();
@@ -108397,7 +108402,15 @@ class FloatingAssistant {
     _ensureBuiltinSkillBundles() {
         if (!Array.isArray(this.advancedSettings.skillBundles)) this.advancedSettings.skillBundles = [];
         let changed = false;
+        const hostSkills = this._hostSkills || [];
         for (const def of BUILTIN_SKILLS) {
+            if (def.hostOnly && hostSkills.indexOf(def.id) < 0) {
+                // 宿主頁沒授權這個技能：移除（包含舊版已經裝進去的）
+                const before = this.advancedSettings.skillBundles.length;
+                this.advancedSettings.skillBundles = this.advancedSettings.skillBundles.filter((b) => b.builtinId !== def.id);
+                if (this.advancedSettings.skillBundles.length !== before) changed = true;
+                continue;
+            }
             const existing = this.advancedSettings.skillBundles.find((b) => b.builtinId === def.id);
             if (existing) {
                 if (existing.name !== def.name || existing.personaPrompt !== def.personaPrompt || JSON.stringify(existing.builtinToolNames) !== JSON.stringify(def.builtinToolNames) || JSON.stringify(existing.includeDomains) !== JSON.stringify(def.includeDomains)) {
