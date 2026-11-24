@@ -705,6 +705,9 @@
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
+  // 其他常見的音訊／影片副檔名：同一條解碼路線（瀏覽器原生解碼；這台機器解不開的格式會在「解碼」階段明講原因，不是一開始就說不支援）
+  ['flac', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'wma', 'aif', 'aiff', 'aifc', 'weba', 'amr', 'caf', 'ac3', 'mka', 'mp2', 'ape', 'wv'].forEach(function (e) { SOURCE_CLASS[e] = 'audio'; });
+  ['mkv', 'avi', 'flv', 'wmv', '3gp', 'ts', 'mpg', 'mpeg', 'ogv'].forEach(function (e) { SOURCE_CLASS[e] = 'video'; });
   var ROM_EXT = {};
   var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1, pce: 1, sfc: 1, smc: 1 };
 

@@ -648,6 +648,11 @@ t('路由：不支援的組合說明原因，不默默略過', function () {
   var r = M.planExport('mario.nes', 'mp3');
   assert.equal(r.ok, false); assert.ok(/擷取/.test(r.reason), '說明要先擷取：' + r.reason);
   assert.equal(M.planExport('x.txt', 'mp3').ok, false);
+  assert.equal(M.planExport('a.mp3', 'mid').route, 'audio>mid', 'mp3 轉 mid');
+  assert.equal(M.planExport('a.flac', 'mid').route, 'audio>mid', 'flac 轉 mid');
+  assert.equal(M.planExport('a.m4a', 'mp3').route, 'audio>mp3');
+  assert.equal(M.planExport('a.ogg', 'mid').route, 'audio>mid');
+  assert.equal(M.planExport('a.mkv', 'mid').route, 'video>mid');
   assert.equal(M.planExport('a.wav', 'flac').ok, false);
 });
 

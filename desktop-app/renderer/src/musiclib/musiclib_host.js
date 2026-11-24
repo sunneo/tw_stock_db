@@ -1031,7 +1031,10 @@ const FaMusicLibHost = (function () {
   };
 
   var PICK_HOST = { pickFolder: pickFolder, pickFiles: pickFiles, melody: MELODY_HOST, md5: MD5_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
-    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
+    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); },
+    // 批次輸出（mp3／mid，含音訊轉 mid）與取消、YouTube 網址提示：面板用的是這個物件，漏掉就會顯示「批次輸出不可用（需要桌面版）」
+    exportBatch: function (recs, o) { return exportBatch(recs, o); }, cancelExport: function () { exportCancelled = true; },
+    youtubeInputNote: function (text) { return FaMusicLibYoutube.inputNote(FaMusicLibYoutube.parseInput(text)); } };
 
   var methods = {
     _mlLib() { return getLib(); },

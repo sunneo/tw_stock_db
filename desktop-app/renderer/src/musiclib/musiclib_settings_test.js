@@ -221,6 +221,13 @@ t('搜尋命中 MIDI：同一來源擷取出的 wav、mp3 兄弟一起顯示', f
   m.destroy();
 });
 
+t('桌面版接給面板的 host 有批次輸出（exportBatch、cancelExport）與 YouTube 網址提示：漏掉會讓面板誤報「需要桌面版」', function () {
+  var src = require('fs').readFileSync(require('path').join(__dirname, 'musiclib_host.js'), 'utf8');
+  var m = /var PICK_HOST = \{[\s\S]*?\n\s*\n|var PICK_HOST = \{[\s\S]*?youtubeJob: function \(\) \{ return youtubeJob\(\); \}[\s\S]*?\};/.exec(src);
+  assert.ok(m, '找不到 PICK_HOST');
+  ['exportBatch', 'cancelExport', 'youtubeInputNote'].forEach(function (k) { assert.ok(m[0].indexOf(k + ':') >= 0, 'PICK_HOST 缺 ' + k); });
+});
+
 t('匯入來的、這台電腦沒有的路徑（importedGhost）不列在清單上，也不算進檔案數；本機自己消失的仍照舊顯示', function () {
   resetDom();
   var lib = makeLib();
