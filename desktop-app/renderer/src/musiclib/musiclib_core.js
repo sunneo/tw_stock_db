@@ -893,6 +893,7 @@
       keyMap[src.key] = nr.key;
       if (!st) {
         nr.status = 'missing'; stats.missing++;
+        nr.importedGhost = true;   // 匯入來的、這台電腦沒有這個路徑：資料保留（md5 對上本機檔案就改用本機路徑接上），但不顯示在曲目清單上
       } else {
         nr.status = 'ok';
         var same = sigOfRec(src) === sigOfStat(st);
@@ -1001,6 +1002,7 @@
       usedNew.push(n); removeNew.push(n);
       touched[o.sourceId] = true;
       o.path = n.path; o.name = n.name; o.ext = n.ext; o.sourceId = n.sourceId; o.sourceType = n.sourceType; o.sourceLabel = n.sourceLabel;
+      delete o.importedGhost;
       o.status = 'ok'; o.sizeBytes = n.sizeBytes; o.mtimeMs = n.mtimeMs; o.relocatedAt = Date.now();
       if (!o.derivedFrom && o.key !== n.key) { keyMap[o.key] = n.key; o.key = n.key; }
     });

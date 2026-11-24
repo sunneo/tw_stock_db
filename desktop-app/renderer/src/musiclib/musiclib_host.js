@@ -81,7 +81,7 @@ const FaMusicLibHost = (function () {
   function isAbsPath(p) { return /^([a-zA-Z]:[\\\/]|\\\\|\/)/.test(String(p || '')); }
   // 讀檔前確認是完整路徑；只有檔名的舊紀錄（舊版選檔加入）會被 app 資料夾當成相對路徑而找不到，先講清楚原因
   function absPath(p) {
-    if (!isAbsPath(p)) throw new Error('這筆紀錄只有檔名、沒有完整路徑（' + p + '），無法讀取。請把它移除後，用「＋加檔案」重新加入。');
+    if (!isAbsPath(p)) throw new Error('這筆紀錄只有檔名、沒有完整路徑（' + p + '），無法讀取。請把它移除後，用「＋加入來源 → 檔案」重新加入。');
     return p;
   }
 

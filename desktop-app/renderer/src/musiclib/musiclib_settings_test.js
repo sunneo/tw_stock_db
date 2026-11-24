@@ -44,7 +44,9 @@ function all(el, out) { out = out || []; out.push(el); (el.children || []).forEa
 function buttonsIn(el) { return all(el).filter(function (x) { return x.tagName === 'button'; }); }
 function findBtn(el, text) { return buttonsIn(el).filter(function (b) { return b.textContent === text; })[0] || null; }
 function dlgOf(root) { return root.children.filter(function (c) { return c.className === 'fml-dlgbg'; })[0]; }
-function paneOf(dlg, idx) { return dlg.children[0].children[1].children[1].children[idx]; }   // 版面：box＝[標題列, main＝[左側分頁, 內容]]；0 來源與擷取 1 歌詞 2 輸出 3 旋律索引 4 YouTube 5 資料
+function paneOf(dlg, idx) { return dlg.children[0].children[1].children[1].children[idx]; }   // 版面：box＝[標題列, main＝[左側分頁, 內容]]；0 來源與擷取 1 旋律索引 2 資料（歌詞、輸出、擷取在主畫面的 .fml-act；YouTube 在加入來源的對話框）
+function actOf(root) { return root.children.filter(function (c) { return c.className === 'fml-act'; })[0]; }
+function ytBgOf(root) { return root.children.filter(function (c) { return c.className === 'fml-dlgbg'; })[1]; }
 function humBoxOf(root) { return all(root).filter(function (x) { return x.className === 'fml-hum fml-foot'; })[0]; }
 function cbByLabel(el, prefix) { return all(el).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox' && x.parentNode && String(x.parentNode.textContent || '').indexOf(prefix) === 0; })[0]; }
 // 假的旋律模組（只給面板掛載與索引狀態用；哼歌實際流程不在這裡測）
@@ -87,11 +89,43 @@ function mountPanel(hostOver) {
 t('主畫面只留常用控制項；設定以外的細碎控制項不在主畫面', function () {
   resetDom();
   var p = mountPanel();
-  var mainBtns = buttonsIn(p.root).filter(function (b) { return !(b.parentNode && isInside(b, p.dlg)); }).map(function (b) { return b.textContent; });
-  ['⛶ 最大化', '＋加檔案', '＋加資料夾', '移除勾選', '⚙ 設定'].forEach(function (k) { assert.ok(mainBtns.indexOf(k) >= 0, '主畫面缺 ' + k); });
-  ['轉錄歌詞', '批次輸出', '擷取選取的來源', '建立旋律索引', '＋加入 YouTube 清單', '來源管理'].forEach(function (k) {
-    assert.equal(mainBtns.indexOf(k), -1, '主畫面不該再有 ' + k);
+  var mainBtns = buttonsIn(p.root).filter(function (b) { return !isInside(b, p.dlg) && !isInside(b, actOf(p.root)) && !isInside(b, ytBgOf(p.root)); }).map(function (b) { return b.textContent; });
+  ['⛶ 最大化', '＋加入來源 ▾', '對勾選的曲目 ▾', '移除勾選', '⚙ 設定'].forEach(function (k) { assert.ok(mainBtns.indexOf(k) >= 0, '主畫面缺 ' + k); });
+  ['＋加檔案', '＋加資料夾', '轉錄歌詞', '批次輸出', '建立旋律索引', '＋加入 YouTube 清單', '來源管理'].forEach(function (k) {
+    assert.equal(mainBtns.indexOf(k), -1, '主畫面不該直接放 ' + k);
   });
+  p.m.destroy();
+});
+
+t('「＋加入來源」下拉有檔案、資料夾、YouTube；YouTube 跳出輸入網址的對話框（不在設定裡）', function () {
+  resetDom();
+  var p = mountPanel();
+  var menuBtns = all(p.root).filter(function (x) { return x.className === 'fml-menu'; })[0];
+  assert.ok(menuBtns && menuBtns.style.display === 'none', '下拉一開始應收合');
+  findBtn(p.root, '＋加入來源 ▾').click();
+  assert.equal(menuBtns.style.display, '', '點了應該展開');
+  ['檔案…', '資料夾…', 'YouTube…'].forEach(function (k) { assert.ok(findBtn(menuBtns, k), '下拉缺 ' + k); });
+  var yb = ytBgOf(p.root);
+  assert.equal(yb.style.display, 'none', 'YouTube 對話框一開始應關著');
+  findBtn(menuBtns, 'YouTube…').click();
+  assert.equal(yb.style.display, '', '點 YouTube… 應該跳出對話框');
+  assert.equal(menuBtns.style.display, 'none', '選了之後下拉收起來');
+  assert.ok(all(yb).some(function (x) { return x.tagName === 'input' && /YouTube 清單網址/.test(x.placeholder || ''); }), '對話框要有網址輸入框');
+  ['＋加入 YouTube 清單', '暫停', '取消'].forEach(function (k) { assert.ok(findBtn(yb, k), 'YouTube 對話框缺 ' + k); });
+  keyHandlers.forEach(function (f) { f({ key: 'Escape' }); });
+  assert.equal(yb.style.display, 'none', 'Esc 關閉 YouTube 對話框');
+  p.m.destroy();
+});
+
+t('對勾選的曲目：歌詞轉錄、批次輸出、擷取放在主畫面的區塊（預設收合，按鈕展開），不在設定', function () {
+  resetDom();
+  var p = mountPanel({ extract: { run: function () { return new Promise(function () {}); }, cancel: function () {} } });
+  var act = actOf(p.root);
+  assert.ok(act && !isInside(act, p.dlg), '找不到主畫面的動作區，或它在設定裡');
+  assert.equal(act.style.display, 'none');
+  findBtn(p.root, '對勾選的曲目 ▾').click();
+  assert.equal(act.style.display, '');
+  ['轉錄歌詞', '取消轉錄', '批次輸出', '取消輸出', '擷取選取的來源', '取消擷取'].forEach(function (k) { assert.ok(findBtn(act, k), '動作區缺 ' + k); });
   p.m.destroy();
 });
 function isInside(node, anc) { var c = node; while (c) { if (c === anc) return true; c = c.parentNode; } return false; }
@@ -119,11 +153,11 @@ t('Esc 關閉設定視窗（Esc 在設定開著時先關它）', function () {
   p.m.destroy();
 });
 
-t('五個分頁：切換時只顯示被選的那一頁，並標示目前分頁', function () {
+t('三個分頁：切換時只顯示被選的那一頁，並標示目前分頁', function () {
   resetDom();
   var p = mountPanel();
   findBtn(p.root, '⚙ 設定').click();
-  var names = ['來源與擷取', '歌詞', '輸出', '旋律索引', 'YouTube', '資料'];
+  var names = ['來源與擷取', '旋律索引', '資料'];
   names.forEach(function (n, i) {
     tabBtnOf(p.dlg, n).click();
     names.forEach(function (_, j) {
@@ -134,17 +168,15 @@ t('五個分頁：切換時只顯示被選的那一頁，並標示目前分頁',
   p.m.destroy();
 });
 
-t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋律索引、YouTube、資料）', function () {
+t('每個分類都有它的控制項（設定：來源與擷取、旋律索引、資料；主畫面動作區：歌詞、輸出）', function () {
   resetDom();
   var p = mountPanel({ extract: { run: function () { return new Promise(function () {}); }, cancel: function () {} } });
-  var pane = function (i) { return paneOf(p.dlg, i); };
+  var pane = function (i) { return i === 'act' ? actOf(p.root) : paneOf(p.dlg, i); };
   var want = [
-    [0, ['擷取選取的來源', '取消擷取'], '來源管理（還沒有來源時的提示）'],
-    [1, ['轉錄歌詞', '暫停', '取消轉錄']],
-    [2, ['批次輸出', '取消輸出']],
-    [3, ['建立旋律索引', '暫停索引', '取消索引']],
-    [4, ['＋加入 YouTube 清單', '暫停', '取消']],
-    [5, ['匯出資料庫', '匯入資料庫…']]
+    [0, ['重新對應（選新資料夾）'], '來源管理（還沒有來源時的提示）'],
+    ['act', ['轉錄歌詞', '暫停', '取消轉錄', '批次輸出', '取消輸出', '擷取選取的來源', '取消擷取']],
+    [1, ['建立旋律索引', '暫停索引', '取消索引']],
+    [2, ['匯出資料庫', '匯入資料庫…']]
   ];
   want.forEach(function (w) {
     var texts = buttonsIn(pane(w[0])).map(function (b) { return b.textContent; });
@@ -154,12 +186,12 @@ t('每個分類都有它的控制項（來源與擷取、歌詞、輸出、旋�
   assert.ok(all(pane(0)).some(function (x) { return x.tagName === 'input' && /衍生檔資料夾/.test(x.placeholder || ''); }), '缺衍生資料夾輸入框');
   assert.ok(buttonsIn(pane(0)).some(function (b) { return b.textContent === '移除來源'; }), '來源管理缺「移除來源」');
   // 輸出：格式、分鐘數、整首、Basic Pitch
-  var outTexts = all(pane(2)).map(function (x) { return x.textContent; });
+  var outTexts = all(pane('act')).map(function (x) { return x.textContent; });
   assert.ok(outTexts.indexOf('音訊轉 mid 用 Basic Pitch') >= 0, '輸出缺 Basic Pitch');
   assert.ok(outTexts.indexOf('整首') >= 0 && outTexts.indexOf('分鐘') >= 0, '輸出缺整首或分鐘');
-  assert.ok(all(pane(2)).some(function (x) { return x.tagName === 'select'; }), '輸出缺格式選單');
+  assert.ok(all(pane('act')).some(function (x) { return x.tagName === 'select'; }), '輸出缺格式選單');
   // 旋律索引：Basic Pitch 勾選（索引用）
-  assert.ok(cbByLabel(pane(3), '用 Basic Pitch'), '旋律索引缺 Basic Pitch 勾選');
+  assert.ok(cbByLabel(pane(1), '用 Basic Pitch'), '旋律索引缺 Basic Pitch 勾選');
   p.m.destroy();
 });
 
@@ -189,14 +221,31 @@ t('搜尋命中 MIDI：同一來源擷取出的 wav、mp3 兄弟一起顯示', f
   m.destroy();
 });
 
+t('匯入來的、這台電腦沒有的路徑（importedGhost）不列在清單上，也不算進檔案數；本機自己消失的仍照舊顯示', function () {
+  resetDom();
+  var lib = makeLib();
+  var ghost = { key: 'G', sourceId: 'src2', path: '/home/x/ghost.mp3', name: 'ghost.mp3', kind: 'mp3', category: 'audio', pending: false, status: 'missing', importedGhost: true, album: null, durationSec: 5, lyricStatus: 'none', title: 'ghost', label: 'MP3' };
+  var gone = { key: 'M', sourceId: 'src2', path: 'D:\\m\\gone.mp3', name: 'gone.mp3', kind: 'mp3', category: 'audio', pending: false, status: 'missing', album: null, durationSec: 5, lyricStatus: 'none', title: 'gone', label: 'MP3' };
+  lib.records.push(ghost, gone);
+  var r = new El('div');
+  var m = UI.mount(r, { library: lib, host: {}, queue: null });
+  var fml = r.children[r.children.length - 1];
+  var rowsText = all(fml).filter(function (x) { return x.tagName === 'tr'; }).map(function (tr) {
+    return all(tr).filter(function (x) { return x.tagName === '#text'; }).map(function (x) { return x.textContent; }).join('');
+  }).join('|');
+  assert.ok(rowsText.indexOf('ghost.mp3') < 0, '匯入來的找不到路徑的不該顯示：' + rowsText);
+  assert.ok(rowsText.indexOf('gone.mp3') >= 0, '本機自己消失的仍要顯示');
+  m.destroy();
+});
+
 t('設定值寫入 localStorage，重開面板會還原', function () {
   resetDom();
   Object.keys(store).forEach(function (k) { delete store[k]; });
   var p = mountPanel();
   findBtn(p.root, '⚙ 設定').click();
-  var sel = all(paneOf(p.dlg, 2)).filter(function (x) { return x.tagName === 'select'; })[0];
-  var min = all(paneOf(p.dlg, 2)).filter(function (x) { return x.tagName === 'input' && x.type === 'number'; })[0];
-  var whole = all(paneOf(p.dlg, 2)).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox'; });
+  var sel = all(actOf(p.root)).filter(function (x) { return x.tagName === 'select'; })[0];
+  var min = all(actOf(p.root)).filter(function (x) { return x.tagName === 'input' && x.type === 'number'; })[0];
+  var whole = all(actOf(p.root)).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox'; });
   var modelCb = whole[1];  // 輸出分頁：[整首、Basic Pitch]
   sel.value = 'mid'; sel.onchange({ target: sel });
   min.value = '2.5'; min.oninput({ target: min });
@@ -212,9 +261,9 @@ t('設定值寫入 localStorage，重開面板會還原', function () {
   p.m.destroy();
 
   var p2 = mountPanel();
-  var sel2 = all(paneOf(p2.dlg, 2)).filter(function (x) { return x.tagName === 'select'; })[0];
-  var min2 = all(paneOf(p2.dlg, 2)).filter(function (x) { return x.tagName === 'input' && x.type === 'number'; })[0];
-  var cbs2 = all(paneOf(p2.dlg, 2)).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox'; });
+  var sel2 = all(actOf(p2.root)).filter(function (x) { return x.tagName === 'select'; })[0];
+  var min2 = all(actOf(p2.root)).filter(function (x) { return x.tagName === 'input' && x.type === 'number'; })[0];
+  var cbs2 = all(actOf(p2.root)).filter(function (x) { return x.tagName === 'input' && x.type === 'checkbox'; });
   var dir2 = all(paneOf(p2.dlg, 0)).filter(function (x) { return x.tagName === 'input' && /衍生檔資料夾/.test(x.placeholder || ''); })[0];
   assert.equal(sel2.value, 'mid', '格式沒還原');
   assert.equal(min2.value, '2.5', '分鐘數沒還原');
@@ -243,18 +292,16 @@ t('進行中工作：擷取中時主畫面顯示一行，點一下開「來源�
   // 沒有工作時那一行是隱藏的
   var workBtn = buttonsIn(p.root).filter(function (b) { return b.className === 'fml-work'; })[0];
   assert.equal(workBtn.style.display, 'none');
-  // 開啟「來源與擷取」→ 按擷取（進行中，不會結束）
-  findBtn(p.root, '⚙ 設定').click();
-  tabBtnOf(p.dlg, '來源與擷取').click();
-  findBtn(paneOf(p.dlg, 0), '擷取選取的來源').click();
+  // 展開「對勾選的曲目」→ 按擷取（進行中，不會結束）
+  findBtn(p.root, '對勾選的曲目 ▾').click();
+  findBtn(actOf(p.root), '擷取選取的來源').click();
   assert.equal(workBtn.style.display, '', '擷取中應該顯示進行中工作');
   assert.ok(/擷取中/.test(workBtn.textContent), '工作列文字：' + workBtn.textContent);
-  // 關掉視窗後點工作列 → 再開，應回到「來源與擷取」分頁
-  p.dlg.children[0].children[0].children[1].click();
-  assert.equal(p.dlg.style.display, 'none');
+  // 收合動作區後點工作列 → 再展開
+  findBtn(p.root, '對勾選的曲目 ▾').click();
+  assert.equal(actOf(p.root).style.display, 'none');
   workBtn.click();
-  assert.equal(p.dlg.style.display, '');
-  assert.equal(paneOf(p.dlg, 0).style.display, '');
+  assert.equal(actOf(p.root).style.display, '', '點工作列應回到動作區');
   if (resolveRun) resolveRun({ results: [] });
   p.m.destroy();
 });
@@ -289,7 +336,7 @@ t('哼歌區塊有錄哼歌、選音檔找、歌詞文字、用文字加分、�
   assert.ok(all(hb).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '哼歌區塊缺用文字加分');
   findBtn(p.root, '⚙ 設定').click();
   tabBtnOf(p.dlg, '旋律索引').click();
-  var pane = paneOf(p.dlg, 3);
+  var pane = paneOf(p.dlg, 1);
   var paneBtns = buttonsIn(pane).map(function (b) { return b.textContent; });
   ['錄哼歌（8 秒）', '選音檔找', '找相似'].forEach(function (k) { assert.equal(paneBtns.indexOf(k), -1, '旋律索引分頁不該再有「' + k + '」'); });
   assert.ok(!all(pane).some(function (x) { return x.tagName === 'label' && x.textContent === '用文字加分'; }), '旋律索引分頁不該再有「用文字加分」');
@@ -303,7 +350,7 @@ t('「用 Basic Pitch」：設定與哼歌區塊兩處同步，同一個 localSt
   var p = mountPanel({ melody: stubMelody([]) });
   findBtn(p.root, '⚙ 設定').click();
   tabBtnOf(p.dlg, '旋律索引').click();
-  var cbIdx = cbByLabel(paneOf(p.dlg, 3), '用 Basic Pitch');
+  var cbIdx = cbByLabel(paneOf(p.dlg, 1), '用 Basic Pitch');
   var cbHum = cbByLabel(humBoxOf(p.root), '用 Basic Pitch');
   assert.ok(cbIdx && cbHum, '兩處都要有 Basic Pitch 勾選');
   assert.equal(cbIdx.checked, false); assert.equal(cbHum.checked, false);
@@ -320,7 +367,7 @@ t('「用 Basic Pitch」：設定與哼歌區塊兩處同步，同一個 localSt
   assert.equal(cbByLabel(humBoxOf(p2.root), '用 Basic Pitch').checked, true, '哼歌區塊沒還原');
   findBtn(p2.root, '⚙ 設定').click();
   tabBtnOf(p2.dlg, '旋律索引').click();
-  assert.equal(cbByLabel(paneOf(p2.dlg, 3), '用 Basic Pitch').checked, true, '旋律索引分頁沒還原');
+  assert.equal(cbByLabel(paneOf(p2.dlg, 1), '用 Basic Pitch').checked, true, '旋律索引分頁沒還原');
   p2.m.destroy();
 });
 
@@ -336,7 +383,7 @@ t('沒有旋律索引時，找相似明講去哪建立，並給「開啟設定�
   assert.ok(open && open.style.display === '', '「開啟設定」按鈕應該出現');
   open.click();
   assert.equal(p.dlg.style.display, '', '應該開啟設定視窗');
-  assert.equal(paneOf(p.dlg, 3).style.display, '', '應該切到旋律索引分頁');
+  assert.equal(paneOf(p.dlg, 1).style.display, '', '應該切到旋律索引分頁');
   p.m.destroy();
 });
 
@@ -345,7 +392,7 @@ t('旋律索引分頁顯示索引狀態：已建幾首、失敗幾首', function
   var p = mountPanel({ melody: stubMelody([{ key: 'a' }, { key: 'b' }]) });
   findBtn(p.root, '⚙ 設定').click();
   tabBtnOf(p.dlg, '旋律索引').click();
-  assert.ok(all(paneOf(p.dlg, 3)).some(function (x) { return x.textContent === '已建索引 2 首，失敗 0 首'; }), '索引狀態文字不對');
+  assert.ok(all(paneOf(p.dlg, 1)).some(function (x) { return x.textContent === '已建索引 2 首，失敗 0 首'; }), '索引狀態文字不對');
   p.m.destroy();
 });
 
