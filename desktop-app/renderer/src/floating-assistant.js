@@ -83986,13 +83986,25 @@ const holder = {};
     // 本機同內容的檔案沒有索引，配上後索引就接到本機這個檔案上）。本機已經有索引或歌詞的不當候選，不蓋掉現有資料。擷取產物與待擷取的不算。
     var lacksData = function (r) { return !r.derivedFrom && !r.pending && !(r.melody && r.melody.status === 'ok') && !r.lyrics; };
     var cands = recs.filter(function (r) { return (newKeys[r.key] || lacksData(r)) && r.status === 'ok' && hasFullMd5(r); });
-    var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], pendingHash: recs.filter(needsHash).length };
+    var plan = { moves: [], ambiguous: [], notFound: [], noMd5: [], absorb: [], pendingHash: recs.filter(needsHash).length };
     var oldBy = {}, candBy = {};
+    // 本機同內容的檔案已經有旋律索引或歌詞（不能當候選、不蓋掉它）：匯入來的「找不到檔案」紀錄只是同一首歌的分身，
+    // 留著會讓曲庫數字多算一倍（索引、消失檔數）。併進本機那筆：它缺的歌詞／索引補過去，然後把分身拿掉。有擷取子曲目掛在分身底下的不動。
+    var hasKids = {}; recs.forEach(function (r) { if (r.derivedFrom) hasKids[r.derivedFrom] = true; });
+    var localFull = {};
+    recs.forEach(function (r) { if (r.status === 'ok' && !r.derivedFrom && !r.pending && hasFullMd5(r) && !lacksData(r)) (localFull[r.md5] = localFull[r.md5] || []).push(r); });
     olds.forEach(function (r) { if (hasFullMd5(r)) (oldBy[r.md5] = oldBy[r.md5] || []).push(r); else plan.noMd5.push(r); });
     cands.forEach(function (r) { (candBy[r.md5] = candBy[r.md5] || []).push(r); });
     Object.keys(oldBy).forEach(function (m) {
       var os = oldBy[m], cs = candBy[m] || [];
-      if (!cs.length) { os.forEach(function (o) { plan.notFound.push(o); }); return; }
+      if (!cs.length) {
+        os.forEach(function (o) {
+          var twins = localFull[m] || [];
+          if (twins.length && !o.derivedFrom && !hasKids[o.key]) plan.absorb.push({ old: o, into: twins[0] });
+          else plan.notFound.push(o);
+        });
+        return;
+      }
       var pairs = [];
       os.forEach(function (o) { cs.forEach(function (c) { pairs.push({ o: o, c: c, s: similarityOf(o, c) }); }); });
       os.forEach(function (o) {
@@ -84022,18 +84034,26 @@ const holder = {};
       o.status = 'ok'; o.sizeBytes = n.sizeBytes; o.mtimeMs = n.mtimeMs; o.relocatedAt = Date.now();
       if (!o.derivedFrom && o.key !== n.key) { keyMap[o.key] = n.key; o.key = n.key; }
     });
-    lib.records = lib.records.filter(function (r) { return removeNew.indexOf(r) < 0; });
+    var absorbed = 0, ghosts = [];
+    (plan.absorb || []).forEach(function (a) {
+      var o = a.old, into = a.into;
+      if (!into.melody && o.melody && o.melody.status === 'ok') into.melody = o.melody;
+      if (!into.lyrics && o.lyrics) { into.lyrics = o.lyrics; into.lyricStatus = o.lyricStatus || 'done'; }
+      ghosts.push(o); touched[o.sourceId] = true; absorbed++;
+    });
+    lib.records = lib.records.filter(function (r) { return removeNew.indexOf(r) < 0 && ghosts.indexOf(r) < 0; });
     lib.records.forEach(function (r) { if (r.derivedFrom && keyMap[r.derivedFrom]) r.derivedFrom = keyMap[r.derivedFrom]; });
     lib.sources = lib.sources.filter(function (s) {
       if (!touched[s.id]) return true;
       return lib.records.some(function (r) { return r.sourceId === s.id; });
     });
-    return { moved: usedNew.length };
+    return { moved: usedNew.length, absorbed: absorbed };
   }
   // 整批摘要（給人看的一行＋列出找不到與歧義的檔名）
   function describeRelocation(plan, applied) {
     var ok = plan.moves.length, nf = plan.notFound.length, am = plan.ambiguous.length, nm = plan.noMd5.length;
-    var out = '對應成功 ' + ok + ' 個、仍找不到 ' + nf + ' 個、有歧義 ' + am + ' 個。';
+    var ab = (plan.absorb || []).length;
+    var out = '對應成功 ' + ok + ' 個、' + (ab ? '本機已有同內容的檔案而併入 ' + ab + ' 個、' : '') + '仍找不到 ' + nf + ' 個、有歧義 ' + am + ' 個。';
     if (nm) out += '另有 ' + nm + ' 個因為搬家前沒算過 md5 所以無法對應，請把檔案放回原位，等 md5 算完再重新對應。';
     if (plan.pendingHash) out += '（還有 ' + plan.pendingHash + ' 個檔案的 md5 尚未算完，算完後才會再對應一次。）';
     var nameList = function (arr) { return arr.slice(0, 10).map(function (r) { return r.name; }).join('、') + (arr.length > 10 ? '…等 ' + arr.length + ' 個' : ''); };
@@ -103486,9 +103506,12 @@ const holder = {};
     function idxStatus(s) { idxStat.textContent = s; }
     function refreshIdxInfo() {
       if (!MEL) return;
-      var done = MEL.entries().length;
+      var ents = MEL.entries(), done = ents.length;
       var failed = lib.records.filter(function (r) { return r.melody && r.melody.status === 'failed'; }).length;
-      idxInfo.textContent = '已建索引 ' + done + ' 首，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
+      // 檔案不在本機的（匯入來的、或搬走的）也有索引、也能哼歌比對，但打不開播放：分開列出，數字才對得上「共 N 個檔案」
+      var gone = {}; lib.records.forEach(function (r) { if (r.status === 'missing') gone[r.key] = true; });
+      var away = ents.filter(function (e) { return gone[e.key]; }).length;
+      idxInfo.textContent = '已建索引 ' + done + ' 首' + (away ? '（其中 ' + away + ' 首的檔案不在這台電腦，只能比對、不能播放；等檔案放進來、md5 算完會自動接上）' : '') + '，失敗 ' + failed + ' 首' + (done ? '' : '（還沒有索引，哼歌找不到東西）');
     }
     // 進度：第 N／共 M 首（已建／跳過／失敗），進度條跟著動；主畫面的工作列也顯示 N／M
     function idxProgress(ev) {
@@ -104725,7 +104748,7 @@ const FaMusicLibHost = (function () {
           var applied = FaMusicLib.applyRelocation(L, plan);
           await L.save();
           summary.plan = plan; summary.applied = applied;
-          summary.text = (plan.moves.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
+          summary.text = (plan.moves.length || plan.absorb.length || Object.keys(opts.newKeys || {}).length) ? FaMusicLib.describeRelocation(plan, applied) : (todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '');
           if (failures.length) summary.text += ' md5 算失敗 ' + failures.length + ' 個（' + failures.slice(0, 3).map(function (x) { return x.name + '：' + x.reason; }).join('；') + '）。';
         } else if (md5State.cancelled) summary.text = 'md5 已取消（算到 ' + md5State.done + '／' + todo.length + '）；已算好的會保留，沒有做對應。';
         else summary.text = todo.length ? '已算好 ' + todo.length + ' 個檔案的 md5。' : '';
