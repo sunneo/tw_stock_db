@@ -83923,6 +83923,7 @@ const holder = {};
       keyMap[src.key] = nr.key;
       if (!st) {
         nr.status = 'missing'; stats.missing++;
+        nr.importedGhost = true;   // 匯入來的、這台電腦沒有這個路徑：資料保留（md5 對上本機檔案就改用本機路徑接上），但不顯示在曲目清單上
       } else {
         nr.status = 'ok';
         var same = sigOfRec(src) === sigOfStat(st);
@@ -84031,6 +84032,7 @@ const holder = {};
       usedNew.push(n); removeNew.push(n);
       touched[o.sourceId] = true;
       o.path = n.path; o.name = n.name; o.ext = n.ext; o.sourceId = n.sourceId; o.sourceType = n.sourceType; o.sourceLabel = n.sourceLabel;
+      delete o.importedGhost;
       o.status = 'ok'; o.sizeBytes = n.sizeBytes; o.mtimeMs = n.mtimeMs; o.relocatedAt = Date.now();
       if (!o.derivedFrom && o.key !== n.key) { keyMap[o.key] = n.key; o.key = n.key; }
     });
@@ -102841,7 +102843,7 @@ const FaMusicLibUI = (function () {
 const holder = {};
 (function (module, self) {
 /* 音樂庫的畫面（UMD）：像 library 的清單。
- *   主畫面只留常用的（另有工具列上的「🎤 哼歌找歌」，展開後是哼歌區塊）：＋加檔案、＋加資料夾、搜尋框、範圍、移除勾選、最大化、「⚙ 設定」、一行進行中工作狀態（點一下開對應分頁）。
+ *   主畫面只留常用的（另有工具列上的「🎤 哼歌找歌」，展開後是哼歌區塊）：「＋加入來源」下拉（檔案、資料夾、YouTube 對話框）、搜尋框、範圍、「對勾選的曲目」（歌詞轉錄、批次輸出、擷取）、移除勾選、最大化、「⚙ 設定」（來源與擷取、旋律索引、資料）、一行進行中工作狀態（點一下開對應畫面）。
  *   清單：樹狀。來源列下面可展開擷取產物（derivedFrom 指向來源），子列縮排並標「擷取產物（不是檔案系統上的檔案）」與擷取方式。
  *     搜尋命中子曲目時，它的來源會自動展開。每列都有「▶ 播放」（走通用播放模組 FaMediaPlay）與「移除」。
  *   移除：原始檔只從曲庫移除，絕不刪磁碟上的原始檔；擷取產物的衍生檔會刪（只刪衍生資料夾裡的，並確認真的消失）；
@@ -102907,12 +102909,15 @@ const holder = {};
     + '.fml-dlg-tabs button.on{background:#0969da;color:#fff;border-color:#0969da}'
     + '@media (max-width:640px){.fml-dlg-main{flex-direction:column}.fml-dlg-tabs{flex:0 0 auto;flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid #d0d7de}.fml-dlg-tabs button{width:auto}}'
     + '.fml-dlg-body{flex:1;overflow:auto;padding:6px 8px;min-height:0}'
+    + '.fml-addwrap{position:relative;display:inline-block}.fml-menu{position:absolute;top:100%;left:0;z-index:20;margin-top:2px;min-width:140px;background:#fff;border:1px solid #d0d7de;border-radius:6px;box-shadow:0 6px 18px #0003;display:flex;flex-direction:column;padding:3px}'
+    + '.fml-menu button{text-align:left;border:none;background:none;padding:6px 10px;width:100%}.fml-act{border-bottom:1px solid #d0d7de;background:#fbfaff;max-height:55vh;overflow:auto}'
     + '.fml-dup{color:#9a6700;font-size:11px;border:1px solid #d4a72c;border-radius:4px;padding:0 4px;margin-left:4px}'
     + '.fml button.hon{background:#0969da;color:#fff;border-color:#0969da}'
     + '.fml-work{border:none;background:none;color:#0969da;text-align:left;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' + LOOK;
   var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
-  var SET_TABS = [['src', '來源與擷取'], ['lyr', '歌詞'], ['exp', '輸出'], ['mel', '旋律索引'], ['yt', 'YouTube'], ['db', '資料']];
+  // 設定只放「跟主畫面選了哪些歌無關」的東西；要對勾選曲目做的事（轉錄歌詞、輸出、擷取）在主畫面的「對勾選的曲目」區，YouTube 在「＋加入來源」的對話框
+  var SET_TABS = [['src', '來源與擷取'], ['mel', '旋律索引'], ['db', '資料']];
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function errText(e) { return String((e && e.message) || e); }
@@ -102954,8 +102959,15 @@ const holder = {};
     // ───── 主畫面（常用）─────
     var bar = h('div', 'fml-bar');
     var bMax = h('button', null, '⛶ 最大化'); bMax.title = '把音樂庫放大到整個視窗（Esc 還原）';
-    var bFile = h('button', null, '＋加檔案');
-    var bFolder = h('button', null, '＋加資料夾');
+    // 「＋加入來源」下拉：檔案、資料夾、YouTube（YouTube 跳出對話框輸入網址）
+    var bAdd = h('button', null, '＋加入來源 ▾'); bAdd.title = '加入檔案、資料夾或 YouTube';
+    var addMenu = h('div', 'fml-menu'); addMenu.style.display = 'none';
+    var bFile = h('button', null, '檔案…'), bFolder = h('button', null, '資料夾…'), bYtAdd = h('button', null, 'YouTube…');
+    addMenu.appendChild(bFile); addMenu.appendChild(bFolder); addMenu.appendChild(bYtAdd);
+    var addWrap = h('span', 'fml-addwrap'); addWrap.appendChild(bAdd); addWrap.appendChild(addMenu);
+    function closeAddMenu() { addMenu.style.display = 'none'; }
+    bAdd.onclick = function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); addMenu.style.display = addMenu.style.display === 'none' ? '' : 'none'; };
+    var bAct = h('button', null, '對勾選的曲目 ▾'); bAct.title = '轉錄歌詞、批次輸出、擷取：這些都是對主畫面勾選的曲目做的';
     var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者、歌詞（空白分隔多個關鍵字）';
     var sSel = h('select');
     [['all', '全部（含歌詞）'], ['meta', '不含歌詞'], ['lyrics', '只查歌詞']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; sSel.appendChild(op); });
@@ -102963,11 +102975,11 @@ const holder = {};
     var bDel = h('button', null, '移除勾選');
     var work = h('button', 'fml-work'); work.style.display = 'none';
     var stat = h('span', 'fml-st');
-    var bSet = h('button', null, '⚙ 設定'); bSet.title = '開啟設定：來源與擷取、歌詞、輸出、旋律索引、YouTube、資料';
+    var bSet = h('button', null, '⚙ 設定'); bSet.title = '開啟設定：來源與擷取、旋律索引、資料';
     function setMax(on) { maxOn = !!on; toggleCls(root, 'max', maxOn); bMax.textContent = maxOn ? '🗗 還原' : '⛶ 最大化'; }
     bMax.onclick = function () { setMax(!maxOn); };
-    bar.appendChild(bMax); bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel);
-    bar.appendChild(bHum); bar.appendChild(bDel); bar.appendChild(work); bar.appendChild(stat); bar.appendChild(bSet);
+    bar.appendChild(bMax); bar.appendChild(addWrap); bar.appendChild(search); bar.appendChild(sSel);
+    bar.appendChild(bHum); bar.appendChild(bAct); bar.appendChild(bDel); bar.appendChild(work); bar.appendChild(stat); bar.appendChild(bSet);
 
     // ───── 設定分頁視窗（置中對話框；內容一直在 DOM 裡，只切換顯示）─────
     var dlg = h('div', 'fml-dlgbg'), box = h('div', 'fml-dlg'), dHead = h('div', 'fml-dlg-h'), dMain = h('div', 'fml-dlg-main'), dTabs = h('div', 'fml-dlg-tabs'), dBody = h('div', 'fml-dlg-body');
@@ -102990,9 +103002,11 @@ const holder = {};
     // Esc：先關設定視窗，其次還原最大化
     var onKey = function (ev) {
       if (!ev || ev.key !== 'Escape') return;
-      if (dlgOpen()) closeSettings(); else if (maxOn) setMax(false);
+      if (addMenu.style.display !== 'none') closeAddMenu();
+      else if (ytDlgOpen()) closeYt();
+      else if (dlgOpen()) closeSettings(); else if (maxOn) setMax(false);
     };
-    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('keydown', onKey);
+    if (typeof document !== 'undefined' && document.addEventListener) { document.addEventListener('keydown', onKey); document.addEventListener('click', closeAddMenu); }
 
     // ───── 來源與擷取分頁 ─────
     var srcBox = h('div', 'fml-foot');
@@ -103003,7 +103017,9 @@ const holder = {};
     var xBtn = h('button', null, '擷取選取的來源'), xCancel = h('button', null, '取消擷取');
     var xStat = h('span', 'fml-st');
     xCancel.disabled = true;
-    xRow.appendChild(xRoot); xRow.appendChild(xBtn); xRow.appendChild(xCancel); xRow.appendChild(xStat);
+    xRow.appendChild(xRoot);
+    var xAct = h('div', 'fml-bar');   // 擷取是對勾選的來源做的：放在主畫面的「對勾選的曲目」區
+    xAct.appendChild(xBtn); xAct.appendChild(xCancel); xAct.appendChild(xStat);
     var xList = h('div', 'fml-foot fml-exp');
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; xStat.textContent = '擷取不可用（需要桌面版）'; }
     // md5 指紋與重新對應：重整資料夾後用「重新對應」，選新的資料夾；重複檔列在下面（不自動刪除）
@@ -103015,7 +103031,7 @@ const holder = {};
     mdRow.appendChild(bRelocate); mdRow.appendChild(bMd5Cancel); mdRow.appendChild(mdStat);
     if (!host.md5) { bRelocate.disabled = true; mdStat.textContent = 'md5 對應不可用（需要桌面版）'; }
     var dupBox = h('div', 'fml-foot');
-    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(mdRow); tabPane.src.appendChild(dupBox); tabPane.src.appendChild(xRow); tabPane.src.appendChild(xList);
+    tabPane.src.appendChild(srcBox); tabPane.src.appendChild(mdRow); tabPane.src.appendChild(dupBox); tabPane.src.appendChild(xRow);
 
     // ───── 歌詞分頁 ─────
     var lyr = h('div', 'fml-lyr');
@@ -103025,7 +103041,14 @@ const holder = {};
     var lyrStat = h('span', 'fml-st');
     lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(bCancel); lyr.appendChild(lyrStat);
     if (!queue) { bLyr.disabled = true; bPause.disabled = true; bCancel.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
-    tabPane.lyr.appendChild(lyr);
+    // 主畫面的「對勾選的曲目」區：歌詞轉錄、批次輸出、擷取（都依主畫面勾選的曲目而定，所以不放在設定裡）
+    var actBox = h('div', 'fml-act'); actBox.style.display = 'none';
+    var actSel = h('div', 'fml-foot', '');
+    function actHead(t) { var d = h('div', 'fml-foot', t); d.style.fontWeight = '600'; return d; }
+    function openAct() { actBox.style.display = ''; }
+    bAct.onclick = function () { actBox.style.display = actBox.style.display === 'none' ? '' : 'none'; };
+    actBox.appendChild(actSel);
+    actBox.appendChild(actHead('歌詞轉錄')); actBox.appendChild(lyr);
 
     // ───── 輸出分頁：格式（mp3／mid）、分鐘數或整首、Basic Pitch、批次輸出、取消、結果 ─────
     var exp = h('div', 'fml-bar');
@@ -103048,7 +103071,8 @@ const holder = {};
     var expList = h('div', 'fml-foot fml-exp');
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
     bExpCancel.disabled = true;
-    tabPane.exp.appendChild(exp); tabPane.exp.appendChild(expList);
+    actBox.appendChild(actHead('批次輸出')); actBox.appendChild(exp); actBox.appendChild(expList);
+    actBox.appendChild(actHead('擷取（遊戲音樂等來源）')); actBox.appendChild(xAct); actBox.appendChild(xList);
 
     // ───── YouTube 分頁：貼清單網址 → 展開 → 逐支驗證、下載、登記；暫停／續跑／取消；逐支結果 ─────
     var yt = h('div', 'fml-bar');
@@ -103068,8 +103092,19 @@ const holder = {};
     ytAuto.onchange = function () { lsSet('fa.musiclib.ytAutoIndex', ytAuto.checked ? '1' : '0'); };
     var ytAutoLbl = h('label', null, '下載後自動建旋律索引（排進同一個索引佇列，一支一支序列跑）'); ytAutoLbl.appendChild(ytAuto);
     ytAutoRow.appendChild(ytAutoLbl);
-    tabPane.yt.appendChild(ytAutoRow);
-    tabPane.yt.appendChild(yt); tabPane.yt.appendChild(ytList);
+    // YouTube：「＋加入來源 → YouTube…」跳出的對話框（輸入網址、進度、暫停／取消、逐支結果都在這裡；關掉對話框不會中止進行中的工作）
+    var ytBg = h('div', 'fml-dlgbg'), ytBox = h('div', 'fml-dlg'), ytHead = h('div', 'fml-dlg-h'), ytBody = h('div', 'fml-dlg-body');
+    var ytX = h('button', null, '✕'); ytX.title = '關閉（Esc）';
+    ytBox.style.height = 'auto'; ytBox.style.maxHeight = '85vh'; ytBox.style.width = 'min(680px,92vw)'; ytBox.style.minHeight = '0';
+    ytHead.appendChild(h('span', null, '加入 YouTube（清單或單支影片）')); ytHead.appendChild(ytX);
+    ytBody.appendChild(yt); ytBody.appendChild(ytAutoRow); ytBody.appendChild(ytList);
+    ytBox.appendChild(ytHead); ytBox.appendChild(ytBody); ytBg.appendChild(ytBox); ytBg.style.display = 'none';
+    function ytDlgOpen() { return ytBg.style.display !== 'none'; }
+    function openYt() { ytBg.style.display = ''; try { ytIn.focus(); } catch (_) { /* */ } }
+    function closeYt() { ytBg.style.display = 'none'; }
+    ytX.onclick = closeYt;
+    ytBg.onclick = function (ev) { if (ev && ev.target === ytBg) closeYt(); };
+    bYtAdd.onclick = function () { closeAddMenu(); openYt(); };
     // 貼上網址時就提示：清單網址裡夾了單支影片，會展開整個清單（可取消）
     ytIn.oninput = function () { if (!ytRunning && host.youtubeInputNote) ytStat.textContent = host.youtubeInputNote(ytIn.value); };
 
@@ -103133,7 +103168,7 @@ const holder = {};
     [['n1', '♫'], ['n2', '♪'], ['n3', '♬']].forEach(function (n) { var d = h('div', 'nt ' + n[0], n[1]); d.setAttribute('aria-hidden', 'true'); hero.appendChild(d); });
     var ttl = h('div', 'ttl'); ttl.appendChild(h('h2', null, '🎵 音樂庫')); ttl.appendChild(h('p', null, '用檔名、歌詞，或哼一段旋律，找到你的歌'));
     hero.appendChild(ttl);
-    root.appendChild(hero); root.appendChild(bar); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg);
+    root.appendChild(hero); root.appendChild(bar); root.appendChild(actBox); root.appendChild(humBox); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn); root.appendChild(dlg); root.appendChild(ytBg);
     container.appendChild(root);
     // 視窗控制鈕（☐ 最大化、⤢ 彈出、⛶ 全螢幕）跟其他介面一樣放在標題列右邊：由呼叫端（opts.decorate，桌面版／網頁版接 FaWin）
     // 把控制鈕加進標題區；有接上就不再顯示工具列上自己的「最大化」，沒接（單獨使用）才保留它。
@@ -103143,7 +103178,8 @@ const holder = {};
 
     // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
     function visibleSet() {
-      if (!q.trim()) return { recs: lib.records.slice().sort(bySort), hits: {}, searching: false, count: 0 };
+      // 匯入來的「這台電腦沒有」的紀錄（importedGhost）不列在清單上；資料還在，md5 對上本機檔案時用本機路徑接上
+      if (!q.trim()) return { recs: lib.records.filter(function (r) { return !(r.importedGhost && r.status === 'missing'); }).sort(bySort), hits: {}, searching: false, count: 0 };
       var hits = lib.search(q, { scope: scope }), hitMap = {}, keep = {}, byKey = {};
       lib.records.forEach(function (r) { byKey[r.key] = r; });
       hits.forEach(function (x) { keep[x.record.key] = true; hitMap[x.record.key] = x.lyricHits || []; });
@@ -103156,7 +103192,7 @@ const holder = {};
         if (byKey[pk]) { keep[pk] = true; if (!hitMap[pk]) hitMap[pk] = []; }
         (kids[pk] || []).forEach(function (c) { keep[c.key] = true; if (!hitMap[c.key]) hitMap[c.key] = []; });
       });
-      return { recs: lib.records.filter(function (r) { return keep[r.key]; }).sort(bySort), hits: hitMap, searching: true, count: hits.length };
+      return { recs: lib.records.filter(function (r) { return keep[r.key] && !(r.importedGhost && r.status === 'missing'); }).sort(bySort), hits: hitMap, searching: true, count: hits.length };
     }
     function lyricCell(r) {
       if (r.pending) return '—（遊戲來源，待擷取）';
@@ -103270,7 +103306,7 @@ const holder = {};
       renderSources(); renderDups();
       renderLyr();
       renderWork();
-      foot.textContent = selText();
+      foot.textContent = selText(); actSel.textContent = selText();
     }
     // 來源管理（設定的「來源與擷取」分頁）：每個來源（加入的檔案或資料夾）一列，可整個移除（addSource 的相反）
     function renderSources() {
@@ -103306,9 +103342,9 @@ const holder = {};
     // 進行中的工作：主畫面一行，點一下開對應的設定分頁
     function workItems() {
       var items = [];
-      if (xRunning) items.push({ text: '擷取中 ' + xProg, tab: 'src' });
-      if (queue) { var s = queue.state(); if (s.running) items.push({ text: '轉錄中' + (s.progress != null ? ' ' + Math.round(s.progress * 100) + '%' : ''), tab: 'lyr' }); }
-      if (expRunning) items.push({ text: '輸出中 ' + expProg, tab: 'exp' });
+      if (xRunning) items.push({ text: '擷取中 ' + xProg, tab: 'act' });
+      if (queue) { var s = queue.state(); if (s.running) items.push({ text: '轉錄中' + (s.progress != null ? ' ' + Math.round(s.progress * 100) + '%' : ''), tab: 'act' }); }
+      if (expRunning) items.push({ text: '輸出中 ' + expProg, tab: 'act' });
       if (melRunning) items.push({ text: '旋律索引建立中' + (melProg ? ' ' + melProg : ''), tab: 'mel' });
       if (ytRunning) items.push({ text: 'YouTube 清單處理中', tab: 'yt' });
       if (host.md5 && host.md5.state) {
@@ -103323,8 +103359,8 @@ const holder = {};
       if (!items.length) { work.style.display = 'none'; work.textContent = ''; return; }
       work.style.display = '';
       work.textContent = items.map(function (x) { return x.text; }).join('｜');
-      work.title = '點一下開啟對應的設定分頁';
-      work.onclick = function () { openSettings(items[0].tab); };
+      work.title = '點一下開啟對應的畫面';
+      work.onclick = function () { var t = items[0].tab; if (t === 'act') openAct(); else if (t === 'yt') openYt(); else openSettings(t); };
     }
     function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
@@ -103865,7 +103901,7 @@ const FaMusicLibHost = (function () {
   function isAbsPath(p) { return /^([a-zA-Z]:[\\\/]|\\\\|\/)/.test(String(p || '')); }
   // 讀檔前確認是完整路徑；只有檔名的舊紀錄（舊版選檔加入）會被 app 資料夾當成相對路徑而找不到，先講清楚原因
   function absPath(p) {
-    if (!isAbsPath(p)) throw new Error('這筆紀錄只有檔名、沒有完整路徑（' + p + '），無法讀取。請把它移除後，用「＋加檔案」重新加入。');
+    if (!isAbsPath(p)) throw new Error('這筆紀錄只有檔名、沒有完整路徑（' + p + '），無法讀取。請把它移除後，用「＋加入來源 → 檔案」重新加入。');
     return p;
   }
 
