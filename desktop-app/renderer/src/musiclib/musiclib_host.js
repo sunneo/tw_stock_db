@@ -348,7 +348,7 @@ const FaMusicLibHost = (function () {
       var notes = [], fn = null;
       try { fn = window.fa && window.fa._audioLoadSeparator ? await window.fa._audioLoadSeparator(function () {}, notes) : null; } catch (e) { notes.push(String((e && e.message) || e)); }
       if (!fn && !notes.length) notes.push('這個環境沒有分軌模型的載入功能');
-      sepState = { sep: fn, why: notes.join('；') };
+      sepState = { sep: fn, why: notes.join('；'), notes: notes };
     }
     return sepState;
   }
@@ -363,6 +363,7 @@ const FaMusicLibHost = (function () {
       separator: sp && sp.sep ? sp.sep : null, stems: sp && sp.sep ? sp.sep.stems : null
     });
     if (useStems && sp && !sp.sep) r.method += '（拆軌模型沒載入：' + sp.why + '）';
+    else if (useStems && sp && sp.notes && sp.notes.length) r.method += '（' + sp.notes.join('；') + '）';   // 例如「Demucs 沒用 GPU：原因」，讓使用者看得到實際用了什麼後端
     return r;
   }
   function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }

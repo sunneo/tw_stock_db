@@ -84767,31 +84767,43 @@ const holder = {};
     return channels.map(function (d) { return d.subarray(0, keep); });
   }
 
-  async function runPipeline(P, input, transcriber, title) {
+  async function runPipeline(P, input, transcriber, title, separator, stems) {
     var o = { title: title || '從音訊轉出' };
     if (transcriber) o.transcriber = transcriber;
+    if (separator) { o.separator = separator; if (stems) o.stems = stems; }
     return P.run({ left: input.channels[0], right: input.channels[1] || null, sampleRate: input.sampleRate }, o);
   }
 
+  // opts.separator（選用）：分軌函式（Demucs）。有就先拆成鼓／貝斯／人聲／吉他／鋼琴／其他各自轉譜，song 的每條音軌是一個聲部；
+  // 分軌那一步丟錯就退回不分軌（method 寫明原因），不整個失敗。
   async function songFromAudio(input, opts) {
     opts = opts || {};
     var P = opts.Pipeline;
     if (!P || typeof P.run !== 'function') throw new Error('缺少 FaAudioPipeline（音訊轉譜流程）');
     if (!input || !input.channels || !input.channels.length) throw new Error('沒有音訊樣本');
-    var r, method = METHOD_PITCH, note = opts.modelNote || '';
+    var r, method = METHOD_PITCH, note = opts.modelNote || '', sep = opts.separator || null, split = false, sepWhy = '';
+    async function go(tr) {
+      if (sep) {
+        try { var x = await runPipeline(P, input, tr, opts.title, sep, opts.stems); split = true; return x; }
+        catch (e) { sepWhy = String((e && e.message) || e); sep = null; }
+      }
+      return runPipeline(P, input, tr, opts.title);
+    }
     if (opts.transcriber) {
       try {
-        r = await runPipeline(P, input, opts.transcriber, opts.title);
+        r = await go(opts.transcriber);
         method = METHOD_BASIC;
       } catch (e) {
         var why = String((e && e.message) || e);
-        r = await runPipeline(P, input, null, opts.title);
+        r = await go(null);
         method = METHOD_PITCH + '，Basic Pitch 失敗已退回：' + why;
       }
     } else {
-      r = await runPipeline(P, input, null, opts.title);
+      r = await go(null);
       method = METHOD_PITCH + (note ? '（' + note + '）' : '');
     }
+    if (split) method += '＋Demucs 拆軌';
+    else if (opts.separator) method += '（拆軌沒成功，已退回不分軌' + (sepWhy ? '：' + sepWhy : '') + '）';
     return { song: r.song, tempo: r.tempo, method: method, skipped: (r.report && r.report.skipped) || [] };
   }
 
@@ -103062,6 +103074,10 @@ const holder = {};
     var eWholeLbl = h('label', null, '整首'); eWholeLbl.appendChild(eWhole);
     var eModel = h('input'); eModel.type = 'checkbox'; eModel.checked = lsGet('fa.musiclib.exportBasicPitch', '0') === '1';
     var eModelLbl = h('label', null, '音訊轉 mid 用 Basic Pitch'); eModelLbl.appendChild(eModel);
+    // 拆軌（選用，預設關）：音訊／影片轉 mid 時先用 Demucs 分成鼓、貝斯、人聲、吉他、鋼琴、其他六個聲部各自轉譜，輸出的 mid 一個聲部一條音軌
+    var eStems = h('input'); eStems.type = 'checkbox'; eStems.checked = lsGet('fa.musiclib.exportStems', '0') === '1';
+    var eStemsLbl = h('label', null, '拆軌（音訊轉 mid 用 Demucs 分成六個聲部；沒有模型會下載約 136 MB，每首要多跑幾分鐘）'); eStemsLbl.appendChild(eStems);
+    eStems.onchange = function () { lsSet('fa.musiclib.exportStems', eStems.checked ? '1' : '0'); };
     eFmt.onchange = function () { lsSet('fa.musiclib.exportFormat', eFmt.value); };
     eMin.oninput = function () { lsSet('fa.musiclib.exportMinutes', eMin.value); };
     eWhole.onchange = function () { lsSet('fa.musiclib.exportWhole', eWhole.checked ? '1' : '0'); };
@@ -103069,7 +103085,7 @@ const holder = {};
     var bExp = h('button', null, '批次輸出');
     var bExpCancel = h('button', null, '取消輸出');
     var expStat = h('span', 'fml-st');
-    exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(eModelLbl);
+    exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(eModelLbl); exp.appendChild(eStemsLbl);
     exp.appendChild(bExp); exp.appendChild(bExpCancel); exp.appendChild(expStat);
     var expList = h('div', 'fml-foot fml-exp');
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
@@ -103132,10 +103148,14 @@ const holder = {};
     }
     var mModelIdx = bpCheckbox();
     var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
+    // 索引時拆軌（選用，預設關）：音訊先用 Demucs 分成六個聲部，每個聲部各自一條旋律線（跟 MIDI 的多軌一樣，搜尋時每首取最高分那條）。每首多跑幾分鐘；已建好的索引要用「強制重建」才會改
+    var mStemsIdx = h('input'); mStemsIdx.type = 'checkbox'; mStemsIdx.checked = lsGet('fa.musiclib.melodyStems', '0') === '1';
+    mStemsIdx.onchange = function () { lsSet('fa.musiclib.melodyStems', mStemsIdx.checked ? '1' : '0'); };
+    var mStemsIdxLbl = h('label', null, '建索引時拆軌（Demucs 六個聲部各建一條旋律線；很慢，沒有模型會下載約 136 MB；已建好的要用強制重建才會套用）'); mStemsIdxLbl.appendChild(mStemsIdx);
     idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
     if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
-    tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
+    tabPane.mel.appendChild(idxBox); var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
 
     // ───── 哼歌找歌區塊（主畫面，工具列下方，可收合）：錄哼歌、選音檔找、歌詞文字、找相似、結果、狀態 ─────
     var humBox = h('div', 'fml-hum fml-foot');
@@ -103468,7 +103488,7 @@ const holder = {};
       expStat.textContent = '選擇輸出資料夾…'; renderWork();
       var fmt = eFmt.value;
       host.exportBatch(recs, {
-        format: fmt, minutes: minutes, useModel: eModel.checked,
+        format: fmt, minutes: minutes, useModel: eModel.checked, useStems: eStems.checked,
         onEvent: function (ev) {
           if (ev.retry) expProg = '暫時性失敗，自動重試第 ' + ev.retry + ' 次';
           else if (ev.stage) expProg = STAGE_ZH[ev.stage] || ev.stage;
@@ -104090,7 +104110,7 @@ const FaMusicLibHost = (function () {
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
       else if (step === 'to-song') {
         // 既有 FaAudioPipeline：ctx.useModel 才試 Basic Pitch（沒模型或失敗就單音追蹤，並記在 st.method）
-        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload);
+        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload, !!ctx.useStems);
         st.song = sg.song; st.method = sg.method;
         st.expectNotes = FaMidi.noteCount(st.song);
         st.expectSec = st.view.duration;
@@ -104133,7 +104153,7 @@ const FaMusicLibHost = (function () {
     var a = api();
     if (!a || !a.roots || !a.roots.browse || !a.rawfs) throw new Error('批次輸出需要桌面版');
     if (typeof FaMidi === 'undefined' || typeof FaMidiPlay === 'undefined') throw new Error('MIDI 模組不存在（需要桌面版）');
-    exportCancelled = false;
+    exportCancelled = false; resetSeparator();
     var outDir = opts.outDir || await a.roots.browse();
     if (!outDir) return { cancelled: true, results: [], summary: {} };
     var items = records.map(function (r) { return { id: r.key, name: r.name, format: opts.format, record: r }; });
@@ -104141,7 +104161,7 @@ const FaMusicLibHost = (function () {
       minutes: opts.minutes,
       isCancelled: function () { return exportCancelled; },
       onEvent: opts.onEvent,
-      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
+      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.useStems = !!opts.useStems; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
       verify: function (out) { return verifyOutput(out); }
     }).then(function (res) { res.outDir = outDir; return res; });
   }
@@ -104163,14 +104183,30 @@ const FaMusicLibHost = (function () {
     return { transcriber: FaAudioRuntime.makeTranscriber(ort, s.session), note: '' };
   }
   // 音訊（已解碼的 AudioBuffer 或 Blob）→ 歌曲：走既有 FaAudioPipeline；useModel 才試 Basic Pitch
-  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload) {
+  // 拆軌（選用，使用者勾選才做）：Demucs 6 軌分軌模型，沒下載過會下載（約 136 MB）。載入一次、同一批工作共用；載不起來就記下原因、這批都退回不分軌（不是每首重試）。
+  var sepState = null;
+  function resetSeparator() { sepState = null; }
+  async function getSeparator() {
+    if (!sepState) {
+      var notes = [], fn = null;
+      try { fn = window.fa && window.fa._audioLoadSeparator ? await window.fa._audioLoadSeparator(function () {}, notes) : null; } catch (e) { notes.push(String((e && e.message) || e)); }
+      if (!fn && !notes.length) notes.push('這個環境沒有分軌模型的載入功能');
+      sepState = { sep: fn, why: notes.join('；'), notes: notes };
+    }
+    return sepState;
+  }
+  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload, useStems) {
     var tr = { transcriber: null, note: '' };
     if (useModel) tr = await basicPitchTranscriber(!!allowDownload);
     var chans = Array.isArray(channelsBuf) ? channelsBuf : [];
+    var sp = useStems ? await getSeparator() : null;
     var r = await FaMusicLibAudio.songFromAudio({ channels: chans, sampleRate: sr }, {
       Pipeline: FaAudioPipeline, transcriber: tr.transcriber, title: title,
-      modelNote: useModel ? tr.note : ''
+      modelNote: useModel ? tr.note : '',
+      separator: sp && sp.sep ? sp.sep : null, stems: sp && sp.sep ? sp.sep.stems : null
     });
+    if (useStems && sp && !sp.sep) r.method += '（拆軌模型沒載入：' + sp.why + '）';
+    else if (useStems && sp && sp.notes && sp.notes.length) r.method += '（' + sp.notes.join('；') + '）';   // 例如「Demucs 沒用 GPU：原因」，讓使用者看得到實際用了什麼後端
     return r;
   }
   function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }
@@ -104189,7 +104225,13 @@ const FaMusicLibHost = (function () {
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
     var sg;
-    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    var stems = melodyUseStems();
+    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel, stems); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    if (stems && /＋Demucs 拆軌/.test(sg.method)) {
+      // 拆軌成功：每個聲部（鼓除外的各軌）各自一條旋律線，與 MIDI 檔同一格式；搜尋時每首取最高分那條線
+      var bl = FaMusicLibMelody.songLines(sg.song);
+      return { notes: bl.mix, tracks: bl.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: sg.method };
+    }
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }
   // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
@@ -104302,6 +104344,7 @@ const FaMusicLibHost = (function () {
   }
   // 跑佇列：first 先跑，之後把排隊中的批次依序跑完；結束時（含丟錯）把沒跑的排隊收掉，等它的人不會永遠等
   async function melodyRunLoop(first) {
+    resetSeparator();
     melodyState.running = true; melodyState.cancelled = false;
     try {
       var L = getLib(); await L.ready;
@@ -104979,6 +105022,8 @@ const FaMusicLibHost = (function () {
   function ytNotify() { if (ytOnUpdate && ytJob) { try { ytOnUpdate(ytJob, FaMusicLibYoutube.summarize(ytJob)); } catch (_) { /* 畫面出錯不影響工作 */ } } }
   // 設定：下載後自動建旋律索引（localStorage fa.musiclib.ytAutoIndex，沒設過就是開）；手動索引的 Basic Pitch 勾選同一個鍵（fa.musiclib.melodyBasicPitch）
   function ytAutoIndexOn() { try { var v = localStorage.getItem('fa.musiclib.ytAutoIndex'); return v == null ? true : v === '1'; } catch (_) { return true; } }
+  // 索引時拆軌（設定 → 旋律索引的勾選；預設關）。每首要跑 Demucs，慢很多
+  function melodyUseStems() { try { return localStorage.getItem('fa.musiclib.melodyStems') === '1'; } catch (_) { return false; } }
   function melodyUseBasicPitch() { try { return localStorage.getItem('fa.musiclib.melodyBasicPitch') === '1'; } catch (_) { return false; } }
   function ytBridge() {
     var fa = (typeof window !== 'undefined' && window.fa) || null;
@@ -156029,11 +156074,31 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 模型位元組用呼叫端原本的下載（c.dl，快取過的就是快取），不另外下載；選 CPU（原生）時不碰；任何一步不成立回傳 null（原因寫進 c.notes）。
     // 回傳的 session 與 ORT 同介面；執行中失敗（算子不支援、運算退到 CPU、丟錯）會永久退回網頁版 wasm（需要 c.ort），結果格式不變。
     _audioGpuOn() { return !!(this.advancedSettings && this.advancedSettings.audioGpu === 'on') || this._gpuAutoOn('audioGpu'); }
+    // 音訊模型沒走 GPU 的真實原因（寫進結果的說明，不讓使用者猜）
+    _audioGpuWhyNot() {
+        const s = this.advancedSettings || {};
+        if (s.gpuAccel !== 'on' && s.audioGpu !== 'on') return '「GPU 加速」沒開，也沒手動開「音訊轉 MIDI 用 GPU」（設定 → GPU 相容層）';
+        const br = this._gpuBrokenGet('audioGpu'); if (br) return '先前 GPU 執行失敗被停用（' + br.why + '）；到 GPU 設定重置後可再試';
+        const d = this._gpuAutoDec; if (!d) return 'GPU 自動判斷還沒有結果';
+        const f = d.decision && d.decision.features && d.decision.features.audioGpu;
+        return '自動判斷結果：' + (f && f.reason ? f.reason : (d.decision && d.decision.reason) || '沒有說明');
+    }
     async _audioGpuSession(id, c) {
         const label = c.REG[id].label;
         try {
             if (id !== 'yamnet' && id !== 'demucs-6s' && id !== 'basic-pitch') return null;
-            if (!this._audioGpuOn()) return null;
+            // 自動判斷（GPU 加速開著、audioGpu 沒手動開）要先等探測做完：_gpuAutoOn 第一次呼叫只是「啟動探測」並回傳 false，
+            // 所以開機後第一次的音訊轉 MIDI／拆軌一律走 CPU（使用者回報：已經開了 CUDA 相容層，Demucs 還是用 CPU）。這裡等探測結果再決定。
+            let audioOn = this._audioGpuOn();
+            if (!audioOn && this.advancedSettings && this.advancedSettings.gpuAccel === 'on' && !this._gpuBrokenGet('audioGpu')) {
+                const t0 = Date.now();
+                if (!this._gpuAutoDec && !this._gpuAutoBusy) await this._gpuAutoProbe();
+                while (this._gpuAutoBusy && Date.now() - t0 < 60000) await new Promise((r) => setTimeout(r, 100));
+                audioOn = this._audioGpuOn();
+            }
+            if (!audioOn) { c.notes.push(label + ' 沒用 GPU：' + this._audioGpuWhyNot()); return null; }
+            const slow = this._gpuBrokenGet('audioGpuSlow:' + id);   // 先前這個模型的 GPU 路徑太慢被看門狗切掉：之後直接走 WASM，不是每一首都再等一次
+            if (slow) { c.notes.push(label + ' 沒用 GPU：先前 GPU 路徑太慢已停用（' + slow.why + '）；到 GPU 設定重置後可再試'); return null; }
             if (typeof navigator === 'undefined' || !navigator.gpu) { c.notes.push(label + ' GPU 路徑不用：沒有 WebGPU'); return null; }
             const gpu = await this._omGpuInfo();
             if (FaVlm.wantsNativeBackend(this._omDevicePrefOf({ id: 'audio-' + id }), gpu.available)) return null;   // 選 CPU＝原生／wasm：維持原路徑
@@ -156046,10 +156111,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 async run(feeds) {
                     if (gpuOn) {
                         try {
-                            const r = await gs.run(feeds), sh = M.graph.gpuShare(gs.info.tiers);
+                            // 看門狗：一段（Demucs 約 7.8 秒音訊）超過 150 秒還沒算完就當失敗退回 WASM。實測：這條 GPU 圖形路徑在某些機器上
+                            // 一段跑不完（超過 8 分鐘），而 WASM 一段約 35 秒；只靠「丟錯才退回」會等到天荒地老。
+                            let wd = null; const wdMs = c.runTimeoutMs || 150000;
+                            const r = await Promise.race([gs.run(feeds), new Promise((_, rej) => { wd = setTimeout(() => rej(new Error('單次推論超過 ' + Math.round(wdMs / 1000) + ' 秒還沒算完（GPU 路徑太慢）')), wdMs); })]).finally(() => clearTimeout(wd));
+                            const sh = M.graph.gpuShare(gs.info.tiers);
                             if (!sh.ok) throw new Error('重運算沒有跑在 GPU：' + JSON.stringify(gs.info.tiers));   // 少數超過緩衝區上限的運算退 CPU 可以接受，退層超過 20% 或完全沒用到 GPU 就退回 wasm
                             return r;
-                        } catch (e) { gpuOn = false; const why = String((e && e.message) || e).slice(0, 200); c.notes.push(label + ' GPU 執行失敗，已退回網頁版 WASM：' + why); console.log('[audio] ' + label + ' GPU 失敗，退回 WASM：' + why); }
+                        } catch (e) { gpuOn = false; const why = String((e && e.message) || e).slice(0, 200); if (/太慢/.test(why)) this._gpuBrokenSet('audioGpuSlow:' + id, why); c.notes.push(label + ' GPU 執行失敗，已退回網頁版 WASM：' + why); console.log('[audio] ' + label + ' GPU 失敗，退回 WASM：' + why); }
                     }
                     if (!c.ort) throw new Error('GPU 失敗且網頁版 onnxruntime 沒載入');
                     if (!fb) { const b2 = await c.dl(); fb = (await FaAudioRuntime.createSession(c.ort, b2, ['wasm'], { opt: c.opt })).session; }

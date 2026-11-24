@@ -103,6 +103,13 @@ function fakePyodide(opts) {
     assert.ok(src.indexOf('this._gpuNumpyWanted = true') > 0, '腳本在檔案裡掃不到時，失敗要記下來讓之後先載入');
   });
 
+  await check('音訊 GPU 路徑：等自動探測做完再決定（不是開機第一次就走 CPU）；單次推論有看門狗；太慢要記住不再每首重等；沒用 GPU 要寫原因', async () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8');
+    assert.ok(src.indexOf('let audioOn = this._audioGpuOn();') > 0 && src.indexOf('await this._gpuAutoProbe();') > 0, '沒有等探測');
+    assert.ok(src.indexOf("GPU 路徑太慢") > 0 && src.indexOf("'audioGpuSlow:' + id") > 0, '沒有看門狗或沒有記住太慢');
+    assert.ok(src.indexOf('_audioGpuWhyNot()') > 0, '沒用 GPU 沒有寫原因');
+  });
+
   await check('run_command 接線：GPU-only 模式、cwd_abs 傳入、選項順序、只接受 gpu.* 操作、結果帶 gpu 欄位', async () => {
     const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
     const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
