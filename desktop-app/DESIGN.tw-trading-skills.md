@@ -157,7 +157,7 @@
 - `desktop-app/skills/tw-trading/scripts/tw_trading_register.test.js`：登記檢查，從真正的 `floating-assistant.js` 取出 `BUILTIN_SKILLS` 求值，確認登記存在，並且 `personaPrompt` 與 `SKILL.md` 完全一致。
 - `desktop-app/skills/tw-trading/SKILL.md`：Claude 格式技能正文（六個模式、台股規則、資料缺口）。
 - `desktop-app/skills/tw-trading/THIRD-PARTY-NOTICE.md`：原作者版權聲明、MIT 授權全文、來源連結。
-- `desktop-app/renderer/src/floating-assistant.js`：`BUILTIN_SKILLS` 最前面新增一筆 `builtin-skill-tw-trading`（`name: tw-trading-market-tools`）。內容由 `SKILL.md` 產生（一次性腳本），不是手寫的。
+- 2026-11-24 更正：**不內建**。`BUILTIN_SKILLS` 沒有這個技能（`_ensureBuiltinSkillBundles` 會清掉 v568 已裝進設定的 `builtin-skill-tw-trading`）；只有台股網頁（網頁倉庫 `web/index.html` 的 `registerTwTradingDomain`）在背景載入 `skills/tw-trading/SKILL.md`，用 `register_domain("tw_trading")` 帶進它自己的 AI。
 
 ### 與原作者的差異（改寫說明）
 
