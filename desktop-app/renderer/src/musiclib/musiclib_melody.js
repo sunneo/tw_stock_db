@@ -356,8 +356,10 @@
         try {
           var got = await opts.extract(rec, { attempt: attempt });
           var mel = melodyNotes(got.notes);
-          if (mel.length < MIN_NOTES) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: contourOf(mel), tracks: got.tracks || [] };
+          // 音訊只給指紋（沒有旋律線）也算成功：指紋存在 rec.fp，旋律線留空（contour 為 null，找歌時略過這首的旋律）
+          if (mel.length < MIN_NOTES && !got.fp) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
+          if (got.fp) rec.fp = Object.assign({ sig: sigOf(rec) }, got.fp); else if (rec.fp) rec.fp = null;
+          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [] };
           done = true; break;
         } catch (err) {
           var msg = String((err && err.message) || err);

@@ -785,8 +785,20 @@
       if (!melHum) { hStatus('先錄哼歌或選音檔'); return; }
       mFind.disabled = true; mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
       // 結果顯示（先出旋律比對的結果；有文字加分時，文字轉錄完成後再更新一次）
+      // 原曲指紋的結果列：命中標「原曲指紋」並顯示錄音開頭對應到歌的第幾秒；沒有新特徵的歌要註明「請重建」
+      function fpNote(fp) {
+        if (!fp) return null;
+        var mmss = function (s) { s = Math.max(0, s || 0); var m = Math.floor(s / 60), sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; };
+        var parts = [];
+        if (fp.ok && fp.top) parts.push('【原曲指紋】' + fp.top.name + '，錄音開頭對到曲中第 ' + mmss(fp.top.offsetSec) + ' 秒（票數 ' + fp.top.votes + '，次高 ' + fp.top.second + '）');
+        else parts.push('原曲指紋：沒找到' + (fp.reason ? '（' + fp.reason + '）' : ''));
+        if (fp.missingNames && fp.missingNames.length) parts.push('有 ' + fp.missingNames.length + ' 首沒有新特徵，請重建旋律索引（' + fp.missingNames.slice(0, 3).join('、') + (fp.missingNames.length > 3 ? ' 等' : '') + '）');
+        return h('div', null, parts.join('；'));
+      }
       function showFound(r) {
         mRes.textContent = ''; mMidi.style.display = 'none';
+        var fpLine = fpNote(r.fp);
+        if (fpLine) mRes.appendChild(fpLine);
         if (!r.ok) { hStatus(r.reason); return; }
         var timing = '，旋律比對 ' + (r.entryCount != null ? r.entryCount : MEL.entries().length) + ' 首用了 ' + (r.matchMs || 0) + ' 毫秒' + (r.transcribeMs != null ? '，文字轉錄 ' + (r.transcribeMs / 1000).toFixed(1) + ' 秒' : '');
         var textNote = r.partial ? '；文字轉錄中（語音模型第一次要載入，可能要幾分鐘，目前是只看旋律的結果）'

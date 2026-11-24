@@ -367,6 +367,32 @@ const FaMusicLibHost = (function () {
     return r;
   }
   function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }
+  // ───── 音訊指紋（階段一，見 docs/DESIGN.musiclib-audio-features.md）─────
+  // 旋律線（逐音符轉譜）慢到約即時，預設不跑；要跑舊的逐音符索引，設 localStorage fa.musiclib.melodyLegacyAudio = '1'
+  function melodyLegacyAudio() { try { return localStorage.getItem('fa.musiclib.melodyLegacyAudio') === '1'; } catch (_) { return false; } }
+  function fingerprintOf(buf) {
+    try { return FaMusicLibFP.pack(FaMusicLibFP.fingerprint(chansOf(buf), buf.sampleRate)); }
+    catch (e) { throw new Error('指紋失敗：' + String((e && e.message) || e)); }
+  }
+  var fpIndexCache = { sig: null, index: null };
+  // 查詢用索引：依各紀錄的 fp 建，簽章沒變就沿用（建一次約幾秒，之後查詢很快）
+  function fpIndexOf(L) {
+    var ents = L.records.filter(function (r) { return r.fp && r.fp.v === FaMusicLibFP.FP_VERSION; })
+      .map(function (r) { return { key: r.key, name: r.name, path: r.path, fp: r.fp }; });
+    var sig = ents.map(function (e) { return e.key + '#' + (e.fp.n || 0); }).join('|');
+    if (fpIndexCache.sig !== sig || !fpIndexCache.index) { fpIndexCache.index = FaMusicLibFP.buildIndex(ents); fpIndexCache.sig = sig; }
+    return fpIndexCache.index;
+  }
+  // 原曲指紋查詢：錄音（或音檔）→ 指紋 → 對整個索引投票。回傳 FaMusicLibFP.search 的結果，另附沒有新特徵的歌名（請重建）
+  async function searchFp(blob) {
+    var L = getLib(); await L.ready;
+    var buf = await window.fa._decodeAudioBuffer(blob);
+    var q = FaMusicLibFP.fingerprint(chansOf(buf), buf.sampleRate);
+    var idx = fpIndexOf(L), r = FaMusicLibFP.search(q, idx, {});
+    r.missingNames = L.records.filter(function (x) { return x.melody && x.melody.status === 'ok' && !x.fp && !/\.midi?$/i.test(x.name); }).map(function (x) { return x.name; });
+    r.indexed = idx.songs.length; r.queryDur = q.dur;
+    return r;
+  }
   // 索引用：mid 直接取旋律；音訊先用既有 _decodeAudioBuffer 解碼，再 songFromMedia（可選 Basic Pitch）。失敗丟錯，訊息附階段
   async function extractMelody(rec, useModel) {
     var a = api(), fa = window.fa;
@@ -381,15 +407,18 @@ const FaMusicLibHost = (function () {
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
+    // 一次掃描的指紋（階段一）：每首都做，約 2 秒（3 分鐘的歌）
+    var fp = fingerprintOf(buf);
+    if (!melodyLegacyAudio()) return { notes: [], tracks: [], method: '音訊指紋（一次掃描，沒有旋律線）', fp: fp };
     var sg;
     var stems = melodyUseStems();
     try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel, stems); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
     if (stems && /＋Demucs 拆軌/.test(sg.method)) {
       // 拆軌成功：每個聲部（鼓除外的各軌）各自一條旋律線，與 MIDI 檔同一格式；搜尋時每首取最高分那條線
       var bl = FaMusicLibMelody.songLines(sg.song);
-      return { notes: bl.mix, tracks: bl.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: sg.method };
+      return { notes: bl.mix, tracks: bl.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: sg.method, fp: fp };
     }
-    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
+    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method, fp: fp };
   }
   // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
   async function notesFromHum(blob, useModel) {
@@ -530,13 +559,14 @@ const FaMusicLibHost = (function () {
   }
   // 查詢用的索引項目（只取建好的）
   function melodyEntries(L) {
+    // 只有指紋、沒有旋律線的音訊（階段一）不進旋律比對：沒有 contour 的線略過
     return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
       // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
-      var lines = [{ label: '合併（所有軌）', contour: r.melody.contour }];
-      lines[0].track = null; lines[0].mode = 'merged';
-      (r.melody.tracks || []).forEach(function (t) { lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
+      var lines = [];
+      if (r.melody.contour) lines.push({ label: '合併（所有軌）', contour: r.melody.contour, track: null, mode: 'merged' });
+      (r.melody.tracks || []).forEach(function (t) { if (t.contour) lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
       return { key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path };
-    });
+    }).filter(function (e) { return e.lines.length > 0; });
   }
   // 哼歌的文字：先用既有轉錄（whisperTranscribe，同歌詞轉錄的 Whisper 流程）取文字；面板手動填的文字優先
   async function transcribeHum(blob) {
@@ -549,7 +579,11 @@ const FaMusicLibHost = (function () {
     opts = opts || {};
     var t0 = Date.now();
     // 先只用旋律比對（索引已建好，這一步通常不到一秒）並立刻回報；文字轉錄（要載入語音模型，可能要很久）放在後面
+    // 原曲指紋（階段一）：錄音（opts.blob）同時對指紋索引投票；有把握才顯示命中，結果附在 .fp 上
+    var fpRes = null;
+    if (opts.blob) { try { fpRes = await searchFp(opts.blob); } catch (e) { fpRes = { ok: false, reason: '指紋查詢失敗：' + String((e && e.message) || e), hits: [], missingNames: [] }; } }
     var base = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: null, textWeight: 0.15 });
+    base.fp = fpRes;
     base.textUsed = ''; base.matchMs = Date.now() - t0; base.entryCount = entries.length; base.partial = !!opts.useText;
     var manual = opts.useText ? String(opts.textQuery || '').trim() : '';
     if (!opts.useText || !base.ok) { base.partial = false; return base; }
@@ -560,7 +594,7 @@ const FaMusicLibHost = (function () {
     if (!text) { try { text = await transcribeHum(opts.blob); } catch (e) { base.partial = false; base.textError = String((e && e.message) || e); return base; } }
     if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
     var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
-    res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
+    res.fp = fpRes; res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
     return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
