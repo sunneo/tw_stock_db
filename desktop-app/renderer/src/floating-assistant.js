@@ -130274,6 +130274,16 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const keep = ranked.map((r) => r.id); const set = new Set(keep);
         return { keep: keep.concat(names.filter((n) => META.has(n))), reserve: names.filter((n) => !META.has(n) && !set.has(n)) };
     }
+    // 最終回覆說「某工具無法使用／不能用／沒有」，而那個工具其實在備用區（reserve）、還沒給子 agent：回傳該補進名單的工具名稱（純函式）。
+    // 只認回覆裡逐字出現的工具名稱，加上「說不能用」的字句，不靠猜；沒有就回空陣列。
+    _reserveRecoveryTools(finalText, reserve, allowed) {
+        if (!Array.isArray(reserve) || !reserve.length) return [];
+        const text = String(finalText || ''); if (!text) return [];
+        if (!/(無法|不能|不可|沒辦法|暫時.{0,4}(不|無)|未能|沒有|不存在|不支援|unavailable|not available|cannot|can't|unable|no access|not (?:able|allowed))/i.test(text)) return [];
+        const have = new Set(allowed || []);
+        // 名稱要是完整的詞（前後不是字母數字底線），不然短名字會誤中別的工具名稱的一部分
+        return reserve.filter((n) => n && !have.has(n) && new RegExp('(^|[^A-Za-z0-9_])' + String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^A-Za-z0-9_])').test(text));
+    }
     // reserve 裡跟「需要」最相關的（本地檢索，沒有模型呼叫）
     _focusPick(reserve, need, top) {
         const entries = new Map(this._getCombinedToolEntries(reserve).map(([n, t]) => [n, t]));
@@ -161942,6 +161952,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             systemPrompt += `\n\n這個任務是一個分階段pipeline的第${stepNum}/${totalSteps}步——你只拿得到這個階段需要的工具，這是刻意設計（避免一次開放整個領域的全部工具讓單一子agent的工具清單過度膨脹），不是遺漏。**不要呼叫${REQUEST_MORE_TOOLS_NAME}申請這個階段本來就沒有分配到的工具**（後面還有其他sibling階段會被依序委派、各自拿到各自那個階段需要的工具，會接手處理）。你的正確任務範圍：只完成「這個階段」用現有工具做得到的部分，然後在最終回答裡清楚交代（1）這個階段實際完成了什麼、產出了什麼（檔案id/資料/結論等）（2）如果這個階段沒辦法完全做完，明確講清楚卡在哪裡、缺什麼，讓委派下一階段的人知道要接續處理什麼，不要自己嘗試繞過工具限制硬做，也不要因為看起來做不完就直接放棄回一句「做不到」。`;
         } else if (canRequestMore) {
             systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。名單外但真的存在的工具（例如畫圖的 generate_image）直接呼叫它也行，系統會替你追加；不要把「我要呼叫某工具」寫成一段文字就當作最終回覆。`;
+            // 領域工具太多、只先給了最相關的幾個：把「備用區有哪些」直接告訴它（只列名稱），不要讓它誤以為沒有這些工具
+            if (Array.isArray(options.focusReserve) && options.focusReserve.length) systemPrompt += `\n\n【備用區】這個領域還有以下工具，只是這一輪沒有送給你完整說明：${options.focusReserve.slice(0, 60).join('、')}。任務說明提到的工具若不在你手上的名單，不是「不能用」——它在備用區，呼叫 ${REQUEST_MORE_TOOLS_NAME}({"need":"我需要 工具名稱，用來……"}) 就能拿到。`;
         }
         if (canExtend) systemPrompt += `\n\n【回合預算】你這次大約有 ${Math.round(maxRounds * (this._isAutoAgentMode() ? 2 : 1))} 個回合（每次呼叫工具算一回合）。先評估任務多大：讀取資料最多用掉約 60%，其餘留給整理與寫出結果。知道任務比預算大時（例如讀完大綱才發現有很多頁要讀），呼叫${EXTEND_ROUNDS_NAME}({"estimate":還需要幾個回合,"reason":"做完了什麼、還剩什麼"})，系統會請使用者決定要不要擴展；不要自己默默縮水或亂省略內容。`;
         if (canDelegate && !mixerKids) {
@@ -161969,7 +161981,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const writeEvidence = { n: 0 };
         const fakeWriteGuard = { count: 0 };
         const claimPathGuard = { count: 0 };
-        let autoExecDescribed = 0, describedRepeats = 0, junkTagRetries = 0;
+        let autoExecDescribed = 0, describedRepeats = 0, junkTagRetries = 0, reserveRecoveries = 0;
         const describedSeen = new Map();
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
@@ -162331,6 +162343,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     messages.push({ role: 'user', content: subIntentNudge });
                     round--;
                     continue;
+                }
+                // 備用區補救：領域工具太多時引擎只先給最相關的幾個（_focusTools），其餘放備用區等模型自己申請；弱模型常常不申請，
+                // 直接回「某某工具無法使用」就結束（2026-11-25 真實事故：台股技能的 python_execute 被濾掉，模型回「暫時無法使用」）。
+                // 這裡不等它申請：最終回覆說某個備用區工具不能用 → 程式直接把它放進名單、退回請它真的去用（最多兩次）。
+                {
+                    const rec = reserveRecoveries < 2 ? this._reserveRecoveryTools(finalText, options.focusReserve, allowedToolNames) : [];
+                    if (rec.length) {
+                        reserveRecoveries++;
+                        allowedToolNames.push(...rec);
+                        options.focusReserve = options.focusReserve.filter((n) => !rec.includes(n));
+                        if (onProgress) onProgress('🔧 回覆說工具不能用，但它在備用區：已補進 ' + rec.join('、') + '，退回重做');
+                        if (onTrace) onTrace('🔧 模型說 ' + rec.join('、') + ' 無法使用，但這些工具在這個領域的備用區（只是一開始沒有送給它）：程式已補進名單，退回請它真的呼叫');
+                        messages.push({ role: 'assistant', content: finalText });
+                        messages.push({ role: 'user', content: '[系統提示] 你說「' + rec.join('、') + '」無法使用，但那是誤會：這些工具屬於這個領域，只是一開始沒有放進你的名單，現在已經補進來了，可以直接呼叫。請真的呼叫它們完成任務，不要再說它們不能用；實際呼叫失敗了，再依錯誤訊息回報或修正。' });
+                        round--; continue;
+                    }
                 }
                 {
                     const pc = await this._claimPathCheck(finalText);
