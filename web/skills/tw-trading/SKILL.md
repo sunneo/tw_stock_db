@@ -16,6 +16,14 @@ description: 台股大盤與個股的量化工具包（教學用途，不構成�
 - 資料不足就照實說，不要硬算。例如均線需要的根數不夠時，對應欄位留空並說明原因。
 - 與 stock-pattern-analysis 的分工：本技能給「數字」（廣度、收縮深度、出貨日數、部位大小）；型態判讀、進出場位置與老師的紀律仍依 stock-pattern-analysis。兩者結論衝突時，把衝突說清楚，不要自己硬合併。
 
+## 取得資料：export_table_jsonl（本站資料庫）
+
+全市場、多日的資料不要一檔一檔查，也不要上網找。流程固定：
+1. 呼叫 export_table_jsonl，table 填需要的表（daily_prices、technical_indicators、market_index、stocks），days 填需要的最近交易日數（市場廣度建議 70，出貨日 30，跟進日 60），market_index 要加 index_code=TAIEX。它會把資料存成 JSONL 檔並回傳 file_id，資料列不會進對話。
+2. 呼叫 python_execute，帶 attachment_files（例如 {"daily_prices.jsonl":"<file_id>"}），Python 用 json.loads 逐行讀，路徑要寫完整的 /work/<檔名>（工作目錄不是 /work，直接寫檔名會找不到）。
+3. 單檔 VCP 與型態用 get_price_history（單檔日 K）即可，不需要匯出整張表。
+各模式用哪些表：市場廣度＝daily_prices；上升趨勢比例＝technical_indicators＋stocks；跟進日、出貨日＝market_index（TAIEX）；VCP＝單檔日 K；部位試算不需要資料。
+
 ## 計算方式：python_execute
 
 上述公式請用 python_execute（瀏覽器內的 Python）實作，輸入是使用者提供或從上傳檔讀到的資料列（CSV 的欄位名稱照上面寫的）。每個模式算完都把「輸入幾列、用了哪些日期、排除了什麼」列出來，方便核對。
@@ -91,6 +99,6 @@ description: 台股大盤與個股的量化工具包（教學用途，不構成�
 
 ## 資料缺口（目前已知）
 
-- 本站每日資料目前的樣本只有少數交易日，多日均線（60 日）與 VCP（40 根以上）可能算不出來；遇到時照實說明，不要用其他來源硬補。
+- 本站本機資料庫約有兩年的每日資料（約 2024-07 起到最新交易日）。要的天數超過已載入的資料時，export_table_jsonl 會自動補載較早的月份；補載失敗才照實說明資料不足，不要用其他來源硬補，也不要上網找資料。
 - 族群名稱表目前不存在，只能用數字代號。
 - 跟進日與出貨日的指數來源是 TAIEX；櫃買指數（TPEx）若要用，要另外指定。
