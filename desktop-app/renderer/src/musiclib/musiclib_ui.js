@@ -215,6 +215,10 @@
     var eWholeLbl = h('label', null, '整首'); eWholeLbl.appendChild(eWhole);
     var eModel = h('input'); eModel.type = 'checkbox'; eModel.checked = lsGet('fa.musiclib.exportBasicPitch', '0') === '1';
     var eModelLbl = h('label', null, '音訊轉 mid 用 Basic Pitch'); eModelLbl.appendChild(eModel);
+    // 拆軌（選用，預設關）：音訊／影片轉 mid 時先用 Demucs 分成鼓、貝斯、人聲、吉他、鋼琴、其他六個聲部各自轉譜，輸出的 mid 一個聲部一條音軌
+    var eStems = h('input'); eStems.type = 'checkbox'; eStems.checked = lsGet('fa.musiclib.exportStems', '0') === '1';
+    var eStemsLbl = h('label', null, '拆軌（音訊轉 mid 用 Demucs 分成六個聲部；沒有模型會下載約 136 MB，每首要多跑幾分鐘）'); eStemsLbl.appendChild(eStems);
+    eStems.onchange = function () { lsSet('fa.musiclib.exportStems', eStems.checked ? '1' : '0'); };
     eFmt.onchange = function () { lsSet('fa.musiclib.exportFormat', eFmt.value); };
     eMin.oninput = function () { lsSet('fa.musiclib.exportMinutes', eMin.value); };
     eWhole.onchange = function () { lsSet('fa.musiclib.exportWhole', eWhole.checked ? '1' : '0'); };
@@ -222,7 +226,7 @@
     var bExp = h('button', null, '批次輸出');
     var bExpCancel = h('button', null, '取消輸出');
     var expStat = h('span', 'fml-st');
-    exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(eModelLbl);
+    exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(eModelLbl); exp.appendChild(eStemsLbl);
     exp.appendChild(bExp); exp.appendChild(bExpCancel); exp.appendChild(expStat);
     var expList = h('div', 'fml-foot fml-exp');
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
@@ -285,10 +289,14 @@
     }
     var mModelIdx = bpCheckbox();
     var mModelIdxLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelIdxLbl.appendChild(mModelIdx);
+    // 索引時拆軌（選用，預設關）：音訊先用 Demucs 分成六個聲部，每個聲部各自一條旋律線（跟 MIDI 的多軌一樣，搜尋時每首取最高分那條）。每首多跑幾分鐘；已建好的索引要用「強制重建」才會改
+    var mStemsIdx = h('input'); mStemsIdx.type = 'checkbox'; mStemsIdx.checked = lsGet('fa.musiclib.melodyStems', '0') === '1';
+    mStemsIdx.onchange = function () { lsSet('fa.musiclib.melodyStems', mStemsIdx.checked ? '1' : '0'); };
+    var mStemsIdxLbl = h('label', null, '建索引時拆軌（Demucs 六個聲部各建一條旋律線；很慢，沒有模型會下載約 136 MB；已建好的要用強制重建才會套用）'); mStemsIdxLbl.appendChild(mStemsIdx);
     idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
     if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
-    tabPane.mel.appendChild(idxBox); tabPane.mel.appendChild(idxInfo);
+    tabPane.mel.appendChild(idxBox); var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
 
     // ───── 哼歌找歌區塊（主畫面，工具列下方，可收合）：錄哼歌、選音檔找、歌詞文字、找相似、結果、狀態 ─────
     var humBox = h('div', 'fml-hum fml-foot');
@@ -621,7 +629,7 @@
       expStat.textContent = '選擇輸出資料夾…'; renderWork();
       var fmt = eFmt.value;
       host.exportBatch(recs, {
-        format: fmt, minutes: minutes, useModel: eModel.checked,
+        format: fmt, minutes: minutes, useModel: eModel.checked, useStems: eStems.checked,
         onEvent: function (ev) {
           if (ev.retry) expProg = '暫時性失敗，自動重試第 ' + ev.retry + ' 次';
           else if (ev.stage) expProg = STAGE_ZH[ev.stage] || ev.stage;

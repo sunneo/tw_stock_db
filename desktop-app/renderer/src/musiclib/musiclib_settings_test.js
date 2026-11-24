@@ -228,6 +228,29 @@ t('桌面版接給面板的 host 有批次輸出（exportBatch、cancelExport）
   ['exportBatch', 'cancelExport', 'youtubeInputNote'].forEach(function (k) { assert.ok(m[0].indexOf(k + ':') >= 0, 'PICK_HOST 缺 ' + k); });
 });
 
+t('拆軌是可選的、預設關：輸出區與旋律索引頁各一個勾選，寫進 localStorage；host 把它接到分軌流程', function () {
+  resetDom();
+  Object.keys(store).forEach(function (k) { delete store[k]; });
+  var p = mountPanel({ melody: stubMelody([]) });
+  var eS = cbByLabel(actOf(p.root), '拆軌');
+  assert.ok(eS && eS.checked === false, '輸出區要有拆軌勾選，預設關');
+  eS.checked = true; eS.onchange({ target: eS });
+  assert.equal(store['fa.musiclib.exportStems'], '1');
+  var iS = cbByLabel(paneOf(p.dlg, 1), '建索引時拆軌');
+  assert.ok(iS && iS.checked === false, '旋律索引頁要有拆軌勾選，預設關');
+  iS.checked = true; iS.onchange({ target: iS });
+  assert.equal(store['fa.musiclib.melodyStems'], '1');
+  p.m.destroy();
+  var p2 = mountPanel({ melody: stubMelody([]) });
+  assert.equal(cbByLabel(actOf(p2.root), '拆軌').checked, true, '輸出的拆軌勾選沒還原');
+  assert.equal(cbByLabel(paneOf(p2.dlg, 1), '建索引時拆軌').checked, true, '索引的拆軌勾選沒還原');
+  p2.m.destroy();
+  var src = require('fs').readFileSync(require('path').join(__dirname, 'musiclib_host.js'), 'utf8');
+  assert.ok(/useStems: eStems\.checked/.test(require('fs').readFileSync(require('path').join(__dirname, 'musiclib_ui.js'), 'utf8')), '輸出要把 useStems 傳給 exportBatch');
+  assert.ok(src.indexOf('ctx.useStems = !!opts.useStems') > 0, 'exportBatch 要把 useStems 放進每步的 ctx');
+  assert.ok(src.indexOf('!!ctx.useStems') > 0 && src.indexOf('melodyUseStems()') > 0, 'to-song 與索引都要用拆軌選項');
+});
+
 t('匯入來的、這台電腦沒有的路徑（importedGhost）不列在清單上，也不算進檔案數；本機自己消失的仍照舊顯示', function () {
   resetDom();
   var lib = makeLib();

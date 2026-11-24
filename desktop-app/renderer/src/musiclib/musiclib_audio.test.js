@@ -28,6 +28,24 @@ function melodyList(seed, n) {
   return out;
 }
 
+t('拆軌：給了 separator 就傳進流程並標「＋Demucs 拆軌」；分軌那步丟錯就退回不分軌並寫明原因', async function () {
+  var seen = [];
+  var fakeP = { run: async function (inp, o) { seen.push(o); if (o.separator && o.separator.boom) throw new Error('模型炸了'); return { song: { tracks: [] }, tempo: { bpm: 100 }, report: { skipped: [] } }; } };
+  var input = { channels: [new Float32Array(100)], sampleRate: 100 };
+  var ok = await A.songFromAudio(input, { Pipeline: fakeP, separator: function () {}, stems: ['drums', 'bass'] });
+  assert.ok(seen[0].separator && seen[0].stems.length === 2, 'separator 與 stems 要傳進流程');
+  assert.ok(/＋Demucs 拆軌/.test(ok.method), ok.method);
+  seen.length = 0;
+  var bad = function () {}; bad.boom = true;
+  var fb = await A.songFromAudio(input, { Pipeline: fakeP, separator: bad });
+  assert.equal(seen.length, 2, '先試分軌、失敗再退回不分軌');
+  assert.ok(!seen[1].separator, '退回的那次不帶 separator');
+  assert.ok(/拆軌沒成功.*模型炸了/.test(fb.method), fb.method);
+  seen.length = 0;
+  var plain = await A.songFromAudio(input, { Pipeline: fakeP });
+  assert.ok(!/拆軌/.test(plain.method) && !seen[0].separator, '沒給 separator 就跟以前一樣');
+});
+
 t('單聲道合成與切片：兩聲道取平均，切片不超過整段', function () {
   var m = A.monoOf([new Float32Array([1, 1]), new Float32Array([0, 3])]);
   assert.deepEqual(Array.from(m), [0.5, 2]);

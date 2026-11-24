@@ -267,7 +267,7 @@ const FaMusicLibHost = (function () {
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
       else if (step === 'to-song') {
         // 既有 FaAudioPipeline：ctx.useModel 才試 Basic Pitch（沒模型或失敗就單音追蹤，並記在 st.method）
-        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload);
+        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload, !!ctx.useStems);
         st.song = sg.song; st.method = sg.method;
         st.expectNotes = FaMidi.noteCount(st.song);
         st.expectSec = st.view.duration;
@@ -310,7 +310,7 @@ const FaMusicLibHost = (function () {
     var a = api();
     if (!a || !a.roots || !a.roots.browse || !a.rawfs) throw new Error('批次輸出需要桌面版');
     if (typeof FaMidi === 'undefined' || typeof FaMidiPlay === 'undefined') throw new Error('MIDI 模組不存在（需要桌面版）');
-    exportCancelled = false;
+    exportCancelled = false; resetSeparator();
     var outDir = opts.outDir || await a.roots.browse();
     if (!outDir) return { cancelled: true, results: [], summary: {} };
     var items = records.map(function (r) { return { id: r.key, name: r.name, format: opts.format, record: r }; });
@@ -318,7 +318,7 @@ const FaMusicLibHost = (function () {
       minutes: opts.minutes,
       isCancelled: function () { return exportCancelled; },
       onEvent: opts.onEvent,
-      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
+      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.useStems = !!opts.useStems; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
       verify: function (out) { return verifyOutput(out); }
     }).then(function (res) { res.outDir = outDir; return res; });
   }
@@ -340,14 +340,29 @@ const FaMusicLibHost = (function () {
     return { transcriber: FaAudioRuntime.makeTranscriber(ort, s.session), note: '' };
   }
   // 音訊（已解碼的 AudioBuffer 或 Blob）→ 歌曲：走既有 FaAudioPipeline；useModel 才試 Basic Pitch
-  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload) {
+  // 拆軌（選用，使用者勾選才做）：Demucs 6 軌分軌模型，沒下載過會下載（約 136 MB）。載入一次、同一批工作共用；載不起來就記下原因、這批都退回不分軌（不是每首重試）。
+  var sepState = null;
+  function resetSeparator() { sepState = null; }
+  async function getSeparator() {
+    if (!sepState) {
+      var notes = [], fn = null;
+      try { fn = window.fa && window.fa._audioLoadSeparator ? await window.fa._audioLoadSeparator(function () {}, notes) : null; } catch (e) { notes.push(String((e && e.message) || e)); }
+      if (!fn && !notes.length) notes.push('這個環境沒有分軌模型的載入功能');
+      sepState = { sep: fn, why: notes.join('；') };
+    }
+    return sepState;
+  }
+  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload, useStems) {
     var tr = { transcriber: null, note: '' };
     if (useModel) tr = await basicPitchTranscriber(!!allowDownload);
     var chans = Array.isArray(channelsBuf) ? channelsBuf : [];
+    var sp = useStems ? await getSeparator() : null;
     var r = await FaMusicLibAudio.songFromAudio({ channels: chans, sampleRate: sr }, {
       Pipeline: FaAudioPipeline, transcriber: tr.transcriber, title: title,
-      modelNote: useModel ? tr.note : ''
+      modelNote: useModel ? tr.note : '',
+      separator: sp && sp.sep ? sp.sep : null, stems: sp && sp.sep ? sp.sep.stems : null
     });
+    if (useStems && sp && !sp.sep) r.method += '（拆軌模型沒載入：' + sp.why + '）';
     return r;
   }
   function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }
@@ -366,7 +381,13 @@ const FaMusicLibHost = (function () {
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
     var sg;
-    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    var stems = melodyUseStems();
+    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel, stems); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    if (stems && /＋Demucs 拆軌/.test(sg.method)) {
+      // 拆軌成功：每個聲部（鼓除外的各軌）各自一條旋律線，與 MIDI 檔同一格式；搜尋時每首取最高分那條線
+      var bl = FaMusicLibMelody.songLines(sg.song);
+      return { notes: bl.mix, tracks: bl.tracks.map(function (t) { var o = Object.assign({}, t); delete o.notes; return o; }), method: sg.method };
+    }
     return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }
   // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
@@ -479,6 +500,7 @@ const FaMusicLibHost = (function () {
   }
   // 跑佇列：first 先跑，之後把排隊中的批次依序跑完；結束時（含丟錯）把沒跑的排隊收掉，等它的人不會永遠等
   async function melodyRunLoop(first) {
+    resetSeparator();
     melodyState.running = true; melodyState.cancelled = false;
     try {
       var L = getLib(); await L.ready;
@@ -1156,6 +1178,8 @@ const FaMusicLibHost = (function () {
   function ytNotify() { if (ytOnUpdate && ytJob) { try { ytOnUpdate(ytJob, FaMusicLibYoutube.summarize(ytJob)); } catch (_) { /* 畫面出錯不影響工作 */ } } }
   // 設定：下載後自動建旋律索引（localStorage fa.musiclib.ytAutoIndex，沒設過就是開）；手動索引的 Basic Pitch 勾選同一個鍵（fa.musiclib.melodyBasicPitch）
   function ytAutoIndexOn() { try { var v = localStorage.getItem('fa.musiclib.ytAutoIndex'); return v == null ? true : v === '1'; } catch (_) { return true; } }
+  // 索引時拆軌（設定 → 旋律索引的勾選；預設關）。每首要跑 Demucs，慢很多
+  function melodyUseStems() { try { return localStorage.getItem('fa.musiclib.melodyStems') === '1'; } catch (_) { return false; } }
   function melodyUseBasicPitch() { try { return localStorage.getItem('fa.musiclib.melodyBasicPitch') === '1'; } catch (_) { return false; } }
   function ytBridge() {
     var fa = (typeof window !== 'undefined' && window.fa) || null;

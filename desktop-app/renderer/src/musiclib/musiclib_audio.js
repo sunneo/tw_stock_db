@@ -25,31 +25,43 @@
     return channels.map(function (d) { return d.subarray(0, keep); });
   }
 
-  async function runPipeline(P, input, transcriber, title) {
+  async function runPipeline(P, input, transcriber, title, separator, stems) {
     var o = { title: title || '從音訊轉出' };
     if (transcriber) o.transcriber = transcriber;
+    if (separator) { o.separator = separator; if (stems) o.stems = stems; }
     return P.run({ left: input.channels[0], right: input.channels[1] || null, sampleRate: input.sampleRate }, o);
   }
 
+  // opts.separator（選用）：分軌函式（Demucs）。有就先拆成鼓／貝斯／人聲／吉他／鋼琴／其他各自轉譜，song 的每條音軌是一個聲部；
+  // 分軌那一步丟錯就退回不分軌（method 寫明原因），不整個失敗。
   async function songFromAudio(input, opts) {
     opts = opts || {};
     var P = opts.Pipeline;
     if (!P || typeof P.run !== 'function') throw new Error('缺少 FaAudioPipeline（音訊轉譜流程）');
     if (!input || !input.channels || !input.channels.length) throw new Error('沒有音訊樣本');
-    var r, method = METHOD_PITCH, note = opts.modelNote || '';
+    var r, method = METHOD_PITCH, note = opts.modelNote || '', sep = opts.separator || null, split = false, sepWhy = '';
+    async function go(tr) {
+      if (sep) {
+        try { var x = await runPipeline(P, input, tr, opts.title, sep, opts.stems); split = true; return x; }
+        catch (e) { sepWhy = String((e && e.message) || e); sep = null; }
+      }
+      return runPipeline(P, input, tr, opts.title);
+    }
     if (opts.transcriber) {
       try {
-        r = await runPipeline(P, input, opts.transcriber, opts.title);
+        r = await go(opts.transcriber);
         method = METHOD_BASIC;
       } catch (e) {
         var why = String((e && e.message) || e);
-        r = await runPipeline(P, input, null, opts.title);
+        r = await go(null);
         method = METHOD_PITCH + '，Basic Pitch 失敗已退回：' + why;
       }
     } else {
-      r = await runPipeline(P, input, null, opts.title);
+      r = await go(null);
       method = METHOD_PITCH + (note ? '（' + note + '）' : '');
     }
+    if (split) method += '＋Demucs 拆軌';
+    else if (opts.separator) method += '（拆軌沒成功，已退回不分軌' + (sepWhy ? '：' + sepWhy : '') + '）';
     return { song: r.song, tempo: r.tempo, method: method, skipped: (r.report && r.report.skipped) || [] };
   }
 

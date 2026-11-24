@@ -127787,6 +127787,22 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return { ok: true, song_id: id, seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
         } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
     }
+    // 音樂庫的「拆軌」：載入 Demucs 6 軌分軌模型（鼓、貝斯、其他、人聲、吉他、鋼琴），載入順序同 _audioToMidi：GPU → 桌面原生 → onnxruntime-web（wasm）。
+    // say(文字)：進度訊息；notes：失敗原因會推進去。回傳可傳給 FaAudioPipeline 的 separator 函式（含 .stems），載不起來回傳 null（呼叫端退回不分軌並寫明）。
+    async _audioLoadSeparator(say, notes) {
+        const id = 'demucs-6s', store = FaAudioModels.idbStore(), REG = FaAudioModels.REGISTRY, opt = FaAudioRuntime.DEMUCS_OPT, make = FaAudioRuntime.makeSeparator;
+        say = say || (() => {}); notes = notes || [];
+        const dl = () => FaAudioModels.fetchModel(id, { fetchFn: (u, h) => fetch(u, { headers: h }), store, sha256: FaAudioModels.webSha256, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), onProgress: (p) => say('【下載模型】' + REG[id].label + ' ' + Math.round(p.done / 1048576) + '/' + Math.round(p.total / 1048576) + ' MB' + (p.resumed ? '（' + p.resumed + ' 片來自本機快取）' : '')) });
+        let ort = null, ortErr = ''; try { ort = await FaAudioRuntime.loadOrt(); } catch (e) { ortErr = String((e && e.message) || e); }
+        const wrap = (sess) => { const f = make(sess.ort, sess.session); try { f.stems = FaAudioRuntime.STEMS; } catch (_) { /* */ } return f; };
+        const gp = await this._audioGpuSession(id, { REG, dl, say, notes, ort, opt });
+        if (gp) { try { return wrap(gp); } catch (e) { notes.push('Demucs GPU 路徑沒能用（' + String((e && e.message) || e).slice(0, 200) + '），改走原路徑'); } }
+        const nat = await this._nrAudioSession(id, { REG, store, dl, say, notes, ort, opt });
+        if (nat) { try { return wrap(nat); } catch (e) { notes.push('Demucs 沒能用（' + String((e && e.message) || e).slice(0, 200) + '）'); return null; } }
+        if (!ort) { notes.push('無法載入 onnxruntime-web（' + ortErr + '），不能拆軌'); return null; }
+        try { const bytes = await dl(); say('【載入模型】' + REG[id].label); const s = await FaAudioRuntime.createSession(ort, bytes, ['wasm'], { opt }); return wrap({ ort, session: s.session }); }
+        catch (e) { notes.push('Demucs 沒能用（' + String((e && e.message) || e).slice(0, 200) + '）'); return null; }
+    }
     _mountMidiCards(mdDiv) {
         if (typeof FaMidiUI === 'undefined' || typeof FaMidi === 'undefined') return;
         this._midiCards = this._midiCards || new Map();
