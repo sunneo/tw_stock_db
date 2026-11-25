@@ -723,7 +723,11 @@ const FaEditHost = (function () {
             const r = run || this, K = KINDS[kind], a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: K.cmd + (a ? ' ' + a : '') });
             try {
                 const C = K.core(), starters = C.listStarters();
-                if (!a) { r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null); }
+                // 不帶參數＝直接開空白的編輯器（起手式 blank）；要看說明與起手式清單打 help
+                const showHelp = () => r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null);
+                if (a.toLowerCase() === 'help') { showHelp(); }
+                else if (!a && starters.some((s) => s.id === 'blank')) { const res = await r._edOpen(kind, { starter: 'blank' }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
+                else if (!a) { showHelp(); }
                 else { const st = starters.filter((s) => s.id === a.toLowerCase())[0]; const res = await r._edOpen(kind, st ? { starter: st.id } : { starter: 'blank', request: a }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
             } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }

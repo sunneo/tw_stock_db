@@ -52933,6 +52933,92 @@ const holder = {};
 return holder.FaEditI18n;
 })();
 /* EDI18N-END */
+/* EDIMPORT-BEGIN */
+const FaEditImport = (function () {
+const holder = {};
+(function (module, self) {
+// 編輯器共用的「📂 開啟檔案」：選檔（或把檔案拖進編輯區）→ 讀成位元組 → 交給編輯器自己的 importBytes（讀進來、取代目前內容、可復原）。
+// 由 edit_shell.js 的標題列使用：編輯器的 file 選項有 importBytes 就出現這顆按鈕（文件、Markdown、純文字、試算表）。
+// 格式清單沿用編輯器本來的寫法 types:[{ description, accept:{ mime:[ '.ext', … ] } }]，不另外維護一份。
+// 選檔一律用隱藏的 <input type=file>（跟原本各編輯器的 📂 一樣）；必須在點擊的同一個手勢裡呼叫 pick()，不能先 await 再叫。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditImport = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function extOf(name) { var m = /\.([^./\\]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+
+  // 所有可開的副檔名（小寫、不含點），依 types 的順序、不重複
+  function exts(types) {
+    var out = [];
+    (types || []).forEach(function (t) {
+      var acc = (t && t.accept) || {};
+      Object.keys(acc).forEach(function (mime) {
+        (acc[mime] || []).forEach(function (e) { var x = String(e).replace(/^\./, '').toLowerCase(); if (x && out.indexOf(x) < 0) { out.push(x); } });
+      });
+    });
+    return out;
+  }
+
+  // <input accept="…"> 用的字串
+  function acceptAttr(types) { return exts(types).map(function (x) { return '.' + x; }).join(','); }
+
+  function accepts(name, types) { var e = extOf(name); return !!e && exts(types).indexOf(e) >= 0; }
+
+  // 給使用者看的說明，例如「可以開：.docx」
+  function hint(types) { return '可以開：' + exts(types).map(function (x) { return '.' + x; }).join('、'); }
+
+  function mb(n) { return Math.round(n / 1000000) + ' MB'; }
+
+  // 選檔：resolve { name, bytes:Uint8Array }；取消 resolve null；太大或讀不了 reject。
+  // opt.maxBytes：超過就拒絕（各編輯器上限不同：文字 4 MB、試算表 20 MB、文件 30 MB）
+  function pick(types, opt) {
+    var maxBytes = opt && opt.maxBytes;
+    return new Promise(function (resolve, reject) {
+      if (typeof document === 'undefined') { resolve(null); return; }
+      var inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = acceptAttr(types); inp.style.display = 'none';
+      inp.onchange = function () {
+        var f = inp.files && inp.files[0];
+        if (inp.parentNode) { inp.parentNode.removeChild(inp); }
+        if (!f) { resolve(null); return; }
+        if (maxBytes && f.size > maxBytes) { reject(new Error('檔案太大（超過 ' + mb(maxBytes) + '）')); return; }
+        f.arrayBuffer().then(function (buf) { resolve({ name: f.name, bytes: new Uint8Array(buf) }); }, function () { reject(new Error('讀不了這個檔案')); });
+      };
+      (document.body || document.documentElement).appendChild(inp);
+      inp.click();
+    });
+  }
+
+  // 把檔案拖進編輯區開啟。
+  //  - 圖片不歸這裡管（右邊的 AI 對話框收圖片），直接略過，不說話
+  //  - 這個編輯器認得的格式 → onFile({ name, bytes })
+  //  - 不認得的 → onReject(說明)
+  // 只在拖進來的是檔案時 preventDefault（否則瀏覽器會直接打開那個檔案，整個頁面被換掉）
+  function dropOpen(el, types, onFile, onReject, maxBytes) {
+    if (!el || typeof el.addEventListener !== 'function') { return; }
+    el.addEventListener('dragover', function (ev) {
+      var dt = ev.dataTransfer; if (dt && dt.types && Array.prototype.indexOf.call(dt.types, 'Files') >= 0) { ev.preventDefault(); }
+    });
+    el.addEventListener('drop', function (ev) {
+      var fl = ev.dataTransfer && ev.dataTransfer.files;
+      if (!fl || !fl.length) { return; }
+      ev.preventDefault();
+      var f = fl[0];
+      if (/^image\//.test(f.type || '')) { return; }
+      if (!accepts(f.name, types)) { if (onReject) { onReject('這個編輯器開不了「' + f.name + '」。' + hint(types)); } return; }
+      if (maxBytes && f.size > maxBytes) { if (onReject) { onReject('檔案太大（超過 ' + mb(maxBytes) + '）'); } return; }
+      f.arrayBuffer().then(function (buf) { onFile({ name: f.name, bytes: new Uint8Array(buf) }); }, function () { if (onReject) { onReject('讀不了「' + f.name + '」'); } });
+    });
+  }
+
+  return { exts: exts, acceptAttr: acceptAttr, accepts: accepts, hint: hint, pick: pick, dropOpen: dropOpen };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditImport;
+})();
+/* EDIMPORT-END */
 /* EDSHELL-BEGIN */
 const FaEditShell = (function () {
 const holder = {};
@@ -53251,6 +53337,27 @@ const holder = {};
     }
     function openFileMenu() { if (fileBox) { fileBox.remove(); fileBox = null; return; } fileBox = h('div', 'filepanel'); fileBox.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:380px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(fileBox); renderFileBox(); if (LF && LF.check) { LF.check().then(function (c) { if (c && c.changed) { fileExt = true; renderFile(); renderFileBox(); } }); } }
     var ctx0 = { say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 4000); } };
+    // ───── 📂 開啟檔案（共用：所有 opt.file 有 importBytes 的編輯器；選檔或拖進來；只是讀進來，不綁定）─────
+    var IMPORT = typeof FaEditImport !== 'undefined' ? FaEditImport : null, IMP = opt.file && typeof opt.file.importBytes === 'function' && IMPORT ? opt.file : null;
+    if (IMP) {
+      var OPEN = IMP.openTypes || IMP.types;   // 開檔可選的格式（另存、綁定仍用 IMP.types）
+      var bOpenF = h('button', null, '📂 開啟檔案');
+      bOpenF.title = '把本機檔案讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）。' + IMPORT.hint(OPEN) + '；也可以直接把檔案拖進來';
+      // 讀進來之後的內容：原本綁定的檔案就解除綁定，否則之後按 Ctrl+S 會把新內容寫進舊檔
+      async function openPlain(f) {
+        var ns = await IMP.importBytes(f.bytes, f.name), wasBound = !!(LF && fileInfo());
+        if (wasBound) { LF.unbind(); fileSig = null; fileExt = false; }
+        commit(ns, '開啟檔案 ' + f.name, '', 'panel');
+        ctx0.say('已開啟 ' + f.name + (ns && ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項）' : '') + (wasBound ? '；原本綁定的檔案已解除綁定（檔案不動）' : ''));
+      }
+      function openIt(f) { return openPlain(f).then(null, function (e) { ctx0.say('開不起來：' + String((e && e.message) || e).slice(0, 160)); }); }
+      bOpenF.onclick = function () {
+        // 必須在點擊的同一個手勢裡叫出選檔，所以這裡不能先 await
+        IMPORT.pick(OPEN, { maxBytes: IMP.maxBytes }).then(function (f) { if (f) { return openIt(f); } }, function (e) { ctx0.say(String((e && e.message) || e)); });
+      };
+      bar.insertBefore(bOpenF, bSum);
+      IMPORT.dropOpen(el, OPEN, openIt,function (msg) { ctx0.say(msg); }, IMP.maxBytes);
+    }
     if (LF) {
       bFile = h('button', null, '💾 本機檔案'); fileStat = h('span', 'st'); bFile.onclick = openFileMenu; bar.insertBefore(bFile, bSum); bar.insertBefore(fileStat, bSum);
       if (LF.ready) { LF.ready().then(function () { fileSig = fileInfo() ? sigNow() : null; renderFile(); }); } else { fileSig = fileInfo() ? sigNow() : null; }
@@ -54746,7 +54853,7 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'list' ? (o.ordered ? '編號 ' : '項目 ') + o.items.length : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : o.type === 'code' ? (o.lang || '程式碼') : fmt === 'txt' ? '' : o.type; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: fmt === 'txt' ? 0 : d }); } }); return rows; },
       parseCommands: C.parseCommands,
-      file: { exportId: fmt === 'txt' ? 'txt' : 'md', types: fmt === 'txt' ? [{ description: '純文字', accept: { 'text/plain': ['.txt', '.log', '.text', '.ini', '.conf', '.cfg'] } }] : [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown'] } }], importBytes: function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), text; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { text = new TextDecoder('big5').decode(u); } catch (e2) { text = new TextDecoder('utf-8').decode(u); } } var ns = C.parse(text, fmt); ns.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec0.title; return Promise.resolve(ns); } },
+      file: { exportId: fmt === 'txt' ? 'txt' : 'md', maxBytes: 4000000, openTypes: [{ description: fmt === 'txt' ? '文字檔' : 'Markdown／文字檔', accept: { 'text/plain': ['.md', '.markdown', '.txt', '.log', '.text', '.csv', '.tsv', '.json', '.yaml', '.yml', '.ini', '.conf', '.cfg'] } }], types: fmt === 'txt' ? [{ description: '純文字', accept: { 'text/plain': ['.txt', '.log', '.text', '.ini', '.conf', '.cfg'] } }] : [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown'] } }], importBytes: function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), text; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { text = new TextDecoder('big5').decode(u); } catch (e2) { text = new TextDecoder('utf-8').decode(u); } } var ns = C.parse(text, fmt); ns.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec0.title; return Promise.resolve(ns); } },
       promptOf: function (sp, steps) { var L = ['請寫一份' + (fmt === 'txt' ? '純文字' : ' Markdown ') + '文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var ol = C.outline(sp); if (ol) { L.push('', '大綱：', ol); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text + (s.summary ? ' → ' + s.summary : '')); }); } return L.join('\n'); },
       exports: fmt === 'txt' ? [{ id: 'txt', label: '純文字檔 (.txt)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'md', label: 'Markdown 檔 (.md)' }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -54796,11 +54903,8 @@ const holder = {};
           var t = addSel.value; addSel.value = ''; if (!t) { return; } var blk = t === 'olist' ? { type: 'list', ordered: true, items: [''] } : t === 'heading' ? { type: 'heading', level: 2, text: '標題' } : t === 'table' ? { type: 'table', rows: [['欄位 1', '欄位 2'], ['', '']] } : t === 'code' ? { type: 'code', text: '', lang: '' } : { type: t, text: t === 'para' ? '新的段落' : t === 'quote' ? '引用' : '', items: t === 'list' ? [''] : undefined };
           var r = ctx.apply([{ op: 'add_block', after: sel || 'end', block: blk }], '新增' + (NEW.filter(function (x) { return x[0] === t; })[0] || [0, t])[1], '', 'panel'); if (r.added && r.added.length && t !== 'hr') { setTimeout(function () { edit(r.added[r.added.length - 1]); }, 30); }
         };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.md,.markdown,.txt,.log,.text,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.cfg,text/*'; openIn.style.display = 'none';
-        var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 ' + (fmt === 'txt' ? '文字' : 'Markdown／文字') + '檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
-        function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
-        openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 4000000) { ctx.say('檔案太大（超過 4 MB）'); return; } f.arrayBuffer().then(function (buf) { var text = decode(buf), ns = C.parse(text, fmt); ns.title = f.name.replace(/\.[^.]+$/, '').slice(0, 80) || spec.title; ctx.commit(ns, '開啟檔案 ' + f.name + '（' + ns.objects.length + ' 個區塊）', '', 'panel'); ctx.say('已開啟 ' + f.name); }, function () { ctx.say('讀不了這個檔案'); }); };
-        ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見下方 file 選項）
+        ctx.bar.appendChild(addSel);
         // ───── 屬性：選到的區塊（沒選＝文件） ─────
         function props() {
           var box = h('div'), o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
@@ -55363,8 +55467,8 @@ const holder = {};
       objectIcon: function () { return '▦'; },
       objectInfo: function (o) { return o.rows.length + '×' + o.cols.length + (C.isF && o.rows.some(function (r) { return Object.keys(r.c).some(function (k) { return C.isF(r.c[k]); }); }) ? ' ƒ' : ''); },
       parseCommands: C.parseCommands,
-      file: { exportId: fmt === 'xlsx' ? 'xlsx' : 'csv', types: fmt === 'xlsx' ? [{ description: 'Excel 活頁簿', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }] : [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }],
-        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 60) || spec0.title, ns; if (fmt === 'xlsx') { var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 xlsx（JSZip 沒有載入）'); } ns = await C.readXlsx(u, Z, title); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(u), title); } if (ns.format !== fmt) { throw new Error('這個檔案不是' + (fmt === 'xlsx' ? '試算表' : 'CSV')); } return ns; } },
+      file: { exportId: fmt === 'xlsx' ? 'xlsx' : 'csv', maxBytes: 20000000, types: fmt === 'xlsx' ? [{ description: 'Excel 活頁簿', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }] : [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }],
+        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 60) || spec0.title, ns, isX = /\.xlsx$/i.test(String(name || '')); /* 看副檔名決定怎麼讀（共用的 📂 按鈕不分編輯器，csv 編輯器也可能收到 xlsx） */ if (isX) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 xlsx（JSZip 沒有載入）'); } ns = await C.readXlsx(u, Z, title); } else { ns = C.parseCsv(decode(u), title); } if (ns.format !== fmt) { throw new Error('這是' + (ns.format === 'xlsx' ? '試算表' : 'CSV') + '，請用 /edit-' + (ns.format === 'xlsx' ? 'xlsx' : 'csv') + ' 開這個檔案'); } if (fmt === 'xlsx' && host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } return ns; } },
       promptOf: function (sp, steps) { var sh = sp.objects[0], L = ['請做一份' + (fmt === 'xlsx' ? '試算表' : ' CSV 表格') + '「' + sp.title + '」，共 ' + sp.objects.length + ' 張工作表；第一張 ' + sh.rows.length + ' 列 × ' + sh.cols.length + ' 欄。']; var p = C.profile(sh, 3); L.push('', '欄位：'); p.cols.forEach(function (c) { L.push('- ' + c.letter + (c.name ? '「' + c.name + '」' : '') + '（' + c.type + '）'); }); var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: fmt === 'xlsx' ? [{ id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'csv', label: '目前工作表（CSV）', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'csv', label: 'CSV 檔 (.csv)' }, { id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -55444,12 +55548,8 @@ const holder = {};
         // ───── 工具列：加列、加欄、開啟檔案 ─────
         var bAddRow = h('button', null, '＋列'), bAddCol = h('button', null, '＋欄'); bAddRow.title = '在選到的列後面（沒選就在最後）加一列'; bAddCol.title = '在選到的欄後面（沒選就在最後）加一欄';
         bAddRow.onclick = function () { ctx.apply([{ op: 'add_row', sheet: sh.id, after: String(cur.r + 1) }], '加一列', '', 'panel'); }; bAddCol.onclick = function () { ctx.apply([{ op: 'add_col', sheet: sh.id, after: sh.cols[cur.c].id }], '加一欄', '', 'panel'); };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.csv,.tsv,.txt,.xlsx,text/csv'; openIn.style.display = 'none'; var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 CSV 或 Excel 檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
-        openIn.onchange = function () {
-          var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 20000000) { ctx.say('檔案太大（超過 20 MB）'); return; } var isX = /\.xlsx$/i.test(f.name), title = f.name.replace(/\.[^.]+$/, '').slice(0, 60);
-          f.arrayBuffer().then(async function (buf) { var ns; if (isX) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { ctx.say('這裡還讀不了 xlsx（JSZip 沒有載入）'); return; } ns = await C.readXlsx(new Uint8Array(buf), Z, title); if (host.keepOrig) { try { host.keepOrig(new Uint8Array(buf)); } catch (e) { /* 原檔沒存到就是匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(buf), title); } if (ns.format !== fmt) { ctx.say('這是' + (fmt === 'xlsx' ? '試算表' : 'CSV') + '編輯器：請用 /edit-' + (ns.format === 'xlsx' ? 'xlsx' : 'csv') + ' 開這個檔案'); return; } ctx.commit(ns, '開啟 ' + f.name, '', 'panel'); ctx.say('已開啟 ' + f.name + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項，見屬性面板）' : '')); }).catch(function (e) { ctx.say('開不起來：' + String((e && e.message) || e).slice(0, 80)); });
-        };
-        ctx.bar.appendChild(bAddRow); ctx.bar.appendChild(bAddCol); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見上方 file 選項）
+        ctx.bar.appendChild(bAddRow); ctx.bar.appendChild(bAddCol);
         // ───── 屬性：選到的格／列／欄；沒選＝工作表與檔案 ─────
         function props() {
           var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px'; function lab(t, el) { var l = h('label'); l.appendChild(document.createTextNode(t)); l.appendChild(el); return l; } function btn(t, fn, title) { var b = h('button', null, t); if (title) { b.title = title; } b.onclick = fn; return b; } function row(list) { var d = h('div', 'row'); list.forEach(function (x) { d.appendChild(x); }); return d; }
@@ -55898,7 +55998,7 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'li' ? (o.ordered ? '編號' : '項目') : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : ''; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: d }); } }); return rows; },
       parseCommands: C.parseCommands,
-      file: { exportId: 'docx', types: [{ description: 'Word 文件', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+      file: { exportId: 'docx', maxBytes: 30000000, types: [{ description: 'Word 文件', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
         importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 docx（JSZip 沒有載入）'); } var ns = await C.read(u, Z, String(name || '').replace(/\.[^.]+$/, '').slice(0, 60)); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } return ns; } },
       promptOf: function (sp, steps) { var L = ['請寫一份 Word 文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var heads = sp.objects.filter(function (b) { return b.type === 'heading'; }); if (heads.length) { L.push('', '大綱：'); heads.forEach(function (b) { L.push(new Array(b.level).join('  ') + '- ' + C.plain(b)); }); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: [{ id: 'docx', label: 'Word 檔 (.docx)', chat: false }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
@@ -55963,9 +56063,8 @@ const holder = {};
         // ───── 新增區塊／開啟檔案 ─────
         var addSel = h('select'), NEW = [['para', '段落'], ['heading', '標題'], ['li', '項目清單'], ['oli', '編號清單'], ['table', '表格'], ['pagebreak', '分頁']]; var a0 = h('option', null, '＋ 區塊'); a0.value = ''; addSel.appendChild(a0); NEW.forEach(function (x) { var o = h('option', null, x[1]); o.value = x[0]; addSel.appendChild(o); }); addSel.title = '在選取的區塊後面（沒選就在最後）加一個新區塊';
         addSel.onchange = function () { var t = addSel.value; addSel.value = ''; if (!t) { return; } var blk = t === 'oli' ? { type: 'li', ordered: true, text: '項目' } : t === 'li' ? { type: 'li', ordered: false, text: '項目' } : t === 'heading' ? { type: 'heading', level: 2, text: '標題' } : t === 'table' ? { type: 'table', rows: [['欄位 1', '欄位 2'], ['', '']] } : t === 'pagebreak' ? { type: 'pagebreak' } : { type: 'para', text: '新段落' }; var r = ctx.apply([{ op: 'add_block', after: sel || 'end', block: blk }], '新增' + (NEW.filter(function (x) { return x[0] === t; })[0] || [0, t])[1], '', 'panel'); if (r.added && r.added.length && (t === 'para' || t === 'heading' || t === 'li' || t === 'oli')) { setTimeout(function () { edit(r.added[r.added.length - 1]); }, 30); } };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.docx'; openIn.style.display = 'none'; var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 .docx 讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）'; bOpen.onclick = function () { openIn.click(); };
-        openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 30000000) { ctx.say('檔案太大（超過 30 MB）'); return; } f.arrayBuffer().then(async function (buf) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { ctx.say('這裡還讀不了 docx（JSZip 沒有載入）'); return; } var ns = await C.read(new Uint8Array(buf), Z, f.name.replace(/\.[^.]+$/, '').slice(0, 60)); if (host.keepOrig) { try { host.keepOrig(new Uint8Array(buf)); } catch (e) { /* 原檔沒存到：匯出時由目前內容重新產生 */ } } ctx.commit(ns, '開啟 ' + f.name, '', 'panel'); ctx.say('已開啟 ' + f.name + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項，見屬性面板）' : '')); }).catch(function (e) { ctx.say('開不起來：' + String((e && e.message) || e).slice(0, 80)); }); };
-        ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見下方 file 選項）
+        ctx.bar.appendChild(addSel);
         // ───── 屬性 ─────
         function props() {
           var box = h('div'), o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
@@ -64319,7 +64418,11 @@ const FaEditHost = (function () {
             const r = run || this, K = KINDS[kind], a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: K.cmd + (a ? ' ' + a : '') });
             try {
                 const C = K.core(), starters = C.listStarters();
-                if (!a) { r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null); }
+                // 不帶參數＝直接開空白的編輯器（起手式 blank）；要看說明與起手式清單打 help
+                const showHelp = () => r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null);
+                if (a.toLowerCase() === 'help') { showHelp(); }
+                else if (!a && starters.some((s) => s.id === 'blank')) { const res = await r._edOpen(kind, { starter: 'blank' }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
+                else if (!a) { showHelp(); }
                 else { const st = starters.filter((s) => s.id === a.toLowerCase())[0]; const res = await r._edOpen(kind, st ? { starter: st.id } : { starter: 'blank', request: a }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
             } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
