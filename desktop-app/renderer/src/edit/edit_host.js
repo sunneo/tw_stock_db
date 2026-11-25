@@ -731,18 +731,18 @@ const FaEditHost = (function () {
         // 「<指令>-blank」：直接開這個編輯器的空白起手式（blank）。實作是呼叫原指令的 handler 並帶 blank，同一條路、不另寫一份；原指令不帶參數仍是說明與起手式清單。
         // 名稱是字面量（網頁版產生器 gen-aiweb-pages.js 才查得到）；原指令在別的模組註冊，所以到呼叫時才去查（lazy）。沒有 blank 起手式的（MIDI、遊戲、簡報、影片）不做。
         _registerEditBlankCommands() {
-            const note = (what) => what + '空白起手式（blank）：直接開一份空白的，不用說話。原指令不帶參數仍是說明與起手式清單。';
             // starter：這個編輯器的空白起手式 id。xlsx 的空白是 'sheet'（sheet_host 把 blank 對到 sheet），其他都是 'blank'。
+            // 描述寫成字面量（網頁版 /gui 清單取最長的字面量當說明）。
             const viaBlank = (orig, starter) => (argsText, run) => { const e = this.slashCommands.get(orig); if (!e || typeof e.handler !== 'function') return undefined; return e.handler(starter || 'blank', run || this); };
-            this.register_slash_command('/edit-svg-blank', '', note('SVG 編輯器的'), viaBlank('/edit-svg'));
-            this.register_slash_command('/edit-picture-blank', '', note('圖片編輯器的'), viaBlank('/edit-picture'));
-            this.register_slash_command('/edit-3d-model-blank', '', note('3D 場景編輯器的'), viaBlank('/edit-3d-model'));
-            this.register_slash_command('/edit-markdown-blank', '', note('Markdown 編輯器的'), viaBlank('/edit-markdown'));
-            this.register_slash_command('/edit-text-blank', '', note('純文字編輯器的'), viaBlank('/edit-text'));
-            this.register_slash_command('/edit-docx-blank', '', note('Word 文件編輯器（.docx）的'), viaBlank('/edit-docx'));
-            this.register_slash_command('/edit-csv-blank', '', note('CSV 編輯器的'), viaBlank('/edit-csv'));
-            this.register_slash_command('/edit-xlsx-blank', '', note('試算表編輯器（xlsx）的'), viaBlank('/edit-xlsx', 'sheet'));
-            this.register_slash_command('/edit-html-blank', '', note('網頁編輯器（HTML）的'), viaBlank('/edit-html'));
+            this.register_slash_command('/edit-svg-blank', '', '空白 SVG 畫布（起手式 blank）：直接開一張空白的 SVG 編輯器，不用說話。不帶參數的 /edit-svg 仍是說明與起手式清單。', viaBlank('/edit-svg'));
+            this.register_slash_command('/edit-picture-blank', '', '空白畫布（起手式 blank）：直接開一張空白的圖片編輯器，不用說話。不帶參數的 /edit-picture 仍是說明與起手式清單。', viaBlank('/edit-picture'));
+            this.register_slash_command('/edit-3d-model-blank', '', '空白 3D 場景（起手式 blank）：直接開一個空白的 3D 場景編輯器，不用說話。不帶參數的 /edit-3d-model 仍是說明與起手式清單。', viaBlank('/edit-3d-model'));
+            this.register_slash_command('/edit-markdown-blank', '', '空白 Markdown 文件（起手式 blank）：直接開一份空白的 Markdown 編輯器，不用說話。不帶參數的 /edit-markdown 仍是說明與起手式清單。', viaBlank('/edit-markdown'));
+            this.register_slash_command('/edit-text-blank', '', '空白純文字（起手式 blank）：直接開一份空白的純文字編輯器，不用說話。不帶參數的 /edit-text 仍是說明與起手式清單。', viaBlank('/edit-text'));
+            this.register_slash_command('/edit-docx-blank', '', '空白 Word 文件（起手式 blank）：直接開一份空白的 Word 文件編輯器（.docx），不用說話。不帶參數的 /edit-docx 仍是說明與起手式清單。', viaBlank('/edit-docx'));
+            this.register_slash_command('/edit-csv-blank', '', '空白表格（起手式 blank）：直接開一份空白的 CSV 編輯器，不用說話。不帶參數的 /edit-csv 仍是說明與起手式清單。', viaBlank('/edit-csv'));
+            this.register_slash_command('/edit-xlsx-blank', '', '空白試算表（起手式 sheet）：直接開一份空白的試算表編輯器（xlsx），不用說話。不帶參數的 /edit-xlsx 仍是說明與起手式清單。', viaBlank('/edit-xlsx', 'sheet'));
+            this.register_slash_command('/edit-html-blank', '', '空白網頁（起手式 blank）：直接開一份空白的網頁編輯器（HTML），不用說話。不帶參數的 /edit-html 仍是說明與起手式清單。', viaBlank('/edit-html'));
         },
         _registerEditCommands() {
             this._registerEditBlankCommands();
