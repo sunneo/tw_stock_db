@@ -62,7 +62,7 @@
 /* aiweb hash 形式：#/musiclib 或 #musiclib → ./musiclib/（全螢幕 GUI）；#/ 或找不到的名稱 → ./gui/（清單頁）。
    沒有 hash 時不動，維持原本的 AI 助理頁。名單由產生腳本從 gui-commands.json 寫入。 */
 (function () {
-  var GUI = ["musiclib","run-terminal","edit-midi","edit-svg","edit-picture","edit-3d-model","edit-3d","edit-game-2d","edit-game-3d","edit-media-presentation","knowledge-ui"];
+  var GUI = ["musiclib","run-terminal","edit-midi","edit-svg","edit-picture","edit-3d-model","edit-3d","edit-game-2d","edit-game-3d","edit-media-presentation","knowledge-ui","offline-training-studio"];
   var hash = location.hash || '';
   if (hash.length < 2) return;
   var name = decodeURIComponent(hash.slice(1)).replace(/^\/+/, '').replace(/\/+$/, '');
