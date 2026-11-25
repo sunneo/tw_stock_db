@@ -51,7 +51,21 @@
       'body.fa-gui-mode .fa-gui-focus .fwin-ph{display:none !important;}' +
       /* 音樂庫：整個畫面直向排，清單區吃掉剩下的高度 */
       'body.fa-gui-mode .fa-gui-focus .fml{min-height:100%;display:flex;flex-direction:column;border-radius:0;border:none;}' +
-      'body.fa-gui-mode .fa-gui-focus .fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none;}';
+      'body.fa-gui-mode .fa-gui-focus .fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none;}' +
+      /* 編輯器的起手式面板（無參數時出現，置中、沒有文字輸入框；不把說明文字推進對話） */
+      '#fa-gui-start{position:absolute;left:0;top:0;right:0;bottom:0;z-index:20;overflow:auto;background:#0d1117;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}' +
+      '#fa-gui-start.fa-gui-start-drop{outline:2px dashed #58a6ff;outline-offset:-12px;}' +
+      '#fa-gui-start .fa-gui-start-box{max-width:880px;width:100%;text-align:center;color:#e6edf3;font:14px -apple-system,"Segoe UI","Noto Sans TC",sans-serif;}' +
+      '#fa-gui-start h2{margin:0 0 8px;font-size:22px;font-weight:600;}' +
+      '#fa-gui-start .fa-gui-start-lead{margin:0 auto 20px;max-width:640px;color:#9da7b3;line-height:1.6;}' +
+      '#fa-gui-start .fa-gui-start-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;text-align:left;}' +
+      '#fa-gui-start .fa-gui-start-grid button{background:#161b22;color:inherit;border:1px solid #30363d;border-radius:12px;padding:16px;cursor:pointer;font:inherit;text-align:left;}' +
+      '#fa-gui-start .fa-gui-start-grid button:hover{border-color:#58a6ff;background:#1c2330;}' +
+      '#fa-gui-start .fa-gui-start-grid b{display:block;font-size:16px;margin-bottom:6px;}' +
+      '#fa-gui-start .fa-gui-start-grid span{display:block;color:#9da7b3;font-size:12px;line-height:1.5;}' +
+      '#fa-gui-start .fa-gui-start-file{margin-top:18px;border:1px dashed #30363d;border-radius:12px;padding:18px;color:#9da7b3;}' +
+      '#fa-gui-start .fa-gui-start-file button{background:#21262d;color:#cbd5e1;border:1px solid #30363d;border-radius:8px;padding:8px 16px;cursor:pointer;font:inherit;margin-bottom:6px;}' +
+      '#fa-gui-start .fa-gui-start-file button:hover{background:#30363d;}';
     var st = document.createElement('style');
     st.textContent = css;
     document.head.appendChild(st);
@@ -161,6 +175,69 @@
     mark();
   }
 
+  // ---- 起手式面板：編輯器沒帶參數時全頁置中（沒有文字輸入框，也不把說明文字推進對話）。
+  // 按鈕一律呼叫原指令的 handler 並帶起手式 id，不另做一份開啟流程；📂 先用空白起手式開起來，再點（或丟檔案到）編輯器自己的 📂，走同一條讀檔路。
+  function showStarterPanel(fa, entry, sl) {
+    var app = document.getElementById('app');
+    if (!app) return;
+    function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+    function runEntry(id) {
+      return Promise.resolve(entry.handler(id, fa)).then(function () { setStatus('就緒'); }, function (e) { setStatus('開啟失敗：' + String((e && e.message) || e).slice(0, 80)); });
+    }
+    function openFile(file) {
+      setStatus('開啟 ' + CMD + ' …');
+      Promise.resolve(entry.handler(sl.openId, fa)).then(function () { return waitOpenButton(6000); }).then(function (btn) {
+        if (!btn) { setStatus('這個編輯器還不能開檔'); return; }
+        if (file) {
+          var dt = new DataTransfer(); dt.items.add(file);
+          btn.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        } else { btn.click(); }
+        setStatus('就緒');
+      }, function (e) { setStatus('開啟失敗：' + String((e && e.message) || e).slice(0, 80)); });
+    }
+
+    var panel = el('div', ''); panel.id = 'fa-gui-start';
+    var box = el('div', 'fa-gui-start-box');
+    box.appendChild(el('h2', '', sl.label));
+    box.appendChild(el('p', 'fa-gui-start-lead', sl.lead));
+    var grid = el('div', 'fa-gui-start-grid');
+    sl.starters.forEach(function (s) {
+      var b = el('button', ''); b.type = 'button';
+      b.appendChild(el('b', '', s.label)); b.appendChild(el('span', '', s.desc));
+      b.addEventListener('click', function () { panel.remove(); setStatus('開啟 ' + CMD + ' …'); runEntry(s.id); });
+      grid.appendChild(b);
+    });
+    box.appendChild(grid);
+    var fileBox = el('div', 'fa-gui-start-file', '或開一個本機檔案（也可以直接把檔案拖進這個頁面）');
+    var openB = el('button', '', '📂 開啟檔案'); openB.type = 'button';
+    openB.addEventListener('click', function () { panel.remove(); openFile(null); });
+    fileBox.appendChild(document.createElement('br'));
+    fileBox.appendChild(openB);
+    box.appendChild(fileBox);
+    panel.appendChild(box);
+    panel.addEventListener('dragover', function (ev) { ev.preventDefault(); panel.classList.add('fa-gui-start-drop'); });
+    panel.addEventListener('dragleave', function () { panel.classList.remove('fa-gui-start-drop'); });
+    panel.addEventListener('drop', function (ev) {
+      ev.preventDefault();
+      var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+      panel.remove();
+      openFile(f || null);
+    });
+    app.appendChild(panel);
+  }
+  // 等編輯器掛上來，回傳它的「📂 開啟檔案」按鈕（data-fa-open-file，由 edit_shell 加上）；逾時回 null
+  function waitOpenButton(ms) {
+    var t0 = Date.now();
+    return new Promise(function (resolve) {
+      (function poll() {
+        var all = document.querySelectorAll('#app [data-fa-open-file]');
+        if (all.length) return resolve(all[all.length - 1]);
+        if (Date.now() - t0 > ms) return resolve(null);
+        setTimeout(poll, 150);
+      })();
+    });
+  }
+
   function escapeHtml(s) {
     return String(s).replace(/[<>&"]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]; });
   }
@@ -217,6 +294,9 @@
     if (!entry || typeof entry.handler !== 'function') throw new Error('這個版本沒有「' + CMD + '」指令');
     document.body.classList.add('fa-gui-mode');
     startFocus(); // 一直觀察：聊天區會重新渲染節點，標記要跟著新節點走
+    // 編輯器沒帶參數：起手式面板（不推說明文字進對話）。-blank 與沒有起手式的指令照舊（handler('')）。
+    var sl = !/-blank$/.test(CMD) && typeof fa._edStarterList === 'function' ? fa._edStarterList(CMD) : null;
+    if (sl) { showStarterPanel(fa, entry, sl); setStatus('就緒'); return; }
     setStatus('開啟 ' + CMD + ' …');
     return Promise.resolve(entry.handler('', fa)).then(function () { setStatus('就緒'); });
   }).catch(function (e) {
