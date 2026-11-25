@@ -68368,8 +68368,14 @@ const holder = {};
     const arr = Array.isArray(obj) ? obj : (Array.isArray(obj.edits) ? obj.edits : (obj.op ? [obj] : null)); if (!arr) { return { ok: false, error: '沒有 edits' }; } const edits = []; let dropped = 0; arr.forEach((e) => { if (isObj(e) && (OPS.indexOf(e.op) >= 0 || HOST_OPS.indexOf(e.op) >= 0)) { edits.push(e); } else { dropped++; } }); return { ok: true, say: str(obj.say, 400), edits, dropped };
   }
   function promptOf(spec, steps) { const s = validate(spec).spec, L = ['請做一份動畫簡報「' + s.deck.title + '」(' + (s.deck.lang || '') + '),共 ' + slides(s).length + ' 頁:', '', outline(s)]; const t = (steps || []).filter((x) => x.text); if (t.length) { L.push('', '(有效的修改指示,依序):'); t.forEach((x, i) => L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : ''))); } return L.join('\n'); }
-  function listStarters() { return [{ id: 'last', label: '最近的簡報', desc: '接著這個對話裡最近做的那一份' }]; }
-  function starter() { return defaultSpec(); }
+  // 起手式：沒有最近的簡報、或帶了起手式 id 時開的新簡報（照 toDoc 的形狀寫，經 fromDoc 轉成編輯器的物件）
+  const STARTER_DOCS = {
+    blank: { label: '空白簡報', desc: '只有一頁標題的新簡報，照著改', doc: { deck: { title: '新簡報', lang: 'zh-TW' }, chapters: [{ title: '開場', slides: [{ title: '新簡報', layout: 'title', subtitle: '副標題寫在這裡' }] }] } },
+    intro3: { label: '三頁介紹', desc: '標題、重點、結語三頁，照著改成你的主題', doc: { deck: { title: '三頁介紹', lang: 'zh-TW' }, chapters: [{ title: '介紹', slides: [{ title: '主題是什麼', layout: 'title', subtitle: '一句話說明' }, { title: '重點', layout: 'content', bullets: ['第一點', '第二點', '第三點'], narration: '這一頁講三個重點。' }, { title: '謝謝', layout: 'title', subtitle: '歡迎提問' }] }] } },
+  };
+  function listStarters() { return Object.keys(STARTER_DOCS).map((id) => ({ id, label: STARTER_DOCS[id].label, desc: STARTER_DOCS[id].desc })); }
+  // 沒有這個起手式 id 就回 null（呼叫端會退回 blank）
+  function starter(id) { const k = String(id || 'blank'); return STARTER_DOCS[k] ? fromDoc(STARTER_DOCS[k].doc) : null; }
   return { OPS, HOST_OPS, LIM, SLIDE_KEYS, DECK_KEYS, defaultSpec, fromDoc, toDoc, validate, toYaml, fromYaml, applyEdits, editWords, list, outline, contextText, find, byId, resolve, slides, chapterOf, numberOf, tree, diff, diffSemantic, parseCommands, editPrompt, parseEditsReply, promptOf, listStarters, starter, ACTIONS_TEXT };
 });
 
@@ -68555,6 +68561,8 @@ return holder.FaDeckEditUI;
     const EVERY_RE = /(每一頁|每頁|所有頁|每一張|全部的頁|每個章節|每章)/;
     const CJK = /[㐀-䶿一-鿿]/;
     const D = () => FaDeckEdit;
+    // 沒有最近的簡報時，說明後面列出起手式（/edit-media-presentation <id>；網頁版 /gui 的起始面板也用同一份清單）
+    const startersText = (starters) => (starters && starters.length ? '\n\n' + T('沒有最近的簡報時，可以從起手式開始：', 'No recent deck; start from a starter:') + starters.map((s) => '\n- `/edit-media-presentation ' + s.id + '` — ' + s.label + '：' + s.desc).join('') : '');
 
     H.register('edit-media-presentation', {
         fence: 'fa-edit-media-presentation', icon: '📽', cmd: '/edit-media-presentation', prefix: 'dk', label: () => T('簡報編輯器', 'Presentation editor'), core: () => FaDeckEdit, ui: () => FaDeckEditUI,
@@ -68564,7 +68572,7 @@ return holder.FaDeckEditUI;
         collectRefs: () => [],
         mountOpts: function (id) { return this._deckEditMountOpts(id); },
         ask: function (req, ed) { return this._edAskDeck(req, ed); },
-        help: () => '**' + T('簡報編輯器', 'Presentation editor') + '**\n\n' + T('`/edit-media-presentation`:編輯這個對話裡最近做的簡報(播放器上的「✏️ 編輯」鈕也一樣)。在播放器旁邊用說的改:「這頁加一張飛機的照片」「在這頁後面插入一頁講風險」「旁白講短一點」「把第 3 頁移到最後」「每一頁都配一張照片」「上網查最新規格再加一章」。你現在看的那一頁就是「這頁」。要上網找資料或圖、讀檔、畫圖表,AI 會請簡報代理人(跟 /media-presentation 一樣的工具)去做;改的先預覽、按「接受」才算,每一步都能復原。\n\n用法:`/edit-media-presentation`(最近的簡報)、`/edit-media-presentation 在第 2 頁後面加一頁講風險`(開起來就做)、`/edit-media-presentation <簡報檔案 id 或 client-file/…deck.yaml>`。', 'Edit the latest deck of this chat next to its player; say "add a photo of an airplane to this slide".'),
+        help: (starters) => '**' + T('簡報編輯器', 'Presentation editor') + '**\n\n' + T('`/edit-media-presentation`:編輯這個對話裡最近做的簡報(播放器上的「✏️ 編輯」鈕也一樣)。在播放器旁邊用說的改:「這頁加一張飛機的照片」「在這頁後面插入一頁講風險」「旁白講短一點」「把第 3 頁移到最後」「每一頁都配一張照片」「上網查最新規格再加一章」。你現在看的那一頁就是「這頁」。要上網找資料或圖、讀檔、畫圖表,AI 會請簡報代理人(跟 /media-presentation 一樣的工具)去做;改的先預覽、按「接受」才算,每一步都能復原。\n\n用法:`/edit-media-presentation`(最近的簡報)、`/edit-media-presentation 在第 2 頁後面加一頁講風險`(開起來就做)、`/edit-media-presentation <簡報檔案 id 或 client-file/…deck.yaml>`。', 'Edit the latest deck of this chat next to its player; say "add a photo of an airplane to this slide".') + startersText(starters),
     });
 
     // 對話裡最近的簡報網址(這次執行做的,或對話記錄裡找得到的)
@@ -68681,11 +68689,14 @@ return holder.FaDeckEditUI;
             '簡報編輯器:在簡報播放器旁邊多一個 AI 對話框,用說的改簡報——你現在看的那一頁就是「這頁」:「這頁加一張飛機的照片」「在這頁後面插入一頁講風險」「每一頁都配一張照片」「旁白講短一點」。要上網找圖與資料、讀檔、畫圖表,會請簡報代理人(跟 /media-presentation 一樣的工具)去做;改的先預覽再套用,每一步都能復原;左邊是章與頁的大綱(搬動、複製、隱藏、鎖定)。/edit-media-presentation 編輯最近的簡報;/edit-media-presentation 在第 2 頁後面加一頁講風險。播放器上也有「✏️ 編輯」鈕。',
             async (argsText, run) => {
                 const r = run || self0, a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/edit-media-presentation' + (a ? ' ' + a : '') });
+                // 起手式 id（blank、intro3）：開新的簡報，不管有沒有最近的簡報
+                const st = FaDeckEdit.listStarters().filter((s) => s.id === a.toLowerCase())[0];
+                if (st) { const res0 = await r._edOpen('edit-media-presentation', { starter: st.id }); if (res0 && res0.ok === false) r._pushAssistantMessage('⚠️ ' + (res0.error || T('開不起來', 'could not open it')), null); try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ } return; }
                 try {
                     const idLike = /^(?:client-file\/)?[\w-]+(?:\.deck\.yaml)?$/.test(a) && /(deck\.yaml|^[\w-]{8,}$)/.test(a) && !/[㐀-鿿]/.test(a);
                     let url = idLike ? (/^client-file\//.test(a) ? a : 'client-file/' + a.replace(/\.deck\.yaml$/, '') + '.deck.yaml') : r._deckEditLatestUrl(); let request = idLike ? '' : (/^(last|最近|上一個|剛剛的)$/i.test(a) ? '' : a);
                     if (!url && request) { r._pushAssistantMessage(T('這個對話裡還沒有簡報,先用 /media-presentation 做一份(下面開始做)…', 'No deck yet; making one first…'), null); await r._deckSlashPresentation(request); url = r._deckEditLatestUrl(); request = ''; }
-                    if (!url) { r._pushAssistantMessage(H.KINDS['edit-media-presentation'].help(), null); }
+                    if (!url) { r._pushAssistantMessage(H.KINDS['edit-media-presentation'].help(FaDeckEdit.listStarters()), null); }
                     else { const res = await r._deckEditOpen(url, request); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
                 } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來:', 'Could not open it: ') + String((e && e.message) || e), null); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }

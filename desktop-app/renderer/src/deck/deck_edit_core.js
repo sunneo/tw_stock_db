@@ -188,7 +188,13 @@
     const arr = Array.isArray(obj) ? obj : (Array.isArray(obj.edits) ? obj.edits : (obj.op ? [obj] : null)); if (!arr) { return { ok: false, error: '沒有 edits' }; } const edits = []; let dropped = 0; arr.forEach((e) => { if (isObj(e) && (OPS.indexOf(e.op) >= 0 || HOST_OPS.indexOf(e.op) >= 0)) { edits.push(e); } else { dropped++; } }); return { ok: true, say: str(obj.say, 400), edits, dropped };
   }
   function promptOf(spec, steps) { const s = validate(spec).spec, L = ['請做一份動畫簡報「' + s.deck.title + '」(' + (s.deck.lang || '') + '),共 ' + slides(s).length + ' 頁:', '', outline(s)]; const t = (steps || []).filter((x) => x.text); if (t.length) { L.push('', '(有效的修改指示,依序):'); t.forEach((x, i) => L.push((i + 1) + '. ' + x.text + (x.summary ? ' → ' + x.summary : ''))); } return L.join('\n'); }
-  function listStarters() { return [{ id: 'last', label: '最近的簡報', desc: '接著這個對話裡最近做的那一份' }]; }
-  function starter() { return defaultSpec(); }
+  // 起手式：沒有最近的簡報、或帶了起手式 id 時開的新簡報（照 toDoc 的形狀寫，經 fromDoc 轉成編輯器的物件）
+  const STARTER_DOCS = {
+    blank: { label: '空白簡報', desc: '只有一頁標題的新簡報，照著改', doc: { deck: { title: '新簡報', lang: 'zh-TW' }, chapters: [{ title: '開場', slides: [{ title: '新簡報', layout: 'title', subtitle: '副標題寫在這裡' }] }] } },
+    intro3: { label: '三頁介紹', desc: '標題、重點、結語三頁，照著改成你的主題', doc: { deck: { title: '三頁介紹', lang: 'zh-TW' }, chapters: [{ title: '介紹', slides: [{ title: '主題是什麼', layout: 'title', subtitle: '一句話說明' }, { title: '重點', layout: 'content', bullets: ['第一點', '第二點', '第三點'], narration: '這一頁講三個重點。' }, { title: '謝謝', layout: 'title', subtitle: '歡迎提問' }] }] } },
+  };
+  function listStarters() { return Object.keys(STARTER_DOCS).map((id) => ({ id, label: STARTER_DOCS[id].label, desc: STARTER_DOCS[id].desc })); }
+  // 沒有這個起手式 id 就回 null（呼叫端會退回 blank）
+  function starter(id) { const k = String(id || 'blank'); return STARTER_DOCS[k] ? fromDoc(STARTER_DOCS[k].doc) : null; }
   return { OPS, HOST_OPS, LIM, SLIDE_KEYS, DECK_KEYS, defaultSpec, fromDoc, toDoc, validate, toYaml, fromYaml, applyEdits, editWords, list, outline, contextText, find, byId, resolve, slides, chapterOf, numberOf, tree, diff, diffSemantic, parseCommands, editPrompt, parseEditsReply, promptOf, listStarters, starter, ACTIONS_TEXT };
 });

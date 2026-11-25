@@ -382,6 +382,7 @@ const suites = [
     ['遊戲編輯器：畫法、聲音合成、UML、遊戲包 .fagame', 'scripts/game-tests/game_parts.test.js'],
     ['遊戲編輯器：目標原始碼（網頁／Electron／Node.js 由程式產生、AI 逐檔計畫、舊機種適配檢查、測試向量）', 'scripts/game-tests/game_gen.test.js'],
     ['簡報編輯器：簡報檔的物件模型、封閉動作（加頁、改旁白、搬動、隱藏、鎖定、整份替換）、程式先讀的白話、前後版本差異', 'scripts/deck-tests/deck_edit_core.test.js'],
+    ['簡報編輯器起手式：空白簡報（只有標題頁）、三頁介紹、起手式 id 先於最近的簡報、沒有最近簡報時的說明列出起手式', 'scripts/deck-tests/deck_starters.test.js'],
     ['長文章目錄：wiki、新聞、小說章回、分段閱讀', 'scripts/article-tests/article_outline.test.js'],
     ['NVIDIA 線上圖像生成：請求整理、參數夾範圍、回應解析', 'scripts/imagegen-tests/nvidia_image.test.js'],
     ['本機小模型生圖（SDXS-512 GPU／CPU 版）：選版本、取樣的數學、亂數、張量轉圖片、錯誤說明', 'scripts/imagegen-tests/local_sd.test.js'],
