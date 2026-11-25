@@ -38,8 +38,8 @@
    "names": [
     "FA_HEAD_SRC"
    ],
-   "size": 136959,
-   "md5": "1a8e456b7710edad18b3e15be5718de2"
+   "size": 141887,
+   "md5": "7035593ddebac02963d85fa0e53ec20a"
   },
   "ktune": {
    "file": "chunks/ktune.js",
@@ -70,8 +70,8 @@
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 583910,
-   "md5": "57ad3931c12aa42ac72269cc66e065f5"
+   "size": 589271,
+   "md5": "06d41c161cf0021ce3671dc6584f88ee"
   },
   "guiaudio": {
    "file": "chunks/guiaudio.js",
@@ -239,16 +239,16 @@
    "names": [
     "FA_MOSS_GPU_SRC"
    ],
-   "size": 106285,
-   "md5": "b8c27ad65ec274a84c91293e100ae130"
+   "size": 111213,
+   "md5": "db2b404f505c9945123b5549d6182309"
   },
   "midigpu": {
    "file": "chunks/midigpu.js",
    "names": [
     "FA_MIDI_GPU_SRC"
    ],
-   "size": 103858,
-   "md5": "5644faae3f6d1396095e98afc5ddde0a"
+   "size": 108786,
+   "md5": "148fd87e4ff6faf4469f4a641310067d"
   },
   "guitpl": {
    "file": "chunks/guitpl.js",
@@ -1946,16 +1946,16 @@
    "names": [
     "FaMusicLibMelody"
    ],
-   "size": 11518,
-   "md5": "d07522d1433b3983f4d79d1727916bc7"
+   "size": 12067,
+   "md5": "fa4276b2098e9c75a4ac12cdfb4675bc"
   },
   "mlfp": {
    "file": "chunks/mlfp.js",
    "names": [
     "FaMusicLibFP"
    ],
-   "size": 7612,
-   "md5": "3bba000a1fff95563cba60ca583418f5"
+   "size": 12002,
+   "md5": "c1141b11babe3b6ab25f0aa9e187d010"
   },
   "mlaud": {
    "file": "chunks/mlaud.js",
@@ -2122,20 +2122,20 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 52831,
-   "md5": "59d5090db69e923217c67d2b91d86f67"
+   "size": 54340,
+   "md5": "6a5a766ebad7d45d770e38be5ff33c1e"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 52947,
-   "md5": "9102a1673637efd4b703806844213908"
+   "size": 54471,
+   "md5": "b8184f8563eff1819da8de86bf73613c"
   }
  },
  "core": {
-  "size": 6929140,
-  "md5": "681a88f844fd8e85ad876ba13a3408a7"
+  "size": 6931248,
+  "md5": "07550a7c19e176d507b44cbca7a070ee"
  }
 }

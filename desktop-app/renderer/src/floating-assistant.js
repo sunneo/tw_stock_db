@@ -84663,7 +84663,8 @@ const holder = {};
           // 音訊只給指紋（沒有旋律線）也算成功：指紋存在 rec.fp，旋律線留空（contour 為 null，找歌時略過這首的旋律）
           if (mel.length < MIN_NOTES && !got.fp) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
           if (got.fp) rec.fp = Object.assign({ sig: sigOf(rec) }, got.fp); else if (rec.fp) rec.fp = null;
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [] };
+          // feat：特徵版本（階段二的快速旋律線＝FEAT_FAST）；沒有或較舊＝逐音符轉譜的舊格式，查詢結果會標示「沒有新特徵」
+          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [], feat: got.feat || 0 };
           done = true; break;
         } catch (err) {
           var msg = String((err && err.message) || err);
@@ -84730,10 +84731,25 @@ const holder = {};
 
   // 音訊建索引的結果（純函式）：指紋永遠有；linesOn 為 true 時才帶旋律線（notes／tracks）。
   // 旋律線預設開（與已發布版本一致）；取消勾選時只存指紋，哼歌（音符）找不到這些歌。
+  // o.feat：特徵版本（快速旋律線傳 FEAT_FAST；舊的逐音符轉譜不傳）
   function audioExtractResult(o) {
     var fp = o.fp;
     if (!o.linesOn) return { notes: [], tracks: [], method: '音訊指紋（只建指紋，沒有旋律線）', fp: fp };
-    return { notes: o.notes || [], tracks: o.tracks || [], method: o.method, fp: fp };
+    return { notes: o.notes || [], tracks: o.tracks || [], method: o.method, fp: fp, feat: o.feat || 0 };
+  }
+  // 快速旋律線（階段二）：一次掃描的主旋律線 lines（每條 [{t,d,n}]，見 FaMusicLibFP.fingerprint）→ 索引格式。
+  // 第一條當合併線（contour），其餘各條當成聲部（kind：第二聲部／低音…，每條各有 contour，搜尋時每首取最高分那條）。
+  var FEAT_FAST = 2;
+  var FAST_LABELS = ['主旋律', '第二聲部', '第三聲部'];
+  function fastLinesResult(fp, lines, o) {
+    o = o || {};
+    var lns = (lines || []).filter(function (ln) { return ln && ln.length >= MIN_NOTES; });
+    var main = lns.length ? lns[0] : [];
+    var tracks = lns.map(function (ln, i) {
+      var mel = melodyNotes(ln), c = contourOf(mel);
+      return { track: i, channel: null, name: '', kind: i === 0 ? 'one' : 'hi', label: FAST_LABELS[i] || ('聲部 ' + (i + 1)), notes: tuplesOf(mel), contour: c };
+    });
+    return { notes: main, tracks: tracks.map(function (t) { var x = Object.assign({}, t); delete x.notes; return x; }), method: o.method || '快速旋律線（一次掃描）', fp: fp, feat: FEAT_FAST };
   }
   // 搜尋用的候選（純函式）：只收有旋律線的歌；只有指紋、沒有旋律線的音訊歌另外列出來（哼歌找不到它們，結果要提示）
   function entriesOf(records) {
@@ -84745,12 +84761,12 @@ const holder = {};
       if (r.melody.contour) lines.push({ label: '合併（所有軌）', contour: r.melody.contour, track: null, mode: 'merged' });
       (r.melody.tracks || []).forEach(function (t) { if (t.contour) lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
       if (!lines.length) { if (r.fp) lineless.push(r.name); return; }
-      entries.push({ key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path });
+      entries.push({ key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path, feat: r.melody.feat || 0 });
     });
     return { entries: entries, lineless: lineless };
   }
   return {
-    audioExtractResult: audioExtractResult, entriesOf: entriesOf,
+    audioExtractResult: audioExtractResult, entriesOf: entriesOf, fastLinesResult: fastLinesResult, FEAT_FAST: FEAT_FAST,
     melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, restoreNotes: restoreNotes, compareNotes: compareNotes, compareHit: compareHit, median: median,
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
@@ -84960,14 +84976,119 @@ const holder = {};
     return { cells: cells, bytes: out };
   }
 
-  // 主入口：samples 為單聲道（或多聲道陣列），srcRate 為取樣率。回傳 { v, sr, hop, frames, dur, hashes, times, cells, chroma }
+  // ───── 主旋律線（階段二，與地標、色度共用同一份頻譜，不另外解碼）─────
+  // 每格算「諧波加總顯著度」：音高為 MIDI 33（55 Hz）～93（1760 Hz) 每半音一格，第 h 個諧波取最近的頻譜格（前後各看一格取最大）。
+  // 每格再除以該格最強的音高、乘上「該格能量相對全曲最響」的閘門（安靜的格子不會把雜音當旋律）。
+  // Viterbi：每格的狀態是「一個音高」或「靜音」；發射分數＝顯著度－MEL_THR，靜音＝0；換狀態一律扣 MEL_CHANGE（音高穩定、不亂跳）。
+  // 取出一條線後把它的音高（±1 半音）的顯著度遮掉，再取下一條（第二聲部、低音），最多 MEL_LINES 條。
+  // 已知限制：遮掉只到 ±1 半音，八度上下的重複音仍可能被第二條線拿去；頻譜格約 5.4 Hz，低音（55 Hz 附近）解析度不足。
+  var MEL_MIDI0 = 33, MEL_NP = 61, MEL_HARM = [1, 0.7, 0.5, 0.4, 0.3, 0.25];
+  var MEL_THR = 0.35, MEL_CHANGE = 1.0, MEL_MIN_RUN = 4, MEL_LINES = 3, MEL_MIN_NOTES = 8, MEL_MIN_VOICED = 0.08;
+  // 低音域的懲罰：旋律通常在上面，低音（伴奏、貝斯）會把旋律線拖出一串八度下的音；低於 MEL_LOW_MIDI 的音每低一個八度扣 MEL_LOW_PEN
+  var MEL_LOW_MIDI = 52, MEL_LOW_PEN = 0.3;
+  var MEL_REGP = (function () { var out = new Float64Array(MEL_NP); for (var p = 0; p < MEL_NP; p++) out[p] = MEL_LOW_PEN * Math.max(0, MEL_LOW_MIDI - (MEL_MIDI0 + p)) / 12; return out; })();
+  var MEL_HB = (function () {
+    var H = MEL_HARM.length, out = new Int16Array(MEL_NP * H);
+    for (var p = 0; p < MEL_NP; p++) for (var h = 0; h < H; h++) {
+      var fr = 440 * Math.pow(2, (MEL_MIDI0 + p - 69) / 12) * (h + 1);
+      var b = Math.round(fr * WIN / SR);
+      out[p * H + h] = b < MAXBIN ? b : -1;
+    }
+    return out;
+  })();
+  // 每格的顯著度（0..1）與閘門（0..1）。回傳 { sal: Float32Array(F×MEL_NP), gate: Float32Array(F) }
+  function salienceFrames(S, F) {
+    var maxDb = -Infinity, i, f, p, h, k, H = MEL_HARM.length;
+    for (i = 0; i < S.length; i++) if (S[i] > maxDb) maxDb = S[i];
+    var sal = new Float32Array(F * MEL_NP), gate = new Float32Array(F), amp = new Float64Array(MAXBIN);
+    for (f = 0; f < F; f++) {
+      var o = f * MAXBIN, fmax = -Infinity;
+      for (k = 0; k < MAXBIN; k++) { var v = S[o + k]; if (v > fmax) fmax = v; amp[k] = Math.pow(10, v / 20); }
+      var g = (fmax - (maxDb - DB_RANGE)) / DB_RANGE;
+      if (g <= 0) continue;
+      g = Math.min(1, g); gate[f] = g;
+      var mx = 0, row = f * MEL_NP;
+      for (p = 0; p < MEL_NP; p++) {
+        var s = 0;
+        for (h = 0; h < H; h++) {
+          var b = MEL_HB[p * H + h];
+          if (b < 0) break;
+          var m = amp[b];
+          if (b > 0 && amp[b - 1] > m) m = amp[b - 1];
+          if (b + 1 < MAXBIN && amp[b + 1] > m) m = amp[b + 1];
+          s += MEL_HARM[h] * m;
+        }
+        sal[row + p] = s; if (s > mx) mx = s;
+      }
+      if (mx > 0) for (p = 0; p < MEL_NP; p++) sal[row + p] = sal[row + p] / mx * g;
+    }
+    return { sal: sal, gate: gate };
+  }
+  // Viterbi：回傳每格的狀態（0..MEL_NP-1 為音高，MEL_NP 為靜音）
+  function viterbiPitch(sal, F) {
+    var NS = MEL_NP + 1, V = new Float64Array(NS), NV = new Float64Array(NS), bp = new Uint8Array(F * NS), st = new Uint8Array(F);
+    var f, q, e0, mArg, mBest, stay, go;
+    for (q = 0; q < NS; q++) V[q] = q === MEL_NP ? 0 : sal[q] - MEL_THR - MEL_REGP[q];
+    for (f = 1; f < F; f++) {
+      mBest = -Infinity; mArg = MEL_NP;
+      for (q = 0; q < NS; q++) if (V[q] > mBest) { mBest = V[q]; mArg = q; }
+      var row = f * MEL_NP;
+      for (q = 0; q < NS; q++) {
+        e0 = q === MEL_NP ? 0 : sal[row + q] - MEL_THR - MEL_REGP[q];
+        stay = V[q]; go = mBest - MEL_CHANGE;
+        if (stay >= go) { NV[q] = stay + e0; bp[f * NS + q] = q; } else { NV[q] = go + e0; bp[f * NS + q] = mArg; }
+      }
+      var tmp = V; V = NV; NV = tmp;
+    }
+    var cur = 0, bv = -Infinity;
+    for (q = 0; q < NS; q++) if (V[q] > bv) { bv = V[q]; cur = q; }
+    for (f = F - 1; f >= 0; f--) { st[f] = cur; if (f > 0) cur = bp[f * NS + cur]; }
+    return st;
+  }
+  // 狀態序列 → 音符（同音高連續格、長度 ≥ MEL_MIN_RUN 格）
+  function runsToNotes(st, F) {
+    var out = [], f = 0;
+    while (f < F) {
+      var p = st[f], g = f;
+      while (g < F && st[g] === p) g++;
+      if (p !== MEL_NP && g - f >= MEL_MIN_RUN) out.push({ t: round3(f * HOP / SR), d: round3((g - f) * HOP / SR), n: MEL_MIDI0 + p });
+      f = g;
+    }
+    return out;
+  }
+  // 取出最多 MEL_LINES 條主旋律線（每條是音符陣列 [{t, d, n}]，秒與 MIDI 音高）
+  function melodyLines(S, F) {
+    var sg = salienceFrames(S, F), sal = sg.sal, lines = [], L, k;
+    for (L = 0; L < MEL_LINES; L++) {
+      var st = viterbiPitch(sal, F), notes = runsToNotes(st, F);
+      var voiced = 0; for (k = 0; k < F; k++) if (st[k] !== MEL_NP) voiced++;
+      if (notes.length < MEL_MIN_NOTES || voiced < MEL_MIN_VOICED * F) break;
+      lines.push(notes);
+      // 遮掉這條線用掉的能量（每格的這個音高 ±1 半音）
+      for (k = 0; k < F; k++) {
+        if (st[k] === MEL_NP) continue;
+        for (var q = Math.max(0, st[k] - 1); q <= Math.min(MEL_NP - 1, st[k] + 1); q++) sal[k * MEL_NP + q] = 0;
+      }
+    }
+    return lines;
+  }
+
+  // 主入口：samples 為單聲道（或多聲道陣列），srcRate 為取樣率。
+  // 回傳 { v, sr, hop, frames, dur, hashes, times, cells, chroma, lines }；lines 是階段二的主旋律線（最多 3 條，每條 [{t, d, n}]）
   function fingerprint(samples, srcRate) {
     var x = resampleTo11025(toMono(samples), srcRate);
     var sp = spectrogram(x);
     var pk = findPeaks(sp.S, sp.F);
     var lm = landmarks(pk);
     var ch = chroma(sp.S, sp.F);
-    return { v: FP_VERSION, sr: SR, hop: HOP, frames: sp.F, dur: round3(x.length / SR), hashes: lm.hashes, times: lm.times, cells: ch.cells, chroma: ch.bytes };
+    var lines = melodyLines(sp.S, sp.F);
+    return { v: FP_VERSION, sr: SR, hop: HOP, frames: sp.F, dur: round3(x.length / SR), hashes: lm.hashes, times: lm.times, cells: ch.cells, chroma: ch.bytes, lines: lines };
+  }
+  // 只要色度（哼歌查詢用，不做地標與旋律）：回傳 { cells, chroma }，格式與 fingerprint 的色度相同
+  function chromaOf(samples, srcRate) {
+    var x = resampleTo11025(toMono(samples), srcRate);
+    var sp = spectrogram(x), ch = chroma(sp.S, sp.F);
+    return { cells: ch.cells, chroma: ch.bytes, dur: round3(x.length / SR) };
   }
 
   // ───── 存檔格式（base64，小端序）─────
@@ -85102,10 +85223,115 @@ const holder = {};
     return result;
   }
 
+  // ───── 和聲（色度）比對：哼歌用 ─────
+  // 色度每格約 0.23 秒；比對時兩格併成一格（約 0.46 秒），每格轉成單位向量（全零＝沒有和聲，不算分）。
+  var CH_MERGE = 2, CH_SEC = CH_MERGE * CH_CELL * HOP / SR;      // 併過後每格的秒數
+  function chromaVectors(bytes, cells) {
+    var m = Math.ceil(cells / CH_MERGE), out = new Float32Array(m * 12), acc = new Float64Array(12);
+    for (var c = 0; c < m; c++) {
+      acc.fill(0);
+      for (var g = c * CH_MERGE; g < Math.min(cells, (c + 1) * CH_MERGE); g++) for (var p = 0; p < 12; p++) acc[p] += bytes[g * 12 + p];
+      var nrm = 0; for (p = 0; p < 12; p++) nrm += acc[p] * acc[p];
+      nrm = Math.sqrt(nrm);
+      if (nrm > 0) for (p = 0; p < 12; p++) out[c * 12 + p] = acc[p] / nrm;
+    }
+    return { m: m, v: out };
+  }
+  // 查詢的色度向量 12 個調都試：第 p 維變成原本第 (p + k) 維（等於把哼歌的音高往下移 k 個半音去對歌；哼得比原曲高 k 個半音，k 就是那個數）
+  function rotateVectors(v, m, k) {
+    if (!k) return v;
+    var out = new Float32Array(m * 12);
+    for (var i = 0; i < m; i++) for (var p = 0; p < 12; p++) out[i * 12 + p] = v[i * 12 + ((p + k) % 12)];
+    return out;
+  }
+  // 子序列 DTW：查詢（mq 格）可以從歌的任何格開始、任何格結束（自由起點、自由終點），中間允許快慢伸縮（水平或垂直移動）。
+  // 格與格的相似度＝內積（兩個單位向量）；路徑上的平均相似度是分數（1 最像）。回傳 { score, start, end }（格號，end 含）
+  function dtwSub(q, mq, s, ns) {
+    var prev = new Float64Array(ns), cur = new Float64Array(ns), ps = new Int32Array(ns), cs = new Int32Array(ns), i, j, p;
+    var bestEnd = Infinity, bestJ = 0;
+    for (i = 0; i < mq; i++) {
+      for (j = 0; j < ns; j++) {
+        var dot = 0, qo = i * 12, so = j * 12;
+        for (p = 0; p < 12; p++) dot += q[qo + p] * s[so + p];
+        var d = 1 - dot;
+        if (i === 0) { cur[j] = d; cs[j] = j; continue; }
+        var best = prev[j], bs = ps[j];
+        if (j > 0) {
+          if (prev[j - 1] < best) { best = prev[j - 1]; bs = ps[j - 1]; }
+          if (cur[j - 1] < best) { best = cur[j - 1]; bs = cs[j - 1]; }
+        }
+        cur[j] = best + d; cs[j] = bs;
+      }
+      var tmp = prev; prev = cur; cur = tmp; var ti = ps; ps = cs; cs = ti;
+    }
+    for (j = 0; j < ns; j++) if (prev[j] < bestEnd) { bestEnd = prev[j]; bestJ = j; }
+    return { score: 1 - bestEnd / mq, start: ps[bestJ], end: bestJ };
+  }
+  // 色度比對：查詢（unpack 前的 { cells, chroma }）對每首歌（entries：[{ key, name, path, cells, chroma }]）做 12 個調的子序列 DTW，取最高分的調與段落。
+  // 回傳依分數排序的前 limit 首：{ key, name, path, score, shift（哼歌要降幾個半音才對上歌）, startSec, endSec（歌內秒數） }
+  // 查詢格數不足（少於 MIN_CH_CELLS 格有和聲）回傳空陣列，不硬比。
+  var MIN_CH_CELLS = 4;
+  // 和聲有把握：第一名的分數 ≥ CHROMA_OK，且比第二名高 CHROMA_MARGIN 以上（校準：合成資料上真命中 0.78–0.96、第二名 0.52–0.59；
+  // 沒收錄的旋律：第一名 0.47–0.59 而且與第二名只差不到 0.05，所以只看分數不夠，要看邊際）
+  var CHROMA_OK = 0.7, CHROMA_MARGIN = 0.12;
+  function chromaSearch(query, entries, opts) {
+    opts = opts || {};
+    var limit = opts.limit || 10, qv = chromaVectors(query.chroma, query.cells), mq = qv.m;
+    var nz = 0, i, p0;
+    for (i = 0; i < mq; i++) { for (p0 = 0; p0 < 12; p0++) if (qv.v[i * 12 + p0] !== 0) { nz++; break; } }
+    if (nz < MIN_CH_CELLS) return [];
+    var rot = []; for (var k = 0; k < 12; k++) rot.push(rotateVectors(qv.v, mq, k));
+    var out = [];
+    (entries || []).forEach(function (e) {
+      if (!e || !e.chroma || !e.cells) return;
+      var sv = chromaVectors(e.chroma, e.cells);
+      if (sv.m < 1) return;
+      var best = null;
+      for (var kk = 0; kk < 12; kk++) {
+        var r = dtwSub(rot[kk], mq, sv.v, sv.m);
+        if (!best || r.score > best.score) best = { score: r.score, shift: kk, start: r.start, end: r.end };
+      }
+      out.push({ key: e.key, name: e.name, path: e.path, score: round3(best.score), shift: best.shift, startSec: round3(best.start * CH_SEC), endSec: round3((best.end + 1) * CH_SEC) });
+    });
+    out.sort(function (a, b) { return b.score - a.score || String(a.name).localeCompare(String(b.name)); });
+    return out.slice(0, limit);
+  }
+  // 名次融合（Reciprocal Rank Fusion）：每一層取前幾名，依名次加分 w / (K + 名次)；同一首歌在哪幾層出現、每層的名次與分數都保留，供畫面標示命中層
+  // layers：{ 層名: [{ key, name, score, startSec, endSec, ... }] }（已依分數排序）；weights：{ 層名: 權重 }
+  var RRF_K = 60;
+  function fuseRanks(layers, weights) {
+    var by = {}, names = Object.keys(layers || {});
+    names.forEach(function (ln) {
+      var w = weights && weights[ln] != null ? weights[ln] : 1;
+      (layers[ln] || []).forEach(function (r, idx) {
+        var e = by[r.key] || (by[r.key] = { key: r.key, name: r.name, path: r.path, fused: 0, layers: {} });
+        e.fused += w / (RRF_K + idx + 1);
+        e.layers[ln] = { rank: idx + 1, score: r.score, startSec: r.startSec, endSec: r.endSec, label: r.label || '', noteFrom: r.noteFrom, noteTo: r.noteTo, shift: r.shift };
+      });
+    });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return b.fused - a.fused || String(a.name).localeCompare(String(b.name)); });
+  }
+
+  // 哼歌的判定（純函式）：融合名次＋有沒有把握。melody／chroma 都已依分數排序（每筆有 key、score、名稱等）。
+  // 有把握＝旋律第一名分數 ≥ opts.melodyConfident，或和聲第一名 ≥ CHROMA_OK 且比第二名高 CHROMA_MARGIN 以上；
+  // 而且融合後的第一名就是那一首。沒把握時 confident 為 false，畫面不假裝找到。
+  function humVerdict(melody, chroma, opts) {
+    var mc = opts && opts.melodyConfident != null ? opts.melodyConfident : 0.5;
+    melody = melody || []; chroma = chroma || [];
+    var fused = fuseRanks({ 旋律: melody, 和聲: chroma }, { 旋律: 1, 和聲: 1 }).slice(0, 10);
+    var sureKey = null, mTop = melody[0], cTop = chroma[0], cSec = chroma[1];
+    if (mTop && mTop.score >= mc) sureKey = mTop.key;
+    else if (cTop && cTop.score >= CHROMA_OK && (!cSec || cTop.score - cSec.score >= CHROMA_MARGIN)) sureKey = cTop.key;
+    var top = fused[0] || null;
+    return { fused: fused, top: top, confident: !!(top && sureKey != null && top.key === sureKey) };
+  }
+
   return {
+    humVerdict: humVerdict,
     FP_VERSION: FP_VERSION, SR: SR, HOP: HOP, WIN: WIN,
-    fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, pack: pack, unpack: unpack,
-    buildIndex: buildIndex, search: search,
+    fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, chromaOf: chromaOf, pack: pack, unpack: unpack,
+    buildIndex: buildIndex, search: search, chromaSearch: chromaSearch, fuseRanks: fuseRanks, melodyLines: melodyLines,
+    CH_SEC: CH_SEC, MEL_LINES: MEL_LINES, CHROMA_OK: CHROMA_OK, CHROMA_MARGIN: CHROMA_MARGIN,
     // 測試與除錯用
     _spectrogram: spectrogram, _findPeaks: findPeaks, _toMono: toMono, _resample: resampleTo11025, _b64enc: b64enc, _b64dec: b64dec
   };
@@ -103534,11 +103760,15 @@ const holder = {};
     // 「建旋律線」（預設開，與已發布版本一致）：取消勾選＝只建指紋（快）。哼歌（音符）找不到只有指紋的歌。
     var mLinesIdx = h('input'); mLinesIdx.type = 'checkbox'; mLinesIdx.checked = lsGet('fa.musiclib.melodyLines', '1') !== '0';
     mLinesIdx.onchange = function () { lsSet('fa.musiclib.melodyLines', mLinesIdx.checked ? '1' : '0'); };
-    var mLinesIdxLbl = h('label', null, '建旋律線（慢：每首約 3～4 分鐘，哼歌找 mp3 需要；取消勾選時只建指紋，哼歌（音符）找不到這些歌，只有播放原曲能找到）'); mLinesIdxLbl.appendChild(mLinesIdx);
+    var mLinesIdxLbl = h('label', null, '建旋律線（哼歌找 mp3 需要；預設每首約 2 秒，舊的逐音符轉譜見下方勾選；取消勾選時只建指紋，哼歌（音符）找不到這些歌，只有播放原曲能找到）'); mLinesIdxLbl.appendChild(mLinesIdx);
     idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
     if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
-    tabPane.mel.appendChild(idxBox); var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mLinesIdxLbl); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
+    tabPane.mel.appendChild(idxBox); // 旋律線的路線（階段二）：預設關＝快速旋律線（一次掃描，每首約 2 秒）；勾選＝舊的逐音符轉譜（每首約 205 秒，只為相容舊流程）
+    var mOldIdx = h('input'); mOldIdx.type = 'checkbox'; mOldIdx.checked = lsGet('fa.musiclib.melodyOld', '0') === '1';
+    mOldIdx.onchange = function () { lsSet('fa.musiclib.melodyOld', mOldIdx.checked ? '1' : '0'); };
+    var mOldIdxLbl = h('label', null, '用舊的逐音符轉譜建旋律線（很慢，每首約 205 秒；不勾就用快速旋律線，每首約 2 秒）'); mOldIdxLbl.appendChild(mOldIdx);
+    var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mLinesIdxLbl); stemRow.appendChild(mOldIdxLbl); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
 
     // ───── 哼歌找歌區塊（主畫面，工具列下方，可收合）：錄哼歌、選音檔找、歌詞文字、找相似、結果、狀態 ─────
     var humBox = h('div', 'fml-hum fml-foot');
@@ -104043,10 +104273,29 @@ const holder = {};
         if (!names || !names.length) return null;
         return h('div', null, '哼歌找不到：' + names.length + ' 首歌只有指紋、沒有旋律線（' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '') + '）。要能哼歌找到，請勾選「建旋律線」後重建這些歌的索引。');
       }
+      // 哼歌的融合排名（旋律＋和聲）：每首標出命中的是哪一層、各層的名次與分數、歌內的秒數；沒把握就標「可能」
+      function humNote(r) {
+        var hm = r.hum; if (!hm) return null;
+        var wrap = h('div', null), mmss = function (s) { return (s || 0).toFixed(1); };
+        if (hm.chromaError) wrap.appendChild(h('div', null, hm.chromaError));
+        if (r.noFeat && r.noFeat.length) wrap.appendChild(h('div', null, '有 ' + r.noFeat.length + ' 首沒有新特徵（快速旋律線），仍用舊的旋律線比對；請重建旋律索引（' + r.noFeat.slice(0, 3).join('、') + (r.noFeat.length > 3 ? ' 等' : '') + '）'));
+        if (!hm.fused.length) { wrap.appendChild(h('div', null, '旋律與和聲都沒有找到相似的歌')); return wrap; }
+        wrap.appendChild(h('div', null, hm.confident ? '融合排名（第一名有把握）：' : '融合排名（沒有把握，以下是可能的歌）：'));
+        hm.fused.slice(0, 5).forEach(function (f, i) {
+          var parts = [];
+          var m = f.layers['旋律'], c = f.layers['和聲'];
+          if (m) parts.push('旋律 ' + m.score.toFixed(2) + '（' + (m.label || '合併旋律') + '，第 ' + mmss(m.startSec) + '–' + mmss(m.endSec) + ' 秒）');
+          if (c) parts.push('和聲 ' + c.score.toFixed(2) + '（第 ' + mmss(c.startSec) + '–' + mmss(c.endSec) + ' 秒' + (c.shift ? '，哼的音高要降 ' + c.shift + ' 個半音才對上' : '') + '）');
+          wrap.appendChild(h('div', null, (i + 1) + '. ' + f.name + '　命中層：' + parts.join('；')));
+        });
+        return wrap;
+      }
       function showFound(r) {
         mRes.textContent = ''; mMidi.style.display = 'none';
         var fpLine = fpNote(r.fp);
         if (fpLine) mRes.appendChild(fpLine);
+        var humLine = humNote(r);
+        if (humLine) mRes.appendChild(humLine);
         var linelessLine = linelessNote(r.lineless);
         if (linelessLine) mRes.appendChild(linelessLine);
         if (!r.ok) { hStatus(r.reason); return; }
@@ -104616,8 +104865,11 @@ const FaMusicLibHost = (function () {
   // ───── 音訊指紋（階段一，見 docs/DESIGN.musiclib-audio-features.md）─────
   // 旋律線（逐音符轉譜）：預設開（與已發布版本一致，哼歌找 mp3 靠它）；設定頁的「建旋律線」勾選存 localStorage fa.musiclib.melodyLines，取消勾選＝'0'
   function melodyLinesOn() { try { return localStorage.getItem('fa.musiclib.melodyLines') !== '0'; } catch (_) { return true; } }
-  function fingerprintOf(buf) {
-    try { return FaMusicLibFP.pack(FaMusicLibFP.fingerprint(chansOf(buf), buf.sampleRate)); }
+  // 旋律線的路線（階段二）：預設用一次掃描的快速旋律線（同一次掃描，不逐音符轉譜）；設定頁「用舊的逐音符轉譜建旋律線」勾選存 fa.musiclib.melodyOld＝'1' 才走舊路（約 205 秒一首）
+  function melodyOldOn() { try { return localStorage.getItem('fa.musiclib.melodyOld') === '1'; } catch (_) { return false; } }
+  // 同一次掃描的原始結果（指紋、色度、主旋律線）；失敗丟錯，訊息附階段
+  function fingerprintRaw(buf) {
+    try { return FaMusicLibFP.fingerprint(chansOf(buf), buf.sampleRate); }
     catch (e) { throw new Error('指紋失敗：' + String((e && e.message) || e)); }
   }
   var fpIndexCache = { sig: null, index: null };
@@ -104653,9 +104905,10 @@ const FaMusicLibHost = (function () {
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
-    // 一次掃描的指紋（階段一）：每首都做，約 2 秒（3 分鐘的歌）
-    var fp = fingerprintOf(buf);
+    // 一次掃描：指紋（階段一）、色度與快速主旋律線（階段二）都從同一份頻譜來，每首約 2 秒（3 分鐘的歌）
+    var raw = fingerprintRaw(buf), fp = FaMusicLibFP.pack(raw);
     if (!melodyLinesOn()) return FaMusicLibMelody.audioExtractResult({ fp: fp, linesOn: false });
+    if (!melodyOldOn()) return FaMusicLibMelody.fastLinesResult(fp, raw.lines, { method: '快速旋律線（一次掃描，' + raw.lines.length + ' 條聲部）' });
     var sg;
     var stems = melodyUseStems();
     try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel, stems); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
@@ -104813,6 +105066,37 @@ const FaMusicLibHost = (function () {
     return ((r && r.segments) || []).map(function (s) { return s.text; }).join(' ').trim();
   }
   // 找歌：notes（查詢音符）＋可選的文字加分（可關閉）。文字來源：手動填的，或從哼歌錄音轉錄
+  // ───── 哼歌的和聲層（階段二）─────
+  // 索引每首的色度（fp.c，stage one 就有）；只收有指紋的紀錄。快取簽章沒變就沿用（同 fpIndexOf）
+  var chromaCache = { sig: null, entries: null };
+  function chromaEntriesOf(L) {
+    var recs = L.records.filter(function (r) { return r.fp && r.fp.v === FaMusicLibFP.FP_VERSION && r.fp.c; });
+    var sig = recs.map(function (r) { return r.key + '#' + (r.fp.sig || '') + '#' + (r.fp.n || 0); }).join('|');
+    if (chromaCache.sig !== sig || !chromaCache.entries) {
+      chromaCache.entries = recs.map(function (r) { var u = FaMusicLibFP.unpack(r.fp); return { key: r.key, name: r.name, path: r.path, cells: u.cells, chroma: u.chroma }; });
+      chromaCache.sig = sig;
+    }
+    return chromaCache.entries;
+  }
+  // 錄音的色度 → 與每首比對（12 調、子序列 DTW）。錄音太短或沒有和聲回傳空陣列
+  async function humChromaRanks(blob, L) {
+    var buf = await window.fa._decodeAudioBuffer(blob);
+    var q = FaMusicLibFP.chromaOf(chansOf(buf), buf.sampleRate);
+    return FaMusicLibFP.chromaSearch(q, chromaEntriesOf(L), { limit: 10 });
+  }
+  // 名次融合：旋律（音符比對的結果）與和聲（色度）各一份名次，RRF 合併；每首保留在哪一層、名次、分數、歌內時間點
+  // 「有把握」：旋律第一名的分數達到 CONFIDENT_SCORE，或和聲第一名的分數達到 CHROMA_OK 且比第二名高 CHROMA_MARGIN 以上；
+  // 而且融合後的第一名就是那一首。不符合就不假裝找到（畫面標「沒有把握」）
+  function fuseHum(melodyResults, chromaRanks) {
+    var melody = (melodyResults || []).map(function (r) {
+      return { key: r.key, name: r.name, score: r.score, startSec: r.startSec, endSec: r.endSec, label: r.hitLine, noteFrom: r.hit && r.hit.noteFrom, noteTo: r.hit && r.hit.noteTo };
+    });
+    return FaMusicLibFP.humVerdict(melody, chromaRanks, { melodyConfident: FaMusicLibMelody.CONFIDENT_SCORE });
+  }
+  // 沒有新特徵（快速旋律線）的音訊紀錄：仍照常用舊的旋律線比對，但結果要提示請重建
+  function noFeatNamesOf(L) {
+    return L.records.filter(function (r) { return r.fp && r.melody && r.melody.status === 'ok' && (r.melody.feat || 0) < FaMusicLibMelody.FEAT_FAST; }).map(function (r) { return r.name; });
+  }
   async function searchHum(notes, opts) {
     var L = getLib(), entries = melodyEntries(L), lineless = melodyLinelessNames(L), textHits = null, text = '';
     opts = opts || {};
@@ -104821,8 +105105,12 @@ const FaMusicLibHost = (function () {
     // 原曲指紋（階段一）：錄音（opts.blob）同時對指紋索引投票；有把握才顯示命中，結果附在 .fp 上
     var fpRes = null;
     if (opts.blob) { try { fpRes = await searchFp(opts.blob); } catch (e) { fpRes = { ok: false, reason: '指紋查詢失敗：' + String((e && e.message) || e), hits: [], missingNames: [] }; } }
+    // 和聲層（階段二）：錄音的色度與每首比對；失敗不影響旋律結果，原因記在 hum.chromaError
+    var chromaRanks = [], chromaError = '';
+    if (opts.blob) { try { chromaRanks = await humChromaRanks(opts.blob, L); } catch (e) { chromaError = '和聲比對失敗：' + String((e && e.message) || e); } }
     var base = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: null, textWeight: 0.15 });
-    base.fp = fpRes; base.lineless = lineless;
+    base.fp = fpRes; base.lineless = lineless; base.noFeat = noFeatNamesOf(L);
+    base.hum = Object.assign(fuseHum(base.results, chromaRanks), { chromaRanks: chromaRanks, chromaError: chromaError });
     base.textUsed = ''; base.matchMs = Date.now() - t0; base.entryCount = entries.length; base.partial = !!opts.useText;
     var manual = opts.useText ? String(opts.textQuery || '').trim() : '';
     if (!opts.useText || !base.ok) { base.partial = false; return base; }
@@ -104833,7 +105121,8 @@ const FaMusicLibHost = (function () {
     if (!text) { try { text = await transcribeHum(opts.blob); } catch (e) { base.partial = false; base.textError = String((e && e.message) || e); return base; } }
     if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
     var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
-    res.fp = fpRes; res.lineless = lineless; res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
+    res.fp = fpRes; res.lineless = lineless; res.noFeat = base.noFeat; res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
+    res.hum = Object.assign(fuseHum(res.results, chromaRanks), { chromaRanks: chromaRanks, chromaError: chromaError });
     return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）

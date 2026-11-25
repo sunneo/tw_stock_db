@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-25T11:41:44.079Z",
+  "generatedAt": "2026-11-25T13:26:20.217Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "b3ce098ef750e0e1f152461abe0d8920",
-    "renderer/floating-assistant.js": "579cda0b2c377f2e2a85eb51908e9ad9",
-    "renderer/floating-assistant.min.js": "579cda0b2c377f2e2a85eb51908e9ad9",
+    "renderer/floating-assistant.js": "db546eb0a1273dcb2933083c5650b93d",
+    "renderer/floating-assistant.min.js": "db546eb0a1273dcb2933083c5650b93d",
     "renderer/vendor/jsnes/LICENSE": "a3154330b15994b9ca951fd9da724416",
     "renderer/vendor/jsnes/SHA256SUMS.txt": "49e1270ebb2357ea157785168026b19d",
     "renderer/vendor/jsnes/VERSION.txt": "ad478b6088b7f84e9f8491274ebef2fa",
@@ -123,8 +123,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 203248,
-    "renderer/floating-assistant.js": 17216296,
-    "renderer/floating-assistant.min.js": 17216296,
+    "renderer/floating-assistant.js": 17246521,
+    "renderer/floating-assistant.min.js": 17246521,
     "renderer/vendor/jsnes/LICENSE": 10758,
     "renderer/vendor/jsnes/SHA256SUMS.txt": 4528,
     "renderer/vendor/jsnes/VERSION.txt": 178,
