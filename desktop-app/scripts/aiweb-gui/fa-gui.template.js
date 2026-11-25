@@ -55,8 +55,22 @@
       /* 撐滿（2026-11-25 量測）：焦點訊息本身、訊息卡（.ai-msg）、說明卡（.ai-markdown-body）原本只有 86.5% 寬、內容高度，
          改成整個訊息區滿寬、滿高，卡片直向排、內容區吃掉剩下的高度。 */
       'body.fa-gui-mode .fa-gui-focus{display:flex !important;flex-direction:column;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;min-height:100% !important;margin:0 !important;padding:0 !important;}' +
-      'body.fa-gui-mode .fa-gui-focus .ai-msg{flex:1 1 auto;display:flex !important;flex-direction:column;min-height:0;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;margin:0 !important;padding:6px !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-msg{flex:1 1 auto;display:flex !important;flex-direction:column;min-height:0;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;margin:0 !important;padding:0 !important;}' +
       'body.fa-gui-mode .fa-gui-focus .ai-markdown-body{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;width:100%;max-width:none;}' +
+      /* 內容區要撐滿到 98% 以上（2026-11-25 補量）：作者標籤（「🤖 AI:」）與 GUI 上面的說明句不佔高度（說明句的內容保留在對話紀錄裡，
+         GUI 自己的標題與狀態列已經說明用法）；訊息的匯出列與終端機標題列搬到頂列收納區（見 moveChrome），不另外吃高度。
+         文字卡頁的說明卡本身就是內容，不隱藏。 */
+      'body.fa-gui-mode .fa-gui-focus .ai-msg > div:first-child:not(.ai-markdown-body){display:none !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-markdown-body:has(.fa-midi-edit,.ai-terminal-embed,.fwin-host) > p:first-child{display:none !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-terminal-embed{padding:0 !important;}' +
+      /* 頂列固定高度：收納區的零件（匯出列、終端機標題列）放在頂列裡，不會把頂列撐高 */
+      '#fa-gui-top{height:38px;box-sizing:border-box;}' +
+      '#fa-gui-chrome{display:flex;align-items:center;gap:6px;margin-left:auto;min-width:0;white-space:nowrap;}' +
+      /* 搬進頂列的零件原本是聊天訊息的絕對定位（貼在訊息右下角），這裡改成一般流排版；匯出選單的下拉仍可以展開 */
+      '#fa-gui-chrome > *{position:relative !important;top:auto !important;bottom:auto !important;left:auto !important;right:auto !important;width:auto !important;flex:0 0 auto;z-index:10;}' +
+      '#fa-gui-chrome > div > div{top:calc(100% + 4px) !important;bottom:auto !important;margin-bottom:0 !important;}' +
+      '#fa-gui-chrome > .fwd-bar{background:transparent !important;padding:0 !important;font-size:12px;}' +
+      '#fa-gui-chrome > .fwd-bar .t{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
       /* 全螢幕頁忽略「彈出成小視窗」的狀態（同源 localStorage 記的，或 GUI 開啟時自己彈出）：彈出副本可能已被搬到 body 底下，
          所以整頁的 fwin-pop 一律收起，留下的就是滿版那一份（不會再冒出 520×520 的浮動小窗蓋住 GUI）。 */
       'body.fa-gui-mode .fwin-host.fwin-pop{display:none !important;}';
@@ -76,6 +90,13 @@
       var on = document.body.classList.toggle('fa-gui-show-input');
       btn.textContent = on ? '⌨ 收起輸入框' : '⌨ 輸入框';
     });
+  })();
+
+  // 頂列的收納區（聊天零件搬過來用，見 moveChrome）
+  (function makeChromeBox() {
+    var bar = document.getElementById('fa-gui-top');
+    if (!bar || document.getElementById('fa-gui-chrome')) return;
+    var box = document.createElement('div'); box.id = 'fa-gui-chrome'; bar.appendChild(box);
   })();
 
   function setStatus(text) {
@@ -160,6 +181,36 @@
       pending = false;
       var all = body.querySelectorAll('.fa-msg-wrap');
       for (var i = 0; i < all.length; i++) all[i].classList.toggle('fa-gui-focus', i === all.length - 1);
+      if (all.length) moveChrome(all[all.length - 1]);
+    }
+    // 聊天零件搬到頂列收納區（搬的是原節點，按鈕的事件綁定跟著走，不靠複製）：
+    // 焦點訊息的匯出列（ai-msg 最後一個子元素，不是說明卡）、終端機的標題列（含匯出／視窗按鈕）。
+    // 每次標記都重算：屬於已被換掉的訊息的零件移除；匯出列只保留最新一個。
+    function moveChrome(focus) {
+      var box = document.getElementById('fa-gui-chrome');
+      if (!box) return;
+      Array.prototype.slice.call(box.children).forEach(function (c) {
+        if (!c._faOwner || !focus.contains(c._faOwner)) box.removeChild(c);
+      });
+      var msg = focus.querySelector('.ai-msg');
+      if (msg) {
+        var kids = Array.prototype.slice.call(msg.children);
+        var last = kids[kids.length - 1];
+        if (kids.length > 1 && last && last !== msg.firstElementChild && !last.classList.contains('ai-markdown-body')) {
+          Array.prototype.slice.call(box.children).forEach(function (c) { if (c._faKind === 'footer') box.removeChild(c); });
+          last._faKind = 'footer'; last._faOwner = focus; box.appendChild(last);
+        }
+      }
+      Array.prototype.forEach.call(focus.querySelectorAll('.ai-terminal-export-slot'), function (slot) {
+        var row = slot.parentElement && slot.parentElement.parentElement;
+        if (!row || box.contains(row)) return;
+        row._faKind = 'term'; row._faOwner = row.parentElement; box.appendChild(row);
+      });
+      // 訓練工作室等視窗卡片自己的標題列（.fwd-bar：標題＋✕）也搬進頂列，讓 iframe 吃掉整個內容高度
+      Array.prototype.forEach.call(focus.querySelectorAll('.fwd > .fwd-bar'), function (bar) {
+        if (box.contains(bar)) return;
+        bar._faKind = 'bar'; bar._faOwner = bar.parentElement; box.appendChild(bar);
+      });
     }
     new MutationObserver(function () {
       if (pending) return;

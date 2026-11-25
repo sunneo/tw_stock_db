@@ -172,6 +172,9 @@ test('撐滿規則：模板與產生的 fa-gui.js 都含焦點訊息、訊息卡
     assert.ok(src.includes('body.fa-gui-mode .fa-gui-focus .ai-msg{'), '訊息卡要撐滿');
     assert.ok(src.includes('body.fa-gui-mode .fa-gui-focus .ai-markdown-body{'), '說明卡內容區要吃掉剩下的高度');
     assert.ok(src.includes('body.fa-gui-mode .fwin-host.fwin-pop{display:none !important;}'), '全螢幕頁忽略彈出狀態');
+    assert.ok(src.includes('.ai-msg > div:first-child:not(.ai-markdown-body)'), '作者標籤不佔高度');
+    assert.ok(src.includes('#fa-gui-chrome'), '頂列收納區（匯出列、終端機標題列、訓練工作室標題列搬過去）');
+    assert.ok(src.includes('function moveChrome('), '搬移聊天零件的函式');
   }
   assert.ok(!js.includes('__FA_SHA__'), 'SHA 要代入');
   fs.rmSync(web, { recursive: true, force: true });
