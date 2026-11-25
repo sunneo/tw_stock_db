@@ -196,7 +196,8 @@ function getDevice(nav) {
 // 並讓出時間給顯示。批量自適應：單批太快就加倍、太慢（超過 CHUNK_SLOW_MS）就減半，上限 CHUNK_MAX（65536 格），每份 WGSL 記住學到的批量。
 const CHUNK_WG = 64;                 // 只有 64 格一群的扁平核心才能切（與 idx = gid.x + gid.y·4194240 的假設一致）
 const CHUNK_START = 4096, CHUNK_MIN = 64, CHUNK_MAX = 65536;
-const CHUNK_FAST_MS = 60, CHUNK_SLOW_MS = 300;
+// 目標每批約 100 到 300 毫秒：低於 100 就加倍（批數少、往返少），高於 300 就減半（離 2 秒的逾時還很遠）
+const CHUNK_FAST_MS = 100, CHUNK_SLOW_MS = 300;
 const chunkHint = new Map();         // WGSL 原文 → 下次起跑的批量（invocation 數）
 const FLAT_IDX_RE = /let idx = gid\.x \+ gid\.y \* 4194240u;/;
 function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
