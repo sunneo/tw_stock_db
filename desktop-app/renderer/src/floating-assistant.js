@@ -64649,16 +64649,29 @@ const FaEditHost = (function () {
             const r = run || this, K = KINDS[kind], a = String(argsText || '').trim(); r.messages.push({ role: 'user', content: K.cmd + (a ? ' ' + a : '') });
             try {
                 const C = K.core(), starters = C.listStarters();
-                // 不帶參數＝直接開空白的編輯器（起手式 blank）；要看說明與起手式清單打 help
-                const showHelp = () => r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null);
-                if (a.toLowerCase() === 'help') { showHelp(); }
-                else if (!a && starters.some((s) => s.id === 'blank')) { const res = await r._edOpen(kind, { starter: 'blank' }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
-                else if (!a) { showHelp(); }
+                if (!a) { r._pushAssistantMessage(K.help ? K.help(starters) : ('**' + K.label() + '**\n\n' + K.lead + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `' + K.cmd + ' ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n')), null); }
                 else { const st = starters.filter((s) => s.id === a.toLowerCase())[0]; const res = await r._edOpen(kind, st ? { starter: st.id } : { starter: 'blank', request: a }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
             } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
         },
+        // 「<指令>-blank」：直接開這個編輯器的空白起手式（blank）。實作是呼叫原指令的 handler 並帶 blank，同一條路、不另寫一份；原指令不帶參數仍是說明與起手式清單。
+        // 名稱是字面量（網頁版產生器 gen-aiweb-pages.js 才查得到）；原指令在別的模組註冊，所以到呼叫時才去查（lazy）。沒有 blank 起手式的（MIDI、遊戲、簡報、影片）不做。
+        _registerEditBlankCommands() {
+            const note = (what) => what + '空白起手式（blank）：直接開一份空白的，不用說話。原指令不帶參數仍是說明與起手式清單。';
+            // starter：這個編輯器的空白起手式 id。xlsx 的空白是 'sheet'（sheet_host 把 blank 對到 sheet），其他都是 'blank'。
+            const viaBlank = (orig, starter) => (argsText, run) => { const e = this.slashCommands.get(orig); if (!e || typeof e.handler !== 'function') return undefined; return e.handler(starter || 'blank', run || this); };
+            this.register_slash_command('/edit-svg-blank', '', note('SVG 編輯器的'), viaBlank('/edit-svg'));
+            this.register_slash_command('/edit-picture-blank', '', note('圖片編輯器的'), viaBlank('/edit-picture'));
+            this.register_slash_command('/edit-3d-model-blank', '', note('3D 場景編輯器的'), viaBlank('/edit-3d-model'));
+            this.register_slash_command('/edit-markdown-blank', '', note('Markdown 編輯器的'), viaBlank('/edit-markdown'));
+            this.register_slash_command('/edit-text-blank', '', note('純文字編輯器的'), viaBlank('/edit-text'));
+            this.register_slash_command('/edit-docx-blank', '', note('Word 文件編輯器（.docx）的'), viaBlank('/edit-docx'));
+            this.register_slash_command('/edit-csv-blank', '', note('CSV 編輯器的'), viaBlank('/edit-csv'));
+            this.register_slash_command('/edit-xlsx-blank', '', note('試算表編輯器（xlsx）的'), viaBlank('/edit-xlsx', 'sheet'));
+            this.register_slash_command('/edit-html-blank', '', note('網頁編輯器（HTML）的'), viaBlank('/edit-html'));
+        },
         _registerEditCommands() {
+            this._registerEditBlankCommands();
             const hint = '[起手式｜一句話描述｜圖片網址]';
             this.register_slash_command('/edit-svg', hint,
                 'SVG 編輯器（用語言主導的概念畫家）：你說要畫什麼、放在哪個東西的哪一邊，AI 就加一個新物件；畫面沒有邊界，可以加在任何地方。可以貼圖讓 AI 描成 SVG、給網址或說「找一張…的圖」。物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。/edit-svg shapes 從起手式開始、/edit-svg 畫一隻紅色的小鳥站在樹枝上。',
