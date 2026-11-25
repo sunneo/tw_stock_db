@@ -1930,8 +1930,8 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 35217,
-   "md5": "ef31eb016ed9cbf8fd655ea5f96bb84d"
+   "size": 35308,
+   "md5": "7dbbb923f349064291c9bef728625e15"
   },
   "mlmd5": {
    "file": "chunks/mlmd5.js",
@@ -1946,8 +1946,16 @@
    "names": [
     "FaMusicLibMelody"
    ],
-   "size": 10720,
-   "md5": "5ab2c9c4333b3d577c424c17acb2f88d"
+   "size": 11518,
+   "md5": "d07522d1433b3983f4d79d1727916bc7"
+  },
+  "mlfp": {
+   "file": "chunks/mlfp.js",
+   "names": [
+    "FaMusicLibFP"
+   ],
+   "size": 7612,
+   "md5": "3bba000a1fff95563cba60ca583418f5"
   },
   "mlaud": {
    "file": "chunks/mlaud.js",
@@ -2114,20 +2122,20 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 51315,
-   "md5": "9eecd3f2b02d20d57912090cca89b17f"
+   "size": 52831,
+   "md5": "59d5090db69e923217c67d2b91d86f67"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 51900,
-   "md5": "8172bae2d1321bc67d2e8e11d7e5d3af"
+   "size": 52947,
+   "md5": "9102a1673637efd4b703806844213908"
   }
  },
  "core": {
-  "size": 6929099,
-  "md5": "06f69965a2c450ca04afbda01e369d86"
+  "size": 6929140,
+  "md5": "681a88f844fd8e85ad876ba13a3408a7"
  }
 }

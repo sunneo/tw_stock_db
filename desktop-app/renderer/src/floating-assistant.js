@@ -104633,7 +104633,7 @@ const FaMusicLibHost = (function () {
   async function searchFp(blob) {
     var L = getLib(); await L.ready;
     var buf = await window.fa._decodeAudioBuffer(blob);
-    var q = FaMusicLibFP.fingerprint(chansOf(buf), buf.sampleRate);
+    var q = FaMusicLibFP.fingerprintQuery(chansOf(buf), buf.sampleRate);
     var idx = fpIndexOf(L), r = FaMusicLibFP.search(q, idx, {});
     r.missingNames = L.records.filter(function (x) { return x.melody && x.melody.status === 'ok' && !x.fp && !/\.midi?$/i.test(x.name); }).map(function (x) { return x.name; });
     r.indexed = idx.songs.length; r.queryDur = q.dur;
