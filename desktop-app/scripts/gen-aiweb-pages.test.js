@@ -192,6 +192,22 @@ test('每個全螢幕頁的 HTML 仍含 fa-gui-cmd 標記（fa-gui.js 靠它找�
   fs.rmSync(web, { recursive: true, force: true });
 });
 
+test('撤掉的指令頁：網頁版已產生的 -blank 目錄（有產生標記）不在清單裡，產生時會被列為過期入口並移除', () => {
+  const web = tmpWeb();
+  const aiweb = path.join(web, 'web', 'aiweb');
+  fs.mkdirSync(path.join(aiweb, 'edit-svg-blank'));
+  fs.writeFileSync(path.join(aiweb, 'edit-svg-blank', 'index.html'), '<meta name="fa-gui-cmd" content="/edit-svg-blank">');
+  const plan = G.buildPlan({
+    registrySrc: fs.readFileSync(REAL_SRC, 'utf8'), sha: SHA_NEW, webRoot: web, guiList: G.readGuiList(),
+    templateText: fs.readFileSync(TPL, 'utf8'), aiIndexHtml: '<html><body></body></html>',
+    existingGuiDirs: G.listExistingGuiDirs(aiweb),
+  });
+  assert.ok(plan.stale.includes('edit-svg-blank'), '舊的 -blank 頁應被列為過期');
+  assert.ok(!plan.stale.includes('edit-svg'), '清單內的指令頁不可被列為過期');
+  assert.ok(!plan.entries.some((e) => /-blank$/.test(e.cmd)), '清單裡不該再有 -blank');
+  fs.rmSync(web, { recursive: true, force: true });
+});
+
 let pass = 0; const fails = [];
 for (const [name, fn] of tests) {
   try { fn(); pass++; } catch (e) { fails.push(name); console.log('FAIL', name, '\n  ' + (e && e.message).split('\n').slice(0, 6).join('\n  ')); }

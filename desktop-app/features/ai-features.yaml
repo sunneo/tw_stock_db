@@ -482,13 +482,6 @@ categories:
         platforms: [web, desktop]
         samples: ["/edit-3d-model room", "在我的左前方放一個紅色的球", "把它移到桌子上面", "/edit-3d-model last"]
         updated: 2026-10-30
-      - id: edit-blank-commands
-        name: 空白起手式斜線指令（<指令>-blank）
-        summary: 每個有空白起手式的編輯器都有一個獨立的 -blank 指令，直接開一份空白的、不用說話：/edit-svg-blank、/edit-picture-blank、/edit-3d-model-blank、/edit-markdown-blank、/edit-text-blank、/edit-docx-blank、/edit-csv-blank、/edit-xlsx-blank（空白試算表）、/edit-html-blank。實作是呼叫原指令並帶 blank，同一條路；原指令不帶參數仍是說明與起手式清單，不會被改成直接開空白。MIDI、遊戲、簡報、影片沒有空白起手式，所以沒有 -blank 指令。網頁版 /gui 清單也列得到這些指令。
-        how: { slash: ["/edit-svg-blank", "/edit-picture-blank", "/edit-3d-model-blank", "/edit-markdown-blank", "/edit-text-blank", "/edit-docx-blank", "/edit-csv-blank", "/edit-xlsx-blank", "/edit-html-blank"] }
-        platforms: [web, desktop]
-        samples: ["/edit-svg-blank", "/edit-picture-blank", "/edit-3d-model-blank", "/edit-xlsx-blank"]
-        updated: 2026-11-26
       - id: edit-game-2d
         name: 2D 遊戲編輯器（用說的設計、邊玩邊改、輸出遊戲包與各平台原始碼）
         summary: 用說的做 2D 遊戲：東西、行為（規則與狀態機）、碰撞、路線、場景切換、對白、背景音樂與音效、常見範本（橫向／縱向／強制捲軸、自由地圖、格鬥、RPG）。中間的畫面可以直接試玩，玩到一半暫停就是編輯器（「🎯 焦點」點一個東西再說「讓它變快」）；AI 改的先用疊層預覽（綠新增、黃修改、紅刪除）再套用；中間格式 YAML 與 UML，輸出可再編輯的遊戲包 .fagame、網頁、Electron、Node.js，其他平台（SDL2／3、Qt、C# WinForms、Java、Android、Python、FC…）由 AI 逐檔移植並附測試向量。
