@@ -606,7 +606,7 @@ embedTranscodeFallback();
 function embedDeckEdit() {
     const dir = path.join(root, 'renderer/src/deck'); if (!fs.existsSync(path.join(dir, 'deck_edit_core.js'))) return;
     const rd = (n) => fs.readFileSync(path.join(dir, n + '.js'), 'utf8').replace(/\r\n/g, '\n'); const parts = [];
-    for (const [fn, name] of [['deck_edit_core', 'FaDeckEdit'], ['deck_edit_ui', 'FaDeckEditUI']]) parts.push('const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + rd(fn) + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();');
+    for (const [fn, name] of [['deck_edit_core', 'FaDeckEdit'], ['deck_import', 'FaDeckImport'], ['deck_edit_ui', 'FaDeckEditUI']]) parts.push('const ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + rd(fn) + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();');
     parts.push(rd('deck_edit_host'));
     let a = src.indexOf('/* DECKEDIT-BEGIN */'), b = src.indexOf('/* DECKEDIT-END */');
     if (a < 0 || b < 0) { const e = src.indexOf('/* GAME-END */'); if (e < 0) throw new Error('找不到 GAME-END 標記'); const at = e + '/* GAME-END */'.length; src = src.slice(0, at) + '\n/* DECKEDIT-BEGIN */\n/* DECKEDIT-END */' + src.slice(at); a = src.indexOf('/* DECKEDIT-BEGIN */'); b = src.indexOf('/* DECKEDIT-END */'); }

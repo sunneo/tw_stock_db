@@ -12,6 +12,8 @@
     let stage = null; const host = opt.host || {}, W = { validate: D.validate, applyEdits: D.applyEdits, editWords: D.editWords, list: D.list, find: D.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-media-presentation', title: '📽 簡報編輯器', W, spec: opt.spec, state: opt.state, host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟簡報 .deck.yaml（取代目前內容，可復原）；另存用簡報 YAML 匯出（見 deck_import.js）；不支援 .pptx
+      file: { exportId: 'yaml', maxBytes: 5000000, types: FaDeckImport.TYPES, importBytes: function (bytes, name) { return FaDeckImport.fromBytes(bytes, name); } },
       tabs: [{ id: 'view', label: '📽 播放', viewer: true }, { id: 'src', label: '🧾 YAML' }],
       placeholder: '用說的改簡報:「這頁加一張飛機的照片」「在這頁後面加一頁,講風險」「旁白講短一點」「第3頁標題改成…」「上網查最新規格,加一章」',
       intro: '我是簡報的助手:中間是原本的簡報播放器,左邊是章與頁的大綱。你現在看的那一頁就是「這頁」——直接說「這頁加一張…的照片」「這頁的旁白改成…」「在這頁後面插入一頁講…」;要上網找圖、查資料、讀網頁或檔案、畫圖表,我會請簡報的代理人(跟 /media-presentation 一樣的工具)去做。我改的會先放進播放器預覽,你按「接受」才算;每一步都能復原。',

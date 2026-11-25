@@ -68342,6 +68342,38 @@ const holder = {};
 }).call(null, undefined, holder);
 return holder.FaDeckEdit;
 })();
+const FaDeckImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-media-presentation 的「📂 開啟簡報」：編輯器自己的簡報 YAML（.deck.yaml）→ 文件，取代目前內容（可復原）。
+// 讀取器用 FaDeckEdit.fromYaml（跟「📥 另存」匯出的是同一種格式，所以往返不會丟東西）。
+// 不支援 .pptx：目前沒有 .pptx 讀取器，會明講而不是假裝能讀。純函式，測試：scripts/edit-tests/deck_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./deck_edit_core.js'));
+  else root.FaDeckImport = factory(root.FaDeckEdit || (typeof FaDeckEdit !== 'undefined' ? FaDeckEdit : undefined));
+})(typeof self !== 'undefined' ? self : this, function (D) {
+  'use strict';
+
+  var DECK_EXT = /\.(deck\.)?ya?ml$/i, PPTX_EXT = /\.pptx$/i;
+  var TYPES = [{ description: '簡報 YAML', accept: { 'text/yaml': ['.deck.yaml', '.yaml', '.yml'] } }];
+
+  // bytes → 簡報文件（spec）。不能讀就丟出可讀的錯誤。
+  function fromBytes(bytes, name) {
+    var n = String(name || '');
+    if (PPTX_EXT.test(n)) { throw new Error('目前還不能開 .pptx 投影片（只能開簡報的 .deck.yaml）'); }
+    if (!DECK_EXT.test(n)) { throw new Error('這個編輯器只能開簡報的 .deck.yaml 檔'); }
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    var r = D.fromYaml(new TextDecoder('utf-8').decode(u));
+    if (!r.ok) { throw new Error(r.error || '讀不了這份簡報'); }
+    return r.spec;
+  }
+
+  return { fromBytes: fromBytes, TYPES: TYPES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDeckImport;
+})();
 const FaDeckEditUI = (function () {
 const holder = {};
 (function (module, self) {
@@ -68359,6 +68391,8 @@ const holder = {};
     let stage = null; const host = opt.host || {}, W = { validate: D.validate, applyEdits: D.applyEdits, editWords: D.editWords, list: D.list, find: D.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-media-presentation', title: '📽 簡報編輯器', W, spec: opt.spec, state: opt.state, host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟簡報 .deck.yaml（取代目前內容，可復原）；另存用簡報 YAML 匯出（見 deck_import.js）；不支援 .pptx
+      file: { exportId: 'yaml', maxBytes: 5000000, types: FaDeckImport.TYPES, importBytes: function (bytes, name) { return FaDeckImport.fromBytes(bytes, name); } },
       tabs: [{ id: 'view', label: '📽 播放', viewer: true }, { id: 'src', label: '🧾 YAML' }],
       placeholder: '用說的改簡報:「這頁加一張飛機的照片」「在這頁後面加一頁,講風險」「旁白講短一點」「第3頁標題改成…」「上網查最新規格,加一章」',
       intro: '我是簡報的助手:中間是原本的簡報播放器,左邊是章與頁的大綱。你現在看的那一頁就是「這頁」——直接說「這頁加一張…的照片」「這頁的旁白改成…」「在這頁後面插入一頁講…」;要上網找圖、查資料、讀網頁或檔案、畫圖表,我會請簡報的代理人(跟 /media-presentation 一樣的工具)去做。我改的會先放進播放器預覽,你按「接受」才算;每一步都能復原。',
