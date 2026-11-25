@@ -91,6 +91,29 @@ test('📂 開啟檔案：用 data-fa-open-file 找編輯器的開檔按鈕，�
   assert.match(TPL, /new DragEvent\('drop', \{ bubbles: true, cancelable: true, dataTransfer: dt \}\)/);
 });
 
+// ---- MIDI：網頁版 /gui 的起始面板（空白新曲＋📂 開啟 .mid）；桌面版不帶參數仍直接開空白新曲 ----
+const FA = fs.readFileSync(BUNDLE, 'utf8');
+test('MIDI 面板：/edit-midi 的起始清單是空白新曲（id blank），📂 不靠卡片上的按鈕而是 openFile', () => {
+  assert.match(FA, /_midiStarterList\(cmd\) \{/);
+  assert.match(FA, /starters: \[\{ id: 'blank', label: '空白新曲'/);
+  assert.match(FA, /openFile: \(fa, file\) => fa\._midiOpenFileCard\(file\),/);
+});
+test('MIDI 面板：載入器對 /edit-midi 補上 MIDI 清單；面板的 📂 先看 openFile，沒有才走原本的按鈕', () => {
+  assert.match(TPL, /if \(!sl && typeof fa\._midiStarterList === 'function'\) sl = fa\._midiStarterList\(CMD\);/);
+  const iOpen = TPL.indexOf('if (typeof sl.openFile === \'function\')'), iBtn = TPL.indexOf('Promise.resolve(entry.handler(sl.openId, fa))');
+  assert.ok(iOpen > 0 && iBtn > iOpen, 'openFile 分支要在 openId 按鈕分支之前');
+});
+test('MIDI 面板：讀檔用 FaMidiOpen（只收 .mid）；選檔取消會結束，不會卡住', () => {
+  assert.match(FA, /_midiOpenFileCard\(file\) \{[\s\S]*?FaMidiOpen\.fromFile\(new Uint8Array\(buf\), f\.name\)/);
+  assert.match(FA, /inp\.accept = '\.mid,\.midi,audio\/midi'/);
+  assert.match(FA, /inp\.addEventListener\('cancel', \(\) => \{ inp\.remove\(\); resolve\(\); \}\);/);
+});
+test('MIDI 指令：blank 等於不帶參數（空白新曲）；空白新曲只有一處建立（_midiBlankSong）', () => {
+  assert.match(FA, /replace\(\/\^blank\$\/i, ''\)/);
+  assert.match(FA, /else r\._midiPushEditor\(r\._midiBlankSong\(\), '新曲子'\);/);
+  assert.match(FA, /_midiBlankSong\(\) \{ let sg = FaMidi\.emptySong\(\); sg = FaMidi\.addTrack\(sg, '鋼琴', 0\); return FaMidi\.addTrack\(sg, '鼓', 0, true\); \}/);
+});
+
 let ok = 0; const bad = [];
 for (const [name, fn] of tests) {
   try { fn(); ok++; } catch (e) { bad.push(name + '\n    ' + String((e && e.message) || e).split('\n').slice(0, 4).join('\n    ')); }

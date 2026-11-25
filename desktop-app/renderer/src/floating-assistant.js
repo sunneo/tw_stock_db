@@ -107794,12 +107794,12 @@ class FloatingAssistant {
             });
         this.register_slash_command('/edit-midi', '[.mid 檔 | 空白新曲]',
             'MIDI 編輯器:/edit-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放編輯器(鋼琴捲簾、多音軌、只能選 GS 音色、復原重做、下面可用說的改);/edit-midi 空白 → 新曲。',
-            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/edit-midi' + (raw ? ' ' + raw : '') });
+            async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim().replace(/^blank$/i, ''); r.messages.push({ role: 'user', content: '/edit-midi' + (raw ? ' ' + raw : '') });   // blank＝起始面板的「空白新曲」（同空白）
                 try {
                     const f = await _midiFileFrom(r, raw);
                     if (f && f.error) r._pushAssistantMessage('⚠️ ' + f.error);
                     else if (f) r._midiPushEditor(f.song, f.title);
-                    else { let sg = FaMidi.emptySong(); sg = FaMidi.addTrack(sg, '鋼琴', 0); sg = FaMidi.addTrack(sg, '鼓', 0, true); r._midiPushEditor(sg, '新曲子'); }
+                    else r._midiPushEditor(r._midiBlankSong(), '新曲子');
                 } catch (e) { r._pushAssistantMessage('⚠️ /edit-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -129044,6 +129044,31 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         try { const bytes = FaMidi.write(song); if (bytes.length <= 90000) ref.b64 = this._midiB64(bytes); } catch (_) { /* */ }
         this._pushAssistantMessage((lead || '🎼 MIDI 編輯器:點格子新增音符、點音符刪除,左邊選音軌與 GS 音色,下面可以用說的(「第一軌升兩個半音」「速度改成 90」);每一步都能復原。') + '\n\n```fa-midi-edit\n' + JSON.stringify(ref) + '\n```', null);
         return id;
+    }
+    // 空白新曲：鋼琴與鼓兩軌（/edit-midi 不帶參數、/edit-midi blank、起始面板的「空白新曲」都用這個）
+    _midiBlankSong() { let sg = FaMidi.emptySong(); sg = FaMidi.addTrack(sg, '鋼琴', 0); return FaMidi.addTrack(sg, '鼓', 0, true); }
+    // 網頁版 /gui 的起始面板（/edit-midi 不帶參數）：空白新曲，或 📂 開啟 .mid（讀進來，開成 MIDI 編輯器卡片）。
+    // 面板的 📂 不走編輯器的開檔按鈕（MIDI 卡片沒有），改呼叫這裡的 openFile（見 fa-gui.template.js 的 showStarterPanel）。
+    _midiStarterList(cmd) {
+        if (String(cmd || '') !== '/edit-midi') return null;
+        return {
+            cmd: '/edit-midi', label: 'MIDI 編輯器', lead: '🎼 MIDI 編輯器：用鋼琴捲簾寫曲子，或開一個 .mid 檔接著改。空白新曲是鋼琴與鼓兩軌；打開的 .mid 會照原樣讀進來。',
+            openId: 'blank',
+            starters: [{ id: 'blank', label: '空白新曲', desc: '鋼琴與鼓兩軌，從空白開始寫' }],
+            openFile: (fa, file) => fa._midiOpenFileCard(file),
+        };
+    }
+    // 讀一個 .mid（傳入 File 就直接讀；沒有就跳出選檔，必須在點擊的同一個手勢裡呼叫）→ MIDI 編輯器卡片。檔案不是 .mid 或讀不了就丟錯。
+    _midiOpenFileCard(file) {
+        const go = (f) => f.arrayBuffer().then((buf) => { const r = FaMidiOpen.fromFile(new Uint8Array(buf), f.name); this._midiPushEditor(r.song, r.title); });
+        if (file) return go(file);
+        return new Promise((resolve, reject) => {
+            const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.mid,.midi,audio/midi'; inp.style.display = 'none';
+            document.body.appendChild(inp);
+            inp.onchange = () => { const f = inp.files && inp.files[0]; inp.remove(); if (!f) { resolve(); return; } go(f).then(resolve, reject); };
+            inp.addEventListener('cancel', () => { inp.remove(); resolve(); });
+            inp.click();
+        });
     }
     // 斜線指令「期待檔案卻沒收到」共用的來源選擇卡片（純函式在 FaFileSource）：問「要從目前對話的哪個資源選？還是要上傳？或者選本機檔案？」
     // o = { cmd, question, accept, items（FaFileSource.collect 的結果）, auto（只有一個候選時直接用、不問）}
