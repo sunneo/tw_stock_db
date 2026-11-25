@@ -524,6 +524,48 @@ t('強制重建：不管索引是不是最新都重做；新的做不出來就�
   assert.ok(evs2.some(function (e) { return e.status === 'failed' && /壞檔/.test(e.reason); }), '失敗事件帶原因');
 });
 
+// ───── 音訊：指紋＋旋律線（預設）／只有指紋（取消旋律線勾選）─────
+// 預設流程（linesOn）：音訊紀錄同時有 fp 與 melody.contour，哼歌候選含這首
+t('音訊建索引（預設，旋律線開）：同時存 fp 與旋律線 contour，哼歌候選含這首', async function () {
+  var fp = { v: 1, n: 5, frames: 9, dur: 1, sr: 11025, hop: 512, cells: 0, h: '', t: '', c: '' };
+  var rec = { key: 'a1', name: '甲.mp3', path: 'D:/m/甲.mp3', size: 10, mtimeMs: 1 };
+  var mel = makeMelody(101, 12);
+  var ex = MM.audioExtractResult({ fp: fp, linesOn: true, notes: mel, tracks: [], method: '單音追蹤' });
+  var sum = await MM.runMelodyIndex([rec], { retries: 1, extract: async function () { return ex; } });
+  assert.equal(sum.done, 1);
+  assert.ok(rec.fp && rec.fp.v === 1 && rec.fp.sig, '紀錄要有 fp（版本 v:1）');
+  assert.ok(rec.melody && rec.melody.status === 'ok' && rec.melody.contour, '紀錄要有旋律線 melody.contour');
+  var c = MM.entriesOf([rec]);
+  assert.equal(c.entries.length, 1, '哼歌候選要含這首');
+  assert.equal(c.lineless.length, 0, '有旋律線的歌不算只有指紋');
+});
+
+// 取消旋律線勾選（linesOn false）：只有 fp；哼歌候選不含這首，並且列在 lineless（要提示）
+t('取消旋律線勾選：只存指紋，哼歌候選不含這些歌，且回報為只有指紋（要提示）', async function () {
+  var fp = { v: 1, n: 5, frames: 9, dur: 1, sr: 11025, hop: 512, cells: 0, h: '', t: '', c: '' };
+  var onlyFp = { key: 'b1', name: '乙.mp3', path: 'D:/m/乙.mp3', size: 11, mtimeMs: 1 };
+  var withLines = { key: 'c1', name: '丙.mid', path: 'D:/m/丙.mid', size: 12, mtimeMs: 1 };
+  var ex = MM.audioExtractResult({ fp: fp, linesOn: false });
+  assert.deepEqual(ex.notes, [], '不建旋律線時 notes 為空');
+  var sum = await MM.runMelodyIndex([onlyFp], { retries: 1, extract: async function () { return ex; } });
+  assert.equal(sum.done, 1, '只有指紋也算建索引成功');
+  assert.ok(onlyFp.fp && onlyFp.fp.v === 1, '紀錄有 fp');
+  assert.equal(onlyFp.melody.contour, null, '沒有旋律線');
+  // 另一首（MIDI，有旋律線）照常進候選
+  withLines.melody = { status: 'ok', version: 3, contour: { intervals: [1, 2], levels: [1, 2] }, tracks: [] };
+  var c = MM.entriesOf([onlyFp, withLines]);
+  assert.deepEqual(c.entries.map(function (e) { return e.name; }), ['丙.mid'], '哼歌候選不含只有指紋的歌');
+  assert.deepEqual(c.lineless, ['乙.mp3'], '只有指紋的歌列出來，供結果提示');
+});
+
+// 舊紀錄（只有旋律線、沒有 fp）仍照常進候選，不算 lineless
+t('舊格式紀錄（只有旋律線）：照常進候選，不列為只有指紋', function () {
+  var old = { key: 'd1', name: '丁.mp3', path: 'D:/m/丁.mp3', melody: { status: 'ok', version: 3, contour: { intervals: [1, 2], levels: [1, 2] }, tracks: [] } };
+  var c = MM.entriesOf([old]);
+  assert.equal(c.entries.length, 1);
+  assert.equal(c.lineless.length, 0);
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];

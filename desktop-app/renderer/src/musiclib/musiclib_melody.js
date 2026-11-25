@@ -424,7 +424,29 @@
     return { CONFIDENT_SCORE: CONFIDENT_SCORE, cmp: compareNotes(hum, seg, { shift: 0 }), base: base, shift: shift };
   }
 
+  // 音訊建索引的結果（純函式）：指紋永遠有；linesOn 為 true 時才帶旋律線（notes／tracks）。
+  // 旋律線預設開（與已發布版本一致）；取消勾選時只存指紋，哼歌（音符）找不到這些歌。
+  function audioExtractResult(o) {
+    var fp = o.fp;
+    if (!o.linesOn) return { notes: [], tracks: [], method: '音訊指紋（只建指紋，沒有旋律線）', fp: fp };
+    return { notes: o.notes || [], tracks: o.tracks || [], method: o.method, fp: fp };
+  }
+  // 搜尋用的候選（純函式）：只收有旋律線的歌；只有指紋、沒有旋律線的音訊歌另外列出來（哼歌找不到它們，結果要提示）
+  function entriesOf(records) {
+    var entries = [], lineless = [];
+    (records || []).forEach(function (r) {
+      if (!r || !r.melody || r.melody.status !== 'ok') return;
+      var lines = [];
+      // 每條線一個項目：合併線＋各軌線（舊格式的索引只有合併線）；搜尋時每首取最高分那條
+      if (r.melody.contour) lines.push({ label: '合併（所有軌）', contour: r.melody.contour, track: null, mode: 'merged' });
+      (r.melody.tracks || []).forEach(function (t) { if (t.contour) lines.push({ label: t.label || ('頻道 ' + t.channel), track: t.track, mode: t.kind || 'one', contour: t.contour }); });
+      if (!lines.length) { if (r.fp) lineless.push(r.name); return; }
+      entries.push({ key: r.key, name: r.name, lines: lines, method: r.melody.method, path: r.path });
+    });
+    return { entries: entries, lineless: lineless };
+  }
   return {
+    audioExtractResult: audioExtractResult, entriesOf: entriesOf,
     melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, restoreNotes: restoreNotes, compareNotes: compareNotes, compareHit: compareHit, median: median,
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,

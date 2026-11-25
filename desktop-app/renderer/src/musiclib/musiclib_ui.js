@@ -293,10 +293,14 @@
     var mStemsIdx = h('input'); mStemsIdx.type = 'checkbox'; mStemsIdx.checked = lsGet('fa.musiclib.melodyStems', '0') === '1';
     mStemsIdx.onchange = function () { lsSet('fa.musiclib.melodyStems', mStemsIdx.checked ? '1' : '0'); };
     var mStemsIdxLbl = h('label', null, '建索引時拆軌（Demucs 六個聲部各建一條旋律線；很慢，沒有模型會下載約 136 MB；已建好的要用強制重建才會套用）'); mStemsIdxLbl.appendChild(mStemsIdx);
+    // 「建旋律線」（預設開，與已發布版本一致）：取消勾選＝只建指紋（快）。哼歌（音符）找不到只有指紋的歌。
+    var mLinesIdx = h('input'); mLinesIdx.type = 'checkbox'; mLinesIdx.checked = lsGet('fa.musiclib.melodyLines', '1') !== '0';
+    mLinesIdx.onchange = function () { lsSet('fa.musiclib.melodyLines', mLinesIdx.checked ? '1' : '0'); };
+    var mLinesIdxLbl = h('label', null, '建旋律線（慢：每首約 3～4 分鐘，哼歌找 mp3 需要；取消勾選時只建指紋，哼歌（音符）找不到這些歌，只有播放原曲能找到）'); mLinesIdxLbl.appendChild(mLinesIdx);
     idxBox.appendChild(mIdx); idxBox.appendChild(mPause); idxBox.appendChild(mIdxCancel); idxBox.appendChild(mForceSel); idxBox.appendChild(mForceDir); idxBox.appendChild(mModelIdxLbl); idxBox.appendChild(idxStat); idxBox.appendChild(idxBar); idxBox.appendChild(idxName);
     if (!MEL) { [mIdx, mModelIdx, mForceSel, mForceDir].forEach(function (b) { b.disabled = true; }); idxStat.textContent = '旋律索引不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
-    tabPane.mel.appendChild(idxBox); var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
+    tabPane.mel.appendChild(idxBox); var stemRow = h('div', 'fml-bar'); stemRow.appendChild(mLinesIdxLbl); stemRow.appendChild(mStemsIdxLbl); tabPane.mel.appendChild(stemRow); tabPane.mel.appendChild(idxInfo);
 
     // ───── 哼歌找歌區塊（主畫面，工具列下方，可收合）：錄哼歌、選音檔找、歌詞文字、找相似、結果、狀態 ─────
     var humBox = h('div', 'fml-hum fml-foot');
@@ -791,14 +795,22 @@
         var mmss = function (s) { s = Math.max(0, s || 0); var m = Math.floor(s / 60), sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; };
         var parts = [];
         if (fp.ok && fp.top) parts.push('【原曲指紋】' + fp.top.name + '，錄音開頭對到曲中第 ' + mmss(fp.top.offsetSec) + ' 秒（票數 ' + fp.top.votes + '，次高 ' + fp.top.second + '）');
+        else if (fp.top && fp.top.votes > 0) parts.push('原曲指紋：沒有把握，可能是「' + fp.top.name + '」（錄音開頭約對到第 ' + mmss(fp.top.offsetSec) + ' 秒，票數不夠集中：' + (fp.reason || '') + '）');
         else parts.push('原曲指紋：沒找到' + (fp.reason ? '（' + fp.reason + '）' : ''));
         if (fp.missingNames && fp.missingNames.length) parts.push('有 ' + fp.missingNames.length + ' 首沒有新特徵，請重建旋律索引（' + fp.missingNames.slice(0, 3).join('、') + (fp.missingNames.length > 3 ? ' 等' : '') + '）');
         return h('div', null, parts.join('；'));
+      }
+      // 哼歌找不到的歌（只有指紋、沒有旋律線）：明講幾首、舉例幾首，不靜默略過
+      function linelessNote(names) {
+        if (!names || !names.length) return null;
+        return h('div', null, '哼歌找不到：' + names.length + ' 首歌只有指紋、沒有旋律線（' + names.slice(0, 3).join('、') + (names.length > 3 ? ' 等' : '') + '）。要能哼歌找到，請勾選「建旋律線」後重建這些歌的索引。');
       }
       function showFound(r) {
         mRes.textContent = ''; mMidi.style.display = 'none';
         var fpLine = fpNote(r.fp);
         if (fpLine) mRes.appendChild(fpLine);
+        var linelessLine = linelessNote(r.lineless);
+        if (linelessLine) mRes.appendChild(linelessLine);
         if (!r.ok) { hStatus(r.reason); return; }
         var timing = '，旋律比對 ' + (r.entryCount != null ? r.entryCount : MEL.entries().length) + ' 首用了 ' + (r.matchMs || 0) + ' 毫秒' + (r.transcribeMs != null ? '，文字轉錄 ' + (r.transcribeMs / 1000).toFixed(1) + ' 秒' : '');
         var textNote = r.partial ? '；文字轉錄中（語音模型第一次要載入，可能要幾分鐘，目前是只看旋律的結果）'

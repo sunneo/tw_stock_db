@@ -23,7 +23,7 @@
   var FREQ_SPAN = 200;                // 兩點頻率差上限（格）
   var CH_LO = 55, CH_HI = 2000;       // 色度只用這個頻率範圍
   var CH_CELL = Math.round(0.25 * SR / HOP);   // 色度每格的頻譜格數（約 0.23 秒）
-  var MIN_VOTES = 8;                  // 命中的票數下限
+  var MIN_VOTES = 20;                 // 命中的票數下限（校準：負面對照（不在索引的歌）最高 18 票；真命中最低約 200 票）
   var RATIO = 2.5;                    // 最高票的偏移，要比「其他偏移」最高票高這麼多倍，才算集中（不亂給）
   var NEAR = 2;                       // 偏移差在這（格）內，視為同一個偏移（量化造成的抖動）
   var OFF_BIAS = 8388608, OFF_SPAN = 16777216;   // 票的鍵：歌序 × 2^24 + (偏移 + 2^23)
@@ -233,6 +233,25 @@
     for (var i = 0; i < n; i++) out[i] = dv.getUint32(i * 4, true);
     return out;
   }
+  // 查詢用：同一段錄音在 QPHASES 個起點相位（每 HOP/QPHASES 個取樣）各算一次，地標合併。
+  // 原因：索引的頻譜格固定從歌的開頭算起，查詢的段落起點任意，格子不對齊時峰值會變，命中票數掉到約 1/5（實測）。
+  // 多相位讓查詢至少有一個相位與索引格子幾乎對齊；時間只到整格（誤差約半格，約 23 毫秒）。
+  var QPHASES = 8;
+  function fingerprintQuery(samples, srcRate) {
+    var x = resampleTo11025(toMono(samples), srcRate);
+    var hs = [], ts = [], chFp = null;
+    for (var q = 0; q < QPHASES; q++) {
+      var p = Math.floor(q * HOP / QPHASES);
+      var sub = x.subarray(p);
+      var sp = spectrogram(sub);
+      var lm = landmarks(findPeaks(sp.S, sp.F));
+      if (q === 0) chFp = chroma(sp.S, sp.F);
+      var add = Math.round(p / HOP);
+      for (var i = 0; i < lm.hashes.length; i++) { hs.push(lm.hashes[i]); ts.push(lm.times[i] + add); }
+    }
+    return { v: FP_VERSION, sr: SR, hop: HOP, frames: Math.ceil(x.length / HOP), dur: round3(x.length / SR), hashes: Uint32Array.from(hs), times: Uint32Array.from(ts), cells: chFp.cells, chroma: chFp.bytes };
+  }
+
   // 存進紀錄的形式（JSON 可存）
   function pack(fp) {
     return { v: fp.v, sr: fp.sr, hop: fp.hop, frames: fp.frames, dur: fp.dur, n: fp.hashes.length, cells: fp.cells,
@@ -283,6 +302,10 @@
         votes.set(key, (votes.get(key) || 0) + 1);
       }
     }
+    // 相鄰偏移（差 1 格）的票合計：量化抖動會把同一個偏移的票分到隔壁格子
+    var smooth = new Map();
+    votes.forEach(function (cnt, key) { smooth.set(key, cnt + (votes.get(key - 1) || 0) + (votes.get(key + 1) || 0)); });
+    votes = smooth;
     // 每首的最佳偏移
     var bestBySong = new Map();
     votes.forEach(function (cnt, key) {
@@ -312,7 +335,7 @@
 
   return {
     FP_VERSION: FP_VERSION, SR: SR, HOP: HOP, WIN: WIN,
-    fingerprint: fingerprint, pack: pack, unpack: unpack,
+    fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, pack: pack, unpack: unpack,
     buildIndex: buildIndex, search: search,
     // 測試與除錯用
     _spectrogram: spectrogram, _findPeaks: findPeaks, _toMono: toMono, _resample: resampleTo11025, _b64enc: b64enc, _b64dec: b64dec

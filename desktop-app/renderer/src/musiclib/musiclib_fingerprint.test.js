@@ -126,6 +126,17 @@ t('白雜訊片段：不亂報', function () {
   assert.equal(r.ok, false, '雜訊卻命中：' + (r.top && r.top.name));
 });
 
+t('查詢起點不在格子上（任意秒數）仍找得到正確的歌與秒數', function () {
+  // 索引的頻譜格從歌的開頭算起；查詢起點任意，格子不對齊。多相位查詢＋相鄰偏移合計要讓這幾個起點都命中（誤差 ≤ 0.1 秒）
+  [10.001, 22.37, 31.6].forEach(function (st, i) {
+    var q = FP.fingerprintQuery(clipVariant(SONGS[2].samples, st, 12, { gain: 0.8, seed: 40 + i }), 11025);
+    var r = FP.search(q, index());
+    assert.ok(r.ok, '起點 ' + st + ' 應命中：' + r.reason);
+    assert.equal(r.top.key, 'c', '起點 ' + st + ' 認錯歌：' + r.top.name);
+    assert.ok(Math.abs(r.top.offsetSec - st) <= 0.1, '起點 ' + st + ' 偏移 ' + r.top.offsetSec);
+  });
+});
+
 t('沒有新特徵的舊紀錄：不進索引，列在 missing 裡', function () {
   var entries = makeEntries(SONGS).concat([{ key: 'old', name: '舊.mp3', path: 'D:/m/舊.mp3', fp: null }]);
   var idx = FP.buildIndex(entries);
