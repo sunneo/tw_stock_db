@@ -1,120 +1,127 @@
-// 評測守則（使用者要求，2026-11-22；適用所有 scripts/eval/musiclib*.eval.js）：
-//  1. 每次評測都用全新的 --user-data-dir（空目錄），開始時佇列與對話狀態必須是空的。
-//  2. 一次只跑一個評測；新評測開始前，先確認上一個 Electron 都已結束。
-//  3. 評測結束前取消佇列與旋律索引工作，並確認沒有殘留行程（只停自己啟動的 PID）。
-//  4. 這個評測不需要 GPU、不需要網路、不需要模型：哼歌用程式合成的正弦波音訊，曲庫用程式產生的 mid 與 wav。
-//  5. 每個 Electron 實際執行最多兩次。
-// 哼歌找歌真桌面版評測：曲庫有 3 首不同旋律的 mid（A、B、C）加 1 個旋律 A 的 wav（走單音音高追蹤的「簡易轉譜」），
-// 建旋律索引後，用「旋律 A 升 5 個半音、速度快 1.25 倍、錯 2 個音、加一點顫音」的合成哼歌去找，要找到 A；
-// 用無關旋律 D 去找，不能把 A、B、C 當高分命中；另檢查面板有「哼歌找歌」區塊。
-const ROOT = 'E:/Temp/claude/1845096e089295dd/e49cfb73-b239-407d-a0c7-0036bc8d60d4/scratchpad/humtest';
-const out = { steps: [], checks: [] };
-const check = (name, ok, detail) => { out.checks.push({ name: name, ok: !!ok, detail: detail || '' }); };
+// 哼歌找歌階段二的真桌面版評測（設計：docs/DESIGN.musiclib-audio-features.md 第 5 節）。本檔只寫不跑，由使用者在真桌面版執行。
+// 做法（不另外寫捷徑，走正式流程）：
+//   1. 對 T-Ara 五首（D:\Musics\Tara）用正式的 melody.buildIndex 建索引（預設＝快速旋律線，一次掃描），量每首秒數（驗收 ≤ 5 秒）。
+//   2. 模擬哼歌：從原曲抽出的主旋律（索引裡每首的旋律線，用 base＋semis 還原成音符）截 3 段、每段 8～12 秒，
+//      用合成單音（正弦）重新演奏，每個音加音高抖動（±0.3 半音）、整段速度變化（±10%），寫成 WAV，
+//      再走正式的哼歌流程：notesFromHum（音高追蹤）→ melody.search(notes, { blob })（旋律比對＋色度比對＋名次融合）。
+//      每段量：融合名次第 1、前 5 是否命中；另外量旋律層單獨與和聲層單獨。
+//   3. 舊的「用音符哼歌」：直接拿同一段的音符（不經音訊，模擬使用者逐音符輸入）查詢，量前 1／前 5 是否仍命中。
+// 驗收：前 5 命中 ≥ 80%、前 1 ≥ 50%（融合結果）、建索引每首 ≤ 5 秒。整個評測上限 500 秒，超過就停在目前進度並回報 truncated。
+// 進度每一步寫進 E:/Temp/hum_progress.txt（逾時也看得到做到哪）。
+const T_START = Date.now(), DEADLINE_MS = 470 * 1000;
+const out = { songs: [], index: {}, queries: [], oldNotes: [], summary: {}, truncated: false, timing: {} };
+let prog = ''; const NL = String.fromCharCode(10);
+const plog = async (t) => { prog += '[' + Math.round((Date.now() - T_START) / 1000) + 's] ' + t + NL; try { await window.desktopAPI.rawfs.writeFile('E:/Temp/hum_progress.txt', { text: prog }); } catch (_) { /* 寫不成功不影響評測 */ } };
+const overTime = () => Date.now() - T_START > DEADLINE_MS;
 const a = window.desktopAPI;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function bytesToB64(u8) { let s = ''; const CH = 0x8000; for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
-
-// 旋律：[半音編號, 拍數]，每拍 0.5 秒（120 bpm）
-const MEL_A = [[60,1],[62,1],[64,1],[60,1],[64,1],[67,2],[65,1],[64,1],[62,1],[60,2],[62,1],[64,1],[67,1],[69,2],[67,1],[64,1],[62,1],[60,1],[59,1],[60,1],[62,1],[64,1],[62,1],[60,2]];
-const MEL_B = [[60,1],[60,1],[67,1],[67,1],[69,1],[69,1],[67,2],[65,1],[65,1],[64,1],[64,1],[62,1],[62,1],[60,2],[67,1],[67,1],[65,1],[65,1],[64,1],[64,1],[62,2],[67,1],[67,1],[65,1],[65,1],[64,1],[64,1],[62,2]];
-const MEL_C = [[60,2],[72,1],[55,1],[66,2],[48,1],[70,1],[61,2],[75,1],[52,1],[68,2],[58,1],[73,1],[50,2],[64,1],[71,1],[57,2],[74,1],[53,1],[62,2],[69,1],[49,1],[67,2],[76,1],[56,1]];
-const MEL_D = [[65,1],[65,1],[72,2],[71,1],[69,1],[67,1],[65,2],[64,1],[62,1],[64,1],[65,1],[69,2],[67,1],[65,1],[64,1],[62,2],[60,1],[62,1],[64,1],[65,2],[67,1],[69,1],[71,2],[72,2]];
-
-function midiBytes(mel) {
-  const notes = []; let t = 0;
-  mel.forEach((m) => { notes.push({ t: t * 480, d: Math.round(m[1] * 480 * 0.9), n: m[0], v: 90 }); t += m[1]; });
-  const song = { ppq: 480, tempos: [{ t: 0, bpm: 120 }], timesig: { n: 4, d: 4 }, title: 'hum', tracks: [{ name: 'm', channel: 0, program: 0, drum: false, volume: 100, pan: 64, notes: notes }] };
-  return FaMidi.write(song);
-}
-// 把旋律合成成單聲道 16 位元 wav：shift 半音、speed 倍速、wrong＝{索引: 偏移半音}、vib＝顫音深度（半音）
-function synthWav(mel, shift, speed, wrong, vib) {
-  const sr = 16000; let total = 0; mel.forEach((m) => { total += m[1] * 0.5 / speed; });
-  const n = Math.ceil((total + 0.3) * sr), x = new Float32Array(n); let tcur = 0.1;
-  mel.forEach((m, i) => {
-    const midi = m[0] + shift + ((wrong && wrong[i]) || 0), f0 = 440 * Math.pow(2, (midi - 69) / 12), dur = m[1] * 0.5 / speed * 0.92;
-    const s0 = Math.floor(tcur * sr), len = Math.floor(dur * sr); let ph = 0;
-    for (let k = 0; k < len; k++) {
-      const tt = k / sr, f = f0 * Math.pow(2, ((vib || 0) * Math.sin(2 * Math.PI * 5 * tt)) / 12);
-      ph += 2 * Math.PI * f / sr; const env = Math.min(1, k / 300, (len - k) / 300);
-      x[s0 + k] += 0.4 * env * Math.sin(ph);
-    }
-    tcur += m[1] * 0.5 / speed;
-  });
-  const data = new Uint8Array(44 + n * 2), dv = new DataView(data.buffer), w = (o, s) => { for (let i = 0; i < s.length; i++) data[o + i] = s.charCodeAt(i); };
-  w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true);
-  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, Math.round(x[i] * 32767))), true);
-  return data;
-}
-
+// 評測用的設定：旋律線開、舊的逐音符路徑關（正式預設）、不拆軌、不用 Basic Pitch
+window.localStorage.setItem('fa.musiclib.melodyLines', '1');
+window.localStorage.setItem('fa.musiclib.melodyOld', '0');
+window.localStorage.setItem('fa.musiclib.melodyStems', '0');
+window.localStorage.setItem('fa.musiclib.melodyBasicPitch', '0');
+function b64ToBytes(b64) { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+function wavBlob(chan, sr) { const n = chan.length, d = new Uint8Array(44 + n * 2), dv = new DataView(d.buffer); const w = (o, s) => { for (let i = 0; i < s.length; i++) d[o + i] = s.charCodeAt(i); };
+  w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.max(-1, Math.min(1, chan[i])) * 32767, true); return new Blob([d], { type: 'audio/wav' }); }
+// 偽隨機（線性同餘，固定種子，結果可重現）
+const lcg = (s) => (Math.imul(s, 1664525) + 1013904223) >>> 0;
+function rng(seed) { let s = seed >>> 0; return () => { s = lcg(s); return s / 4294967296; }; }
+const DIR = 'D:/Musics/Tara/';
+const SONG_FILES = [
+  'T-Ara SuperNova TTL2 HD.mp3',
+  'T-ara - Lovey Dovey Instrumental.mp3',
+  'T-ara - Roly Poly (Official Instrumental).mp3',
+  'T-ARA Little Apple (Official Instrumental).mp3',
+  'T-ara  DAY BY DAY.mp3'
+];
+const SEGS_PER_SONG = 3, SR_OUT = 22050;
 try {
-  check('旋律模組與主機存在', typeof FaMusicLibMelody !== 'undefined' && typeof FaMusicLibHost !== 'undefined' && !!FaMusicLibHost.melody, '');
-  if (!out.checks.every((c) => c.ok)) throw new Error('前置條件不符，停止');
-  const H = FaMusicLibHost.melody;
   const L = FaMusicLibHost.getLib(); await L.ready;
-  out.beforeCount = L.records.length;
+  const mk = (n, i) => ({ key: 'src|' + DIR + n, sourceId: 'src', sourceType: 'folder', sourceLabel: 'Tara', path: DIR + n, name: n, ext: 'mp3', kind: 'mp3', category: 'audio', label: 'MP3', pending: false, status: 'ok', sizeBytes: 1000 + i, mtimeMs: 1, derivedFrom: null, lyricStatus: 'none', lyrics: null, melody: null, fp: null });
+  SONG_FILES.forEach((n, i) => L.records.push(mk(n, i)));
 
-  // 1. 寫曲庫檔案
-  const files = { 'song_a.mid': midiBytes(MEL_A), 'song_b.mid': midiBytes(MEL_B), 'song_c.mid': midiBytes(MEL_C), 'song_a_audio.wav': synthWav(MEL_A, 0, 1, null, 0) };
-  for (const k of Object.keys(files)) await a.rawfs.writeFile(ROOT + '/lib/' + k, { base64: bytesToB64(files[k]) });
-  out.steps.push('曲庫檔案已寫入：' + Object.keys(files).join('、'));
+  // 1. 建索引（正式流程，快速旋律線）：每首量秒數（running → done／failed 之間）
+  const started = {}, perSong = {};
+  let t0 = Date.now();
+  const sum = await FaMusicLibHost.melody.buildIndex(function (ev) {
+    if (!ev || !ev.key) return;
+    if (ev.status === 'running') started[ev.key] = Date.now();
+    if (ev.status === 'done' || ev.status === 'failed') perSong[ev.key] = { sec: +((Date.now() - (started[ev.key] || Date.now())) / 1000).toFixed(2), status: ev.status, reason: ev.reason || null };
+    plog('建索引 ' + ev.status + ' ' + String(ev.name || '').slice(0, 40) + (ev.reason ? ' ' + ev.reason : ''));
+  }, false);
+  out.timing.indexAllSec = +((Date.now() - t0) / 1000).toFixed(1);
+  out.index = { done: sum.done, failed: sum.failed, failures: sum.failures || [] };
+  SONG_FILES.forEach((n) => {
+    const k = 'src|' + DIR + n, r = L.records.find((x) => x.key === k);
+    out.songs.push({ name: n.slice(0, 40), indexSec: perSong[k] ? perSong[k].sec : null, status: perSong[k] ? perSong[k].status : 'none', feat: r && r.melody ? (r.melody.feat || 0) : null, lines: r && r.melody && r.melody.tracks ? r.melody.tracks.length + 1 : 0 });
+  });
+  await plog('建索引完成：' + JSON.stringify(out.songs.map((s) => s.indexSec)));
 
-  // 2. 掃描（同其他評測：直接走訪）
-  const entries = await FaMusicLibHost.walkFolder(ROOT + '/lib');
-  const readHead = (p, n) => a.rawfs.readHead(p, n).then((r) => (r && r.base64 != null ? Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0)) : null));
-  const sid = L.addSource('folder', 'humlib'); await L.scan(sid, entries, readHead); await L.save();
-  check('掃描到 4 首', L.records.length - out.beforeCount === 4, String(L.records.length - out.beforeCount));
-
-  // 3. 建旋律索引
-  const events = []; await H.buildIndex((ev) => events.push(ev && (ev.stage || ev.status || ev.type)));
-  const ents = H.entries();
-  out.entries = ents.map((e) => ({ name: e.name, method: e.method, n: e.contour && (e.contour.intervals ? e.contour.intervals.length : null) }));
-  check('旋律索引：4 首都建好', ents.length === 4, JSON.stringify(out.entries));
-  const wavEnt = ents.find((e) => /audio\.wav/.test(e.name));
-  check('wav 走簡易轉譜並標明', !!wavEnt && /簡易轉譜/.test(wavEnt.method), wavEnt && wavEnt.method);
-
-  // 4. 哼歌：旋律 A，升 5 半音、快 1.25 倍、錯 2 個音（第 6、14 個音偏 1 半音）、顫音 0.15 半音
-  const humA = synthWav(MEL_A, 5, 1.25, { 5: 1, 13: -1 }, 0.15);
-  const hnA = await H.notesFromHum(new Blob([humA], { type: 'audio/wav' })); const notesA = hnA.notes; out.humAMethod = hnA.method;
-  out.humANotes = notesA.length;
-  const rA = await H.search(notesA, { limit: 10 });
-  out.rA = (rA.results || []).map((r) => ({ name: r.name, score: Math.round(r.score * 1000) / 1000, at: r.startSec }));
-  check('哼歌 A：有結果且第一名是旋律 A（mid 或 wav）', rA.ok && rA.results.length > 0 && /song_a/.test(rA.results[0].name), JSON.stringify(out.rA));
-  const best = (rA.results || []).find((r) => /song_a/.test(r.name)), other = (rA.results || []).filter((r) => /song_[bc]\.mid/.test(r.name)).map((r) => r.score);
-  check('哼歌 A：A 的分數高於 B、C', !!best && other.every((s) => best.score > s), JSON.stringify(out.rA));
-
-  // 5. 無關旋律 D：不能把 A、B、C 當高分命中（門檻由程式預設）
-  const humD = synthWav(MEL_D, 0, 1, null, 0.1);
-  const notesD = (await H.notesFromHum(new Blob([humD], { type: 'audio/wav' }))).notes;
-  const rD = await H.search(notesD, { limit: 10 });
-  out.rD = (rD.results || []).map((r) => ({ name: r.name, score: Math.round(r.score * 1000) / 1000 }));
-  check('無關旋律 D：沒有高分命中（沒結果或分數低於 A 的命中）', !rD.ok || rD.results.length === 0 || !best || rD.results.every((r) => r.score < best.score), JSON.stringify(out.rD) + ' 對照 A 命中 ' + (best ? best.score : null));
-
-  check('試聽函式存在（playClip）', typeof H.playClip === 'function', typeof H.playClip);
-  // 6. 面板有「哼歌找歌」
-  window.fa._mlOpen(); await sleep(1200);
-  const panels = document.querySelectorAll('.fml'), p = panels[panels.length - 1];
-  // 哼歌找歌是主畫面的區塊：工具列的「🎤 哼歌找歌」展開（已展開就不動），再確認區塊存在；旋律索引在「⚙ 設定」的「旋律索引」分頁
-  const hb = p && p.querySelector('.fml-hum');
-  if (p && hb && hb.style.display === 'none') Array.from(p.querySelectorAll('button')).find((b) => b.textContent === '🎤 哼歌找歌').click();
-  check('面板有哼歌找歌區塊（主畫面）', !!p && !!hb && /哼歌/.test(p.textContent), p ? p.textContent.slice(0, 80) : '無面板');
-  // 7. 找不到時演奏：humAsMidi 不丟例外（會開 MIDI 編輯器卡片）
-  // humAsMidi 現在回傳 { node }（MIDI 播放卡片，畫面把它插在按鈕下面）；舊版是塞一則編輯器訊息到對話最下面
-  let playErr = null, playRes = null; try { playRes = await H.humAsMidi(notesD, '評測哼歌'); } catch (e) { playErr = String(e && e.message || e); }
-  check('找不到時：把哼歌旋律用 MIDI 演奏，回傳播放卡片節點、不出錯', playErr === null && !!(playRes && playRes.node && playRes.node.nodeType === 1), playErr || (playRes && playRes.node ? '' : '沒有回傳節點'));
-  // 8. 對照聽：命中帶出軌／模式／音符範圍；結果列有「對照聽」按鈕；按了回傳播放卡片節點（用哼歌 A 的第一名）
-  const top = rA.results && rA.results[0];
-  check('命中資訊：第一名帶 hit（軌、模式、標籤、音符索引範圍）', !!(top && top.hit && top.hit.label && top.hit.noteTo >= top.hit.noteFrom), JSON.stringify(top && top.hit && { track: top.hit.track, mode: top.hit.mode, label: top.hit.label, noteFrom: top.hit.noteFrom, noteTo: top.hit.noteTo, hasBaseSemis: !!(top.hit.line && top.hit.line.semis) }));
-  const cmpBtn = Array.from((p || document).querySelectorAll('button')).find((b) => b.textContent === '對照聽');
-  check('哼歌後結果列有「對照聽」按鈕（需面板已顯示結果）', !!cmpBtn, cmpBtn ? '' : '面板上沒有結果列的對照聽按鈕');
-  let cmpErr = null, cmpRes = null;
-  try { cmpRes = await H.compareHitAsMidi(top && top.hit, notesA); } catch (e) { cmpErr = String(e && e.message || e); }
-  check('對照聽：按了回傳播放卡片節點、不出錯', cmpErr === null && !!(cmpRes && cmpRes.node && cmpRes.node.nodeType === 1), cmpErr || (cmpRes && cmpRes.node ? '' : '沒有回傳節點'));
-} catch (e) {
-  out.error = String((e && e.stack) || e);
-}
-try { FaMusicLibHost.melody && FaMusicLibHost.melody.cancelIndex(); FaMusicLibHost.cancelTranscribe(); } catch (_) { /* */ }
-out.passed = out.checks.filter((c) => c.ok).length;
-out.total = out.checks.length;
+  // 2. 切哼歌段：每首 3 段，起點與長度固定種子；音符取自索引裡的主旋律線（已還原成秒＋音高）
+  const plan = [];
+  SONG_FILES.forEach((f, si) => {
+    const r = rng(5000 + si * 31);
+    for (let q = 0; q < SEGS_PER_SONG; q++) plan.push({ file: f, key: 'src|' + DIR + f, seed: Math.floor(r() * 1e9), pick: r(), len: 8 + r() * 4 });
+  });
+  // 合成哼歌：正弦、音高抖動 ±0.3 半音、整段速度 ±10%
+  const renderHum = (notes, seed) => {
+    const r = rng(seed), tempo = 0.9 + r() * 0.2, total = notes.length ? notes[notes.length - 1].t + notes[notes.length - 1].d : 1;
+    const len = Math.floor((total / tempo + 0.5) * SR_OUT), buf = new Float32Array(len);
+    notes.forEach((x) => {
+      const n = x.n + (r() * 2 - 1) * 0.3, f = 440 * Math.pow(2, (n - 69) / 12), s0 = Math.floor(x.t / tempo * SR_OUT), ln = Math.floor(x.d / tempo * SR_OUT);
+      for (let i = 0; i < ln && s0 + i < len; i++) { const env = Math.min(1, i / (0.01 * SR_OUT)) * Math.exp(-2.5 * i / ln); buf[s0 + i] += 0.6 * env * Math.sin(2 * Math.PI * f * i / SR_OUT); }
+    });
+    return { samples: buf, tempo: tempo };
+  };
+  // 3. 查詢
+  const restoreOf = (rec) => { const ln = rec.melody && rec.melody.contour; return ln ? FaMusicLibMelody.restoreNotes(ln) : []; };
+  const rows = [], oldRows = [];
+  for (const p of plan) {
+    if (overTime()) { out.truncated = true; await plog('逾時，停在第 ' + rows.length + ' 段'); break; }
+    const rec = L.records.find((x) => x.key === p.key);
+    const all = restoreOf(rec);
+    if (all.length < 8) { rows.push({ song: p.file.slice(0, 26), skipped: '沒有旋律線' }); continue; }
+    const total = all[all.length - 1].t + all[all.length - 1].d;
+    const segLen = Math.min(p.len, total - 2), startMax = Math.max(0, total - segLen - 1), a0 = +(p.pick * startMax).toFixed(2);
+    const seg = all.filter((x) => x.t >= a0 && x.t < a0 + segLen).map((x) => ({ t: x.t - a0, d: Math.min(x.d, a0 + segLen - x.t), n: x.n }));
+    if (seg.length < 6) { rows.push({ song: p.file.slice(0, 26), skipped: '段內音符太少' }); continue; }
+    const hum = renderHum(seg, p.seed);
+    const blob = wavBlob(hum.samples, SR_OUT);
+    try {
+      const nh = await FaMusicLibHost.melody.notesFromHum(blob, false);
+      const res = await FaMusicLibHost.melody.search(nh.notes, { blob: blob, useText: false, limit: 10 });
+      const fusedKeys = ((res.hum && res.hum.fused) || []).map((f) => f.key);
+      const melKeys = (res.results || []).map((x) => x.key), chrKeys = ((res.hum && res.hum.chromaRanks) || []).map((x) => x.key);
+      const rank = (ks) => { const i = ks.indexOf(p.key); return i < 0 ? null : i + 1; };
+      const row = { song: p.file.slice(0, 26), startSec: a0, lenSec: +segLen.toFixed(1), tempo: +hum.tempo.toFixed(3), notes: seg.length,
+        fusedRank: rank(fusedKeys), melodyRank: rank(melKeys), chromaRank: rank(chrKeys),
+        top1: rank(fusedKeys) === 1, top5: rank(fusedKeys) != null && rank(fusedKeys) <= 5,
+        confident: !!(res.hum && res.hum.confident), chromaError: (res.hum && res.hum.chromaError) || '', noFeat: (res.noFeat || []).length,
+        fusedTop: fusedKeys.slice(0, 3).map((k) => (L.records.find((x) => x.key === k) || { name: k }).name.slice(0, 24)) };
+      rows.push(row);
+      await plog('哼 ' + p.file.slice(0, 20) + ' ' + a0 + 's → 融合名次 ' + row.fusedRank + '（旋律 ' + row.melodyRank + '、和聲 ' + row.chromaRank + '）');
+    } catch (e) { rows.push({ song: p.file.slice(0, 26), error: String((e && e.message) || e) }); await plog('哼歌查詢失敗 ' + String((e && e.message) || e)); }
+    // 舊路：同一段的音符（模擬逐音符輸入），不經音訊，直接比對（音符的旋律比對要仍命中）
+    if (!overTime()) {
+      const notesTyped = seg.map((x) => ({ t: x.t, d: x.d, n: Math.round(x.n) }));
+      const r2 = await FaMusicLibHost.melody.search(notesTyped, { useText: false, limit: 10 });
+      const keys = (r2.results || []).map((x) => x.key), i2 = keys.indexOf(p.key);
+      oldRows.push({ song: p.file.slice(0, 26), rank: i2 < 0 ? null : i2 + 1, top1: i2 === 0, top5: i2 >= 0 && i2 < 5 });
+    }
+  }
+  out.queries = rows; out.oldNotes = oldRows;
+  const ok = rows.filter((x) => !x.skipped && !x.error);
+  const n1 = ok.filter((x) => x.top1).length, n5 = ok.filter((x) => x.top5).length, nM1 = ok.filter((x) => x.melodyRank === 1).length, nC1 = ok.filter((x) => x.chromaRank === 1).length;
+  const o1 = oldRows.filter((x) => x.top1).length, o5 = oldRows.filter((x) => x.top5).length;
+  const maxIdx = Math.max.apply(null, out.songs.map((s) => (s.indexSec == null ? 999 : s.indexSec)));
+  out.summary = {
+    fusedTop1: n1 + '/' + ok.length, fusedTop1Rate: ok.length ? +(n1 / ok.length).toFixed(3) : null,
+    fusedTop5: n5 + '/' + ok.length, fusedTop5Rate: ok.length ? +(n5 / ok.length).toFixed(3) : null,
+    melodyOnlyTop1: nM1 + '/' + ok.length, chromaOnlyTop1: nC1 + '/' + ok.length,
+    oldNotesTop1: o1 + '/' + oldRows.length, oldNotesTop5: o5 + '/' + oldRows.length,
+    maxIndexSec: maxIdx, indexWithin5Sec: maxIdx <= 5,
+    accepted: ok.length > 0 && n5 / ok.length >= 0.8 && n1 / ok.length >= 0.5 && maxIdx <= 5
+  };
+  await plog('完成：' + JSON.stringify(out.summary));
+} catch (e) { out.error = String((e && e.stack) || e); await plog('錯誤：' + out.error); }
 return out;
