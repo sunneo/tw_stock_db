@@ -37,6 +37,12 @@
     let stageRef = null, ctxRef = null;
     return Shell.mount({
       id: opt.id, kind, title: dim === 3 ? '🎮 3D 遊戲編輯器' : '🎮 2D 遊戲編輯器', W, spec: opt.spec, state: opt.state, host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟 .fagame：取代目前內容（可復原）；只收同一個維度的遊戲包（2D 編輯器不收 3D 包，反之亦然）
+      file: opt.importPack ? { exportId: 'fagame', maxBytes: 20000000, types: [{ description: '遊戲包', accept: { 'application/zip': ['.fagame'] } }], importBytes: async function (bytes, name) {
+        const sp = await opt.importPack(bytes, name), bad = FaGamePack.dimensionProblem(sp, dim === 3 ? '3d' : '2d');
+        if (bad) { throw new Error(bad); }
+        return sp;
+      } } : null,
       tabs: [{ id: 'play', label: '🎮 場景', viewer: true }, { id: 'graph', label: '🗺 場景圖' }, { id: 'rules', label: '🧩 行為' }, { id: 'audio', label: '🔊 音訊' }, { id: 'src', label: '🧾 YAML' }, { id: 'pack', label: '📦 套件' }],
       placeholder: dim === 3 ? '用說的設計:「在玩家前面放一個寶石」「讓守衛碰到玩家就扣血」「新增一個洞穴場景接在終點柱後面」;按「🎯 焦點」點一個東西再說「把它變大」' : '用說的設計:「在玩家右邊放一個史萊姆」「讓史萊姆碰到玩家就扣血」「新增一個洞穴場景」「這個場景放緊張的背景音樂」;按「🎯 焦點」點一個東西再說「讓它變快」',
       intro: (dim === 3 ? '我是 3D 遊戲的助手' : '我是 2D 遊戲的助手') + ':你說要什麼我就加進遊戲裡——東西、行為(規則與狀態機)、碰撞、路線、場景切換、對白、背景音樂與音效。位置是相對的(玩家右邊、畫面中間、地上、桌子上面);中間的畫面可以直接玩(▶),玩到一半按 ⏸ 就是編輯器,缺什麼說一聲就加(這時「這個」「這裡」指的是你選取的東西,按「🎯 焦點」點物件或拖出一個範圍)。\n第一件事:這個遊戲要怎麼玩?(鍵盤、滑鼠、手把或觸控:在左下角「遊戲」屬性裡選,或直接說「改成滑鼠點哪走到哪」;邊玩邊改也可以)。我改的東西會先用疊層預覽(綠＝新增、黃＝修改、紅虛線＝刪除),你按「接受」才套用。',
