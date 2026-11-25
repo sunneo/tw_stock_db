@@ -159,6 +159,36 @@ test('整體計畫：真實登錄表 + 真實清單，每個 GUI 都有入口頁
   fs.rmSync(web, { recursive: true, force: true });
 });
 
+test('撐滿規則：模板與產生的 fa-gui.js 都含焦點訊息、訊息卡撐滿與彈出副本收起的規則', () => {
+  const web = tmpWeb();
+  const plan = G.buildPlan({
+    registrySrc: fs.readFileSync(REAL_SRC, 'utf8'), sha: SHA_NEW, webRoot: web, guiList: G.readGuiList(),
+    templateText: fs.readFileSync(TPL, 'utf8'), aiIndexHtml: '<html><body></body></html>', existingGuiDirs: [],
+  });
+  const js = plan.files.find((f) => f.abs.endsWith(path.join('aiweb', 'fa-gui.js'))).content;
+  const tplText = fs.readFileSync(TPL, 'utf8');
+  for (const src of [tplText, js]) {
+    assert.ok(src.includes('body.fa-gui-mode .fa-gui-focus{'), '焦點訊息要撐滿');
+    assert.ok(src.includes('body.fa-gui-mode .fa-gui-focus .ai-msg{'), '訊息卡要撐滿');
+    assert.ok(src.includes('body.fa-gui-mode .fa-gui-focus .ai-markdown-body{'), '說明卡內容區要吃掉剩下的高度');
+    assert.ok(src.includes('body.fa-gui-mode .fwin-host.fwin-pop{display:none !important;}'), '全螢幕頁忽略彈出狀態');
+  }
+  assert.ok(!js.includes('__FA_SHA__'), 'SHA 要代入');
+  fs.rmSync(web, { recursive: true, force: true });
+});
+
+test('每個全螢幕頁的 HTML 仍含 fa-gui-cmd 標記（fa-gui.js 靠它找指令，忘了就壞）', () => {
+  const web = tmpWeb();
+  const plan = G.buildPlan({
+    registrySrc: fs.readFileSync(REAL_SRC, 'utf8'), sha: SHA_NEW, webRoot: web, guiList: G.readGuiList(),
+    templateText: fs.readFileSync(TPL, 'utf8'), aiIndexHtml: '<html><body></body></html>', existingGuiDirs: [],
+  });
+  const pages = plan.files.filter((f) => f.abs.endsWith('index.html') && f.abs.includes(path.join('aiweb', path.sep)) && path.basename(path.dirname(f.abs)) !== 'aiweb' && path.basename(path.dirname(f.abs)) !== 'gui');
+  assert.equal(pages.length, plan.entries.length, '每個 GUI 一頁');
+  for (const f of pages) assert.ok(/<meta name="fa-gui-cmd" content="\/[^"]+">/.test(f.content), f.abs + ' 缺 fa-gui-cmd');
+  fs.rmSync(web, { recursive: true, force: true });
+});
+
 let pass = 0; const fails = [];
 for (const [name, fn] of tests) {
   try { fn(); pass++; } catch (e) { fails.push(name); console.log('FAIL', name, '\n  ' + (e && e.message).split('\n').slice(0, 6).join('\n  ')); }

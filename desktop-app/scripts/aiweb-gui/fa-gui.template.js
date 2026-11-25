@@ -51,7 +51,15 @@
       'body.fa-gui-mode .fa-gui-focus .fwin-ph{display:none !important;}' +
       /* 音樂庫：整個畫面直向排，清單區吃掉剩下的高度 */
       'body.fa-gui-mode .fa-gui-focus .fml{min-height:100%;display:flex;flex-direction:column;border-radius:0;border:none;}' +
-      'body.fa-gui-mode .fa-gui-focus .fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none;}';
+      'body.fa-gui-mode .fa-gui-focus .fml .fml-wrap{max-height:none;flex:1 1 auto;min-height:200px;resize:none;}' +
+      /* 撐滿（2026-11-25 量測）：焦點訊息本身、訊息卡（.ai-msg）、說明卡（.ai-markdown-body）原本只有 86.5% 寬、內容高度，
+         改成整個訊息區滿寬、滿高，卡片直向排、內容區吃掉剩下的高度。 */
+      'body.fa-gui-mode .fa-gui-focus{display:flex !important;flex-direction:column;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;min-height:100% !important;margin:0 !important;padding:0 !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-msg{flex:1 1 auto;display:flex !important;flex-direction:column;min-height:0;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;margin:0 !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-markdown-body{flex:1 1 auto;min-height:0;box-sizing:border-box;width:100%;max-width:none;}' +
+      /* 全螢幕頁忽略「彈出成小視窗」的狀態（同源 localStorage 記的，或 GUI 開啟時自己彈出）：彈出副本可能已被搬到 body 底下，
+         所以整頁的 fwin-pop 一律收起，留下的就是滿版那一份（不會再冒出 520×520 的浮動小窗蓋住 GUI）。 */
+      'body.fa-gui-mode .fwin-host.fwin-pop{display:none !important;}';
     var st = document.createElement('style');
     st.textContent = css;
     document.head.appendChild(st);
