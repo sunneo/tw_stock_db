@@ -69,6 +69,17 @@
 - 可用平台：網頁版、桌面版
 - 介面入口：設定 → LLM 基礎設定 → 啟用台灣節慶套版
 
+### 離線訓練工作室（/offline-training-studio）（`offline-training-studio`）
+
+離線訓練工作室的全螢幕視窗：左右兩個分頁區（資產清單／資料集／評量／訓練／老師／紀錄，分頁可拖到另一側、可調整大小、可最大化）。管理訓練資產（匯出入 .fatrain、離線訓練器快照）、選運算後端與跑基準測試、訓練 LoRA（桌面版需要 Python）。/offline-training-studio reset 還原版面；別名 /training-studio、/訓練工作室。網頁版在 /gui 清單裡可以開（同一個視窗），但訓練 LoRA 需要桌面版的 Python，網頁版只能用網頁後端。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/offline-training-studio`
+- 介面入口：設定 → 離線訓練工作室 → 開啟離線訓練器
+- 範例：
+  - `/offline-training-studio`
+  - `/offline-training-studio reset`
+
 ### 離線訓練器（AI 失效時的備援）（`offline-trainer`）
 
 不經過 AI 也能做事：純文字→槽位擷取（網址、路徑、引號）→規則與語意比對（字串雜湊向量＋中英文概念詞典）→文字重排（BM25＋TextRank＋MMR）→決定要呼叫的工具與參數（含「開分頁→讀文字→關分頁」這類多步驟做法）→執行並整理結果。畫面右上角的開關可以切成純離線；所有 AI model 都失敗時會自動退回離線（可關）。線上 AI 成功的做法、RAG 與對話紀錄會自動學進去；在「設定 → AI → 離線訓練器」可以管理領域、規則、範例句、同義詞，並用乾跑確認它會怎麼判斷（不會真的執行）。有副作用的工具執行前一定先問使用者。AI 可以用 offline_trainer 的 add_tool（原始碼工具，在沙盒 worker 執行）／add_state（狀態機）／add_pattern 把解法寫回去，離線時就能重現；勾選「自動訓練」後，長期對話的成功做法（例如一直在查 SDK 的定義）會由背景 worker 整理成「觸發規則＋狀態機＋原始碼」的技能，離線時做不到的請求會記成待辦給 AI。訓練成果（規則＋狀態機＋原始碼工具＋已學會的解法＋同義詞）可以匯出成單一 JSON 檔、在別台電腦匯入（匯入會逐一檢查原始碼語法與 checksum，並請你確認）；AI 寫的原始碼工具可用 run_tool 試跑、改壞了可以 rollback_tool。/offline-trainer-by-ai（通用，需先打開自動訓練）：讓 AI 處理一個任務或一長串同類項目（每行一項、regex 抽取或 JSON 陣列），並要求 AI 每次成功後把可重複的做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試，離線自己解決的比例就是訓練成效；可停止、接續、看報告。離線訓練器同時是「弱模型 harness」的學習層（skills/weak-model-harness，弱模型一次只答一題封閉題，程式核對）：harness 跑完的經驗經程式閘門（只收程式驗證過的成功、去重、去識別）產生 trainer-patterns.json，在訓練器頁按「匯入 harness 經驗」進獨立領域 harness_experience（來源 harness，預設停用，可啟用、可刪）。
@@ -666,6 +677,18 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
   - `在我的左前方放一個紅色的球`
   - `把它移到桌子上面`
   - `/edit-3d-model last`
+
+### 空白起手式斜線指令（<指令>-blank）（`edit-blank-commands`）
+
+每個有空白起手式的編輯器都有一個獨立的 -blank 指令，直接開一份空白的、不用說話：/edit-svg-blank、/edit-picture-blank、/edit-3d-model-blank、/edit-markdown-blank、/edit-text-blank、/edit-docx-blank、/edit-csv-blank、/edit-xlsx-blank（空白試算表）、/edit-html-blank。實作是呼叫原指令並帶 blank，同一條路；原指令不帶參數仍是說明與起手式清單，不會被改成直接開空白。MIDI、遊戲、簡報、影片沒有空白起手式，所以沒有 -blank 指令。網頁版 /gui 清單也列得到這些指令。
+
+- 可用平台：網頁版、桌面版
+- 斜線指令：`/edit-svg-blank`、`/edit-picture-blank`、`/edit-3d-model-blank`、`/edit-markdown-blank`、`/edit-text-blank`、`/edit-docx-blank`、`/edit-csv-blank`、`/edit-xlsx-blank`、`/edit-html-blank`
+- 範例：
+  - `/edit-svg-blank`
+  - `/edit-picture-blank`
+  - `/edit-3d-model-blank`
+  - `/edit-xlsx-blank`
 
 ### 2D 遊戲編輯器（用說的設計、邊玩邊改、輸出遊戲包與各平台原始碼）（`edit-game-2d`）
 

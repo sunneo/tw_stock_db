@@ -52938,6 +52938,92 @@ const holder = {};
 return holder.FaEditI18n;
 })();
 /* EDI18N-END */
+/* EDIMPORT-BEGIN */
+const FaEditImport = (function () {
+const holder = {};
+(function (module, self) {
+// 編輯器共用的「📂 開啟檔案」：選檔（或把檔案拖進編輯區）→ 讀成位元組 → 交給編輯器自己的 importBytes（讀進來、取代目前內容、可復原）。
+// 由 edit_shell.js 的標題列使用：編輯器的 file 選項有 importBytes 就出現這顆按鈕（文件、Markdown、純文字、試算表）。
+// 格式清單沿用編輯器本來的寫法 types:[{ description, accept:{ mime:[ '.ext', … ] } }]，不另外維護一份。
+// 選檔一律用隱藏的 <input type=file>（跟原本各編輯器的 📂 一樣）；必須在點擊的同一個手勢裡呼叫 pick()，不能先 await 再叫。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaEditImport = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function extOf(name) { var m = /\.([^./\\]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+
+  // 所有可開的副檔名（小寫、不含點），依 types 的順序、不重複
+  function exts(types) {
+    var out = [];
+    (types || []).forEach(function (t) {
+      var acc = (t && t.accept) || {};
+      Object.keys(acc).forEach(function (mime) {
+        (acc[mime] || []).forEach(function (e) { var x = String(e).replace(/^\./, '').toLowerCase(); if (x && out.indexOf(x) < 0) { out.push(x); } });
+      });
+    });
+    return out;
+  }
+
+  // <input accept="…"> 用的字串
+  function acceptAttr(types) { return exts(types).map(function (x) { return '.' + x; }).join(','); }
+
+  function accepts(name, types) { var e = extOf(name); return !!e && exts(types).indexOf(e) >= 0; }
+
+  // 給使用者看的說明，例如「可以開：.docx」
+  function hint(types) { return '可以開：' + exts(types).map(function (x) { return '.' + x; }).join('、'); }
+
+  function mb(n) { return Math.round(n / 1000000) + ' MB'; }
+
+  // 選檔：resolve { name, bytes:Uint8Array }；取消 resolve null；太大或讀不了 reject。
+  // opt.maxBytes：超過就拒絕（各編輯器上限不同：文字 4 MB、試算表 20 MB、文件 30 MB）
+  function pick(types, opt) {
+    var maxBytes = opt && opt.maxBytes;
+    return new Promise(function (resolve, reject) {
+      if (typeof document === 'undefined') { resolve(null); return; }
+      var inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = acceptAttr(types); inp.style.display = 'none';
+      inp.onchange = function () {
+        var f = inp.files && inp.files[0];
+        if (inp.parentNode) { inp.parentNode.removeChild(inp); }
+        if (!f) { resolve(null); return; }
+        if (maxBytes && f.size > maxBytes) { reject(new Error('檔案太大（超過 ' + mb(maxBytes) + '）')); return; }
+        f.arrayBuffer().then(function (buf) { resolve({ name: f.name, bytes: new Uint8Array(buf) }); }, function () { reject(new Error('讀不了這個檔案')); });
+      };
+      (document.body || document.documentElement).appendChild(inp);
+      inp.click();
+    });
+  }
+
+  // 把檔案拖進編輯區開啟。
+  //  - 圖片不歸這裡管（右邊的 AI 對話框收圖片），直接略過，不說話
+  //  - 這個編輯器認得的格式 → onFile({ name, bytes })
+  //  - 不認得的 → onReject(說明)
+  // 只在拖進來的是檔案時 preventDefault（否則瀏覽器會直接打開那個檔案，整個頁面被換掉）
+  function dropOpen(el, types, onFile, onReject, maxBytes) {
+    if (!el || typeof el.addEventListener !== 'function') { return; }
+    el.addEventListener('dragover', function (ev) {
+      var dt = ev.dataTransfer; if (dt && dt.types && Array.prototype.indexOf.call(dt.types, 'Files') >= 0) { ev.preventDefault(); }
+    });
+    el.addEventListener('drop', function (ev) {
+      var fl = ev.dataTransfer && ev.dataTransfer.files;
+      if (!fl || !fl.length) { return; }
+      ev.preventDefault();
+      var f = fl[0];
+      if (/^image\//.test(f.type || '')) { return; }
+      if (!accepts(f.name, types)) { if (onReject) { onReject('這個編輯器開不了「' + f.name + '」。' + hint(types)); } return; }
+      if (maxBytes && f.size > maxBytes) { if (onReject) { onReject('檔案太大（超過 ' + mb(maxBytes) + '）'); } return; }
+      f.arrayBuffer().then(function (buf) { onFile({ name: f.name, bytes: new Uint8Array(buf) }); }, function () { if (onReject) { onReject('讀不了「' + f.name + '」'); } });
+    });
+  }
+
+  return { exts: exts, acceptAttr: acceptAttr, accepts: accepts, hint: hint, pick: pick, dropOpen: dropOpen };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEditImport;
+})();
+/* EDIMPORT-END */
 /* EDSHELL-BEGIN */
 const FaEditShell = (function () {
 const holder = {};
@@ -53256,6 +53342,28 @@ const holder = {};
     }
     function openFileMenu() { if (fileBox) { fileBox.remove(); fileBox = null; return; } fileBox = h('div', 'filepanel'); fileBox.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:380px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(fileBox); renderFileBox(); if (LF && LF.check) { LF.check().then(function (c) { if (c && c.changed) { fileExt = true; renderFile(); renderFileBox(); } }); } }
     var ctx0 = { say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 4000); } };
+    // ───── 📂 開啟檔案（共用：所有 opt.file 有 importBytes 的編輯器；選檔或拖進來；只是讀進來，不綁定）─────
+    var IMPORT = typeof FaEditImport !== 'undefined' ? FaEditImport : null, IMP = opt.file && typeof opt.file.importBytes === 'function' && IMPORT ? opt.file : null;
+    if (IMP) {
+      var OPEN = IMP.openTypes || IMP.types;   // 開檔可選的格式（另存、綁定仍用 IMP.types）
+      var bOpenF = h('button', null, '📂 開啟檔案');
+      bOpenF.setAttribute('data-fa-open-file', '');   // 網頁版 /gui 的起手式面板用來找到這顆按鈕（見 fa-gui.template.js）
+      bOpenF.title = '把本機檔案讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）。' + IMPORT.hint(OPEN) + '；也可以直接把檔案拖進來';
+      // 讀進來之後的內容：原本綁定的檔案就解除綁定，否則之後按 Ctrl+S 會把新內容寫進舊檔
+      async function openPlain(f) {
+        var ns = await IMP.importBytes(f.bytes, f.name), wasBound = !!(LF && fileInfo());
+        if (wasBound) { LF.unbind(); fileSig = null; fileExt = false; }
+        commit(ns, '開啟檔案 ' + f.name, '', 'panel');
+        ctx0.say('已開啟 ' + f.name + (ns && ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項）' : '') + (wasBound ? '；原本綁定的檔案已解除綁定（檔案不動）' : ''));
+      }
+      function openIt(f) { return openPlain(f).then(null, function (e) { ctx0.say('開不起來：' + String((e && e.message) || e).slice(0, 160)); }); }
+      bOpenF.onclick = function () {
+        // 必須在點擊的同一個手勢裡叫出選檔，所以這裡不能先 await
+        IMPORT.pick(OPEN, { maxBytes: IMP.maxBytes }).then(function (f) { if (f) { return openIt(f); } }, function (e) { ctx0.say(String((e && e.message) || e)); });
+      };
+      bar.insertBefore(bOpenF, bSum);
+      IMPORT.dropOpen(el, OPEN, openIt,function (msg) { ctx0.say(msg); }, IMP.maxBytes);
+    }
     if (LF) {
       bFile = h('button', null, '💾 本機檔案'); fileStat = h('span', 'st'); bFile.onclick = openFileMenu; bar.insertBefore(bFile, bSum); bar.insertBefore(fileStat, bSum);
       if (LF.ready) { LF.ready().then(function () { fileSig = fileInfo() ? sigNow() : null; renderFile(); }); } else { fileSig = fileInfo() ? sigNow() : null; }
@@ -54116,6 +54224,72 @@ const holder = {};
 return holder.FaEditSvg;
 })();
 /* EDSVG-END */
+/* EDSVGIMP-BEGIN */
+const FaSvgImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-svg 的「📂 開啟 .svg」：把一個 SVG 檔整份變成「一個圖形物件」（object.type 'svg'，markup 就是檔案裡 <svg> 的內容）。
+// 這樣畫面與匯出都跟原檔一樣（漸層、路徑、文字都保留），之後可以移動、縮放、旋轉、隱藏，也能用說的改。
+// 不拆成一堆形狀：那樣會丟掉原檔的細節。安全檢查沿用 edit_svg_core 的 checkMarkup（腳本、外部連結、事件屬性都會被拒絕，並說明原因）。
+// 純函式，node 與瀏覽器都能跑（測試：scripts/edit-tests/svg_import.test.js）。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_svg_core.js'));
+  else root.FaSvgImport = factory(root.FaEditSvg || (typeof FaEditSvg !== 'undefined' ? FaEditSvg : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+
+  var EXT = /\.svg$/i;
+
+  // 讀 SVG 文字 → { ok, markup, w, h, problems }。markup 會把 viewBox 的左上角平移到 0,0，讓物件座標從 0 開始。
+  function parseSvgText(text) {
+    var s = String(text == null ? '' : text).replace(/^﻿/, '');
+    s = s.replace(/<!--[\s\S]*?-->/g, '').replace(/<\?xml[\s\S]*?\?>/i, '').replace(/<!DOCTYPE[^[>]*(\[[\s\S]*?\])?\s*>/i, '');
+    var m = /<svg\b([^>]*)>/i.exec(s);
+    if (!m) { return { ok: false, problems: ['這個檔案沒有 <svg> 根元素，不是 SVG 圖'] }; }
+    var attrs = m[1], vb = /viewBox\s*=\s*["']([^"']+)["']/i.exec(attrs), w = 0, h = 0, vx = 0, vy = 0;
+    if (vb) {
+      var n = vb[1].trim().split(/[\s,]+/).map(Number);
+      if (n.length === 4 && n.every(isFinite) && n[2] > 0 && n[3] > 0) { vx = n[0]; vy = n[1]; w = n[2]; h = n[3]; }
+    }
+    if (!w || !h) {
+      var wa = /\swidth\s*=\s*["']\s*([\d.]+)/i.exec(attrs), ha = /\sheight\s*=\s*["']\s*([\d.]+)/i.exec(attrs);
+      w = wa ? Number(wa[1]) : 0; h = ha ? Number(ha[1]) : 0;
+    }
+    if (!(w > 0) || !(h > 0)) { w = 400; h = 400; }
+    var start = m.index + m[0].length, end = s.search(/<\/svg\s*>\s*$/i);
+    var inner = end > start ? s.slice(start, end) : s.slice(start);
+    if (vx || vy) { inner = '<g transform="translate(' + (-vx) + ' ' + (-vy) + ')">' + inner + '</g>'; }
+    inner = inner.trim();
+    var c = C.checkMarkup(inner);
+    if (!c.ok) { return { ok: false, problems: c.problems }; }
+    return { ok: true, markup: inner, w: w, h: h, problems: [] };
+  }
+
+  // 讀檔 → 新的編輯器文件（空白畫布，裡面一個 svg 物件）。不合格就丟錯，錯誤訊息是人看得懂的原因。
+  function specFromText(text, name) {
+    var p = parseSvgText(text);
+    if (!p.ok) { throw new Error('讀不了這個 SVG：' + p.problems.join('；')); }
+    var spec = C.starter('blank');
+    spec.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec.title;
+    var r = C.applyEdits(spec, [{ op: 'add_object', object: { type: 'svg', name: '匯入的圖', markup: p.markup, x: 0, y: 0, w: p.w, h: p.h, scale: 1, rotate: 0, opacity: 1 } }]);
+    if (r.rejected && r.rejected.length) { throw new Error('讀不了這個 SVG：' + r.rejected.map(function (x) { return x.error; }).join('；')); }
+    return r.spec;
+  }
+
+  // 📂 按鈕用：bytes（Uint8Array 或 ArrayBuffer）→ 文件
+  function fromBytes(bytes, name) {
+    if (!EXT.test(String(name || ''))) { throw new Error('這不是 .svg 檔'); }
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return specFromText(new TextDecoder('utf-8').decode(u), name);
+  }
+
+  return { parseSvgText: parseSvgText, specFromText: specFromText, fromBytes: fromBytes, EXT: EXT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaSvgImport;
+})();
+/* EDSVGIMP-END */
 /* EDTRACE-BEGIN */
 const FaSvgTrace = (function () {
 const holder = {};
@@ -54291,6 +54465,8 @@ const holder = {};
     return Shell.mount({
       id: opt.id, kind: 'edit-svg', title: '🖍 SVG 編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
       tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'source', label: '🧩 原始碼' }],
+      // 📂 開啟 .svg：整份變成一個圖形物件（見 svg_import.js）；另存用 svg 匯出
+      file: { exportId: 'svg', maxBytes: 5000000, types: [{ description: 'SVG 向量圖', accept: { 'image/svg+xml': ['.svg'] } }], importBytes: function (bytes, name) { return FaSvgImport.fromBytes(bytes, name); } },
       placeholder: '用說的畫：「在中間畫一個紅色的圓」「在太陽的右邊加一朵雲」「把煙囪放到房子上面」「找一張飛機的照片」；也可以貼一張圖進來，我試著把它變成 SVG（向量圖）',
       intro: '我是用語言來畫的概念畫家：你說要畫什麼、放在哪個東西的哪一邊，我就加一個新的物件（形狀、手繪的圖、網路上找的圖片都是物件），可以隨時隱藏、改名、鎖定、移動或刪掉，改錯了按「復原」。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個物件（圖片）的中間。貼一張圖進來，我會試著把它變成 SVG：先用程式描出每個顏色的輪廓，再用視覺模型看過、比對，不夠像就重來。也可以直接給網址，或說「找一張…的圖」。',
       objectIcon: function (o) { return o.type === 'shape' ? (ICON[o.shape] || '◻') : o.type === 'svg' ? '🖍' : '🖼'; },
@@ -54751,7 +54927,7 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'list' ? (o.ordered ? '編號 ' : '項目 ') + o.items.length : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : o.type === 'code' ? (o.lang || '程式碼') : fmt === 'txt' ? '' : o.type; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: fmt === 'txt' ? 0 : d }); } }); return rows; },
       parseCommands: C.parseCommands,
-      file: { exportId: fmt === 'txt' ? 'txt' : 'md', types: fmt === 'txt' ? [{ description: '純文字', accept: { 'text/plain': ['.txt', '.log', '.text', '.ini', '.conf', '.cfg'] } }] : [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown'] } }], importBytes: function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), text; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { text = new TextDecoder('big5').decode(u); } catch (e2) { text = new TextDecoder('utf-8').decode(u); } } var ns = C.parse(text, fmt); ns.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec0.title; return Promise.resolve(ns); } },
+      file: { exportId: fmt === 'txt' ? 'txt' : 'md', maxBytes: 4000000, openTypes: [{ description: fmt === 'txt' ? '文字檔' : 'Markdown／文字檔', accept: { 'text/plain': ['.md', '.markdown', '.txt', '.log', '.text', '.csv', '.tsv', '.json', '.yaml', '.yml', '.ini', '.conf', '.cfg'] } }], types: fmt === 'txt' ? [{ description: '純文字', accept: { 'text/plain': ['.txt', '.log', '.text', '.ini', '.conf', '.cfg'] } }] : [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown'] } }], importBytes: function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), text; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { text = new TextDecoder('big5').decode(u); } catch (e2) { text = new TextDecoder('utf-8').decode(u); } } var ns = C.parse(text, fmt); ns.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec0.title; return Promise.resolve(ns); } },
       promptOf: function (sp, steps) { var L = ['請寫一份' + (fmt === 'txt' ? '純文字' : ' Markdown ') + '文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var ol = C.outline(sp); if (ol) { L.push('', '大綱：', ol); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '（有效的指示，依序）：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text + (s.summary ? ' → ' + s.summary : '')); }); } return L.join('\n'); },
       exports: fmt === 'txt' ? [{ id: 'txt', label: '純文字檔 (.txt)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'md', label: 'Markdown 檔 (.md)' }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -54801,11 +54977,8 @@ const holder = {};
           var t = addSel.value; addSel.value = ''; if (!t) { return; } var blk = t === 'olist' ? { type: 'list', ordered: true, items: [''] } : t === 'heading' ? { type: 'heading', level: 2, text: '標題' } : t === 'table' ? { type: 'table', rows: [['欄位 1', '欄位 2'], ['', '']] } : t === 'code' ? { type: 'code', text: '', lang: '' } : { type: t, text: t === 'para' ? '新的段落' : t === 'quote' ? '引用' : '', items: t === 'list' ? [''] : undefined };
           var r = ctx.apply([{ op: 'add_block', after: sel || 'end', block: blk }], '新增' + (NEW.filter(function (x) { return x[0] === t; })[0] || [0, t])[1], '', 'panel'); if (r.added && r.added.length && t !== 'hr') { setTimeout(function () { edit(r.added[r.added.length - 1]); }, 30); }
         };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.md,.markdown,.txt,.log,.text,.csv,.tsv,.json,.yaml,.yml,.ini,.conf,.cfg,text/*'; openIn.style.display = 'none';
-        var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 ' + (fmt === 'txt' ? '文字' : 'Markdown／文字') + '檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
-        function decode(buf) { var u = new Uint8Array(buf); try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(u); } catch (e) { try { return new TextDecoder('big5').decode(u); } catch (e2) { return new TextDecoder('utf-8').decode(u); } } }
-        openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 4000000) { ctx.say('檔案太大（超過 4 MB）'); return; } f.arrayBuffer().then(function (buf) { var text = decode(buf), ns = C.parse(text, fmt); ns.title = f.name.replace(/\.[^.]+$/, '').slice(0, 80) || spec.title; ctx.commit(ns, '開啟檔案 ' + f.name + '（' + ns.objects.length + ' 個區塊）', '', 'panel'); ctx.say('已開啟 ' + f.name); }, function () { ctx.say('讀不了這個檔案'); }); };
-        ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見下方 file 選項）
+        ctx.bar.appendChild(addSel);
         // ───── 屬性：選到的區塊（沒選＝文件） ─────
         function props() {
           var box = h('div'), o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
@@ -55368,8 +55541,8 @@ const holder = {};
       objectIcon: function () { return '▦'; },
       objectInfo: function (o) { return o.rows.length + '×' + o.cols.length + (C.isF && o.rows.some(function (r) { return Object.keys(r.c).some(function (k) { return C.isF(r.c[k]); }); }) ? ' ƒ' : ''); },
       parseCommands: C.parseCommands,
-      file: { exportId: fmt === 'xlsx' ? 'xlsx' : 'csv', types: fmt === 'xlsx' ? [{ description: 'Excel 活頁簿', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }] : [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }],
-        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 60) || spec0.title, ns; if (fmt === 'xlsx') { var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 xlsx（JSZip 沒有載入）'); } ns = await C.readXlsx(u, Z, title); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(u), title); } if (ns.format !== fmt) { throw new Error('這個檔案不是' + (fmt === 'xlsx' ? '試算表' : 'CSV')); } return ns; } },
+      file: { exportId: fmt === 'xlsx' ? 'xlsx' : 'csv', maxBytes: 20000000, types: fmt === 'xlsx' ? [{ description: 'Excel 活頁簿', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }] : [{ description: 'CSV', accept: { 'text/csv': ['.csv', '.tsv', '.txt'] } }],
+        importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 60) || spec0.title, ns, isX = /\.xlsx$/i.test(String(name || '')); /* 看副檔名決定怎麼讀（共用的 📂 按鈕不分編輯器，csv 編輯器也可能收到 xlsx） */ if (isX) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 xlsx（JSZip 沒有載入）'); } ns = await C.readXlsx(u, Z, title); } else { ns = C.parseCsv(decode(u), title); } if (ns.format !== fmt) { throw new Error('這是' + (ns.format === 'xlsx' ? '試算表' : 'CSV') + '，請用 /edit-' + (ns.format === 'xlsx' ? 'xlsx' : 'csv') + ' 開這個檔案'); } if (fmt === 'xlsx' && host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } return ns; } },
       promptOf: function (sp, steps) { var sh = sp.objects[0], L = ['請做一份' + (fmt === 'xlsx' ? '試算表' : ' CSV 表格') + '「' + sp.title + '」，共 ' + sp.objects.length + ' 張工作表；第一張 ' + sh.rows.length + ' 列 × ' + sh.cols.length + ' 欄。']; var p = C.profile(sh, 3); L.push('', '欄位：'); p.cols.forEach(function (c) { L.push('- ' + c.letter + (c.name ? '「' + c.name + '」' : '') + '（' + c.type + '）'); }); var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: fmt === 'xlsx' ? [{ id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'csv', label: '目前工作表（CSV）', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }] : [{ id: 'csv', label: 'CSV 檔 (.csv)' }, { id: 'xlsx', label: 'Excel 檔 (.xlsx)', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
       runExport: async function (id, spec) {
@@ -55449,12 +55622,8 @@ const holder = {};
         // ───── 工具列：加列、加欄、開啟檔案 ─────
         var bAddRow = h('button', null, '＋列'), bAddCol = h('button', null, '＋欄'); bAddRow.title = '在選到的列後面（沒選就在最後）加一列'; bAddCol.title = '在選到的欄後面（沒選就在最後）加一欄';
         bAddRow.onclick = function () { ctx.apply([{ op: 'add_row', sheet: sh.id, after: String(cur.r + 1) }], '加一列', '', 'panel'); }; bAddCol.onclick = function () { ctx.apply([{ op: 'add_col', sheet: sh.id, after: sh.cols[cur.c].id }], '加一欄', '', 'panel'); };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.csv,.tsv,.txt,.xlsx,text/csv'; openIn.style.display = 'none'; var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 CSV 或 Excel 檔讀進來（取代目前的內容，可復原）'; bOpen.onclick = function () { openIn.click(); };
-        openIn.onchange = function () {
-          var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 20000000) { ctx.say('檔案太大（超過 20 MB）'); return; } var isX = /\.xlsx$/i.test(f.name), title = f.name.replace(/\.[^.]+$/, '').slice(0, 60);
-          f.arrayBuffer().then(async function (buf) { var ns; if (isX) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { ctx.say('這裡還讀不了 xlsx（JSZip 沒有載入）'); return; } ns = await C.readXlsx(new Uint8Array(buf), Z, title); if (host.keepOrig) { try { host.keepOrig(new Uint8Array(buf)); } catch (e) { /* 原檔沒存到就是匯出時重新產生 */ } } } else { ns = C.parseCsv(decode(buf), title); } if (ns.format !== fmt) { ctx.say('這是' + (fmt === 'xlsx' ? '試算表' : 'CSV') + '編輯器：請用 /edit-' + (ns.format === 'xlsx' ? 'xlsx' : 'csv') + ' 開這個檔案'); return; } ctx.commit(ns, '開啟 ' + f.name, '', 'panel'); ctx.say('已開啟 ' + f.name + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項，見屬性面板）' : '')); }).catch(function (e) { ctx.say('開不起來：' + String((e && e.message) || e).slice(0, 80)); });
-        };
-        ctx.bar.appendChild(bAddRow); ctx.bar.appendChild(bAddCol); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見上方 file 選項）
+        ctx.bar.appendChild(bAddRow); ctx.bar.appendChild(bAddCol);
         // ───── 屬性：選到的格／列／欄；沒選＝工作表與檔案 ─────
         function props() {
           var box = h('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px'; function lab(t, el) { var l = h('label'); l.appendChild(document.createTextNode(t)); l.appendChild(el); return l; } function btn(t, fn, title) { var b = h('button', null, t); if (title) { b.title = title; } b.onclick = fn; return b; } function row(list) { var d = h('div', 'row'); list.forEach(function (x) { d.appendChild(x); }); return d; }
@@ -55903,7 +56072,7 @@ const holder = {};
       objectInfo: function (o) { return o.type === 'heading' ? 'H' + o.level : o.type === 'li' ? (o.ordered ? '編號' : '項目') : o.type === 'table' ? o.rows.length + '×' + o.rows[0].length : ''; },
       treeRows: function (sp) { var d = 0, rows = []; sp.objects.forEach(function (b) { if (b.type === 'heading') { d = Math.min(5, b.level - 1); rows.push({ obj: b, depth: d }); d = Math.min(5, b.level); } else { rows.push({ obj: b, depth: d }); } }); return rows; },
       parseCommands: C.parseCommands,
-      file: { exportId: 'docx', types: [{ description: 'Word 文件', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
+      file: { exportId: 'docx', maxBytes: 30000000, types: [{ description: 'Word 文件', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }],
         importBytes: async function (bytes, name) { var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), Z = host.jszip ? await host.jszip() : null; if (!Z) { throw new Error('這裡還讀不了 docx（JSZip 沒有載入）'); } var ns = await C.read(u, Z, String(name || '').replace(/\.[^.]+$/, '').slice(0, 60)); if (host.keepOrig) { try { host.keepOrig(u); } catch (e) { /* 匯出時重新產生 */ } } return ns; } },
       promptOf: function (sp, steps) { var L = ['請寫一份 Word 文件「' + sp.title + '」，共 ' + sp.objects.length + ' 個區塊。']; var heads = sp.objects.filter(function (b) { return b.type === 'heading'; }); if (heads.length) { L.push('', '大綱：'); heads.forEach(function (b) { L.push(new Array(b.level).join('  ') + '- ' + C.plain(b)); }); } var texts = steps.filter(function (s) { return s.text; }); if (texts.length) { L.push('', '修改過程：'); texts.forEach(function (s, i) { L.push((i + 1) + '. ' + s.text); }); } return L.join('\n'); },
       exports: [{ id: 'docx', label: 'Word 檔 (.docx)', chat: false }, { id: 'html', label: 'HTML 網頁' }, { id: 'txt', label: '純文字', chat: false }, { id: 'json', label: '專案（JSON）', chat: false }],
@@ -55968,9 +56137,8 @@ const holder = {};
         // ───── 新增區塊／開啟檔案 ─────
         var addSel = h('select'), NEW = [['para', '段落'], ['heading', '標題'], ['li', '項目清單'], ['oli', '編號清單'], ['table', '表格'], ['pagebreak', '分頁']]; var a0 = h('option', null, '＋ 區塊'); a0.value = ''; addSel.appendChild(a0); NEW.forEach(function (x) { var o = h('option', null, x[1]); o.value = x[0]; addSel.appendChild(o); }); addSel.title = '在選取的區塊後面（沒選就在最後）加一個新區塊';
         addSel.onchange = function () { var t = addSel.value; addSel.value = ''; if (!t) { return; } var blk = t === 'oli' ? { type: 'li', ordered: true, text: '項目' } : t === 'li' ? { type: 'li', ordered: false, text: '項目' } : t === 'heading' ? { type: 'heading', level: 2, text: '標題' } : t === 'table' ? { type: 'table', rows: [['欄位 1', '欄位 2'], ['', '']] } : t === 'pagebreak' ? { type: 'pagebreak' } : { type: 'para', text: '新段落' }; var r = ctx.apply([{ op: 'add_block', after: sel || 'end', block: blk }], '新增' + (NEW.filter(function (x) { return x[0] === t; })[0] || [0, t])[1], '', 'panel'); if (r.added && r.added.length && (t === 'para' || t === 'heading' || t === 'li' || t === 'oli')) { setTimeout(function () { edit(r.added[r.added.length - 1]); }, 30); } };
-        var openIn = h('input'); openIn.type = 'file'; openIn.accept = '.docx'; openIn.style.display = 'none'; var bOpen = h('button', null, '📂 開啟檔案'); bOpen.title = '把本機的 .docx 讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）'; bOpen.onclick = function () { openIn.click(); };
-        openIn.onchange = function () { var f = openIn.files && openIn.files[0]; openIn.value = ''; if (!f) { return; } if (f.size > 30000000) { ctx.say('檔案太大（超過 30 MB）'); return; } f.arrayBuffer().then(async function (buf) { var Z = host.jszip ? await host.jszip() : null; if (!Z) { ctx.say('這裡還讀不了 docx（JSZip 沒有載入）'); return; } var ns = await C.read(new Uint8Array(buf), Z, f.name.replace(/\.[^.]+$/, '').slice(0, 60)); if (host.keepOrig) { try { host.keepOrig(new Uint8Array(buf)); } catch (e) { /* 原檔沒存到：匯出時由目前內容重新產生 */ } } ctx.commit(ns, '開啟 ' + f.name, '', 'panel'); ctx.say('已開啟 ' + f.name + (ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項，見屬性面板）' : '')); }).catch(function (e) { ctx.say('開不起來：' + String((e && e.message) || e).slice(0, 80)); }); };
-        ctx.bar.appendChild(addSel); ctx.bar.appendChild(bOpen); ctx.bar.appendChild(openIn);
+        // 📂 開啟檔案：改由 edit_shell.js 的共用按鈕處理（用 file.importBytes，見下方 file 選項）
+        ctx.bar.appendChild(addSel);
         // ───── 屬性 ─────
         function props() {
           var box = h('div'), o = sel ? spec.objects.filter(function (x) { return x.id === sel; })[0] : null; box.style.cssText = 'display:flex;flex-direction:column;gap:6px';
@@ -56594,6 +56762,63 @@ const holder = {};
 return holder.FaEditPicture;
 })();
 /* EDPIC-END */
+/* EDPICIMP-BEGIN */
+const FaPictureImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-picture 的「📂 開啟圖片」：一張 png／jpg／gif／webp 變成文件的第一個圖層（image 物件），畫布大小跟著圖走。
+// 原圖的像素存在 FaEditStore（putImage 回傳的 ref），文件裡只記 ref，跟貼圖進來的做法一樣。
+// 純函式：putImage 與量尺寸由呼叫端注入（瀏覽器用 FaEditStore 與 createImageBitmap；node 測試用假的）。測試：scripts/edit-tests/picture_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_picture_core.js'));
+  else root.FaPictureImport = factory(root.FaEditPicture || (typeof FaEditPicture !== 'undefined' ? FaEditPicture : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+
+  var MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
+  function mimeOf(name) { var m = /\.([^./\\]+)$/.exec(String(name || '')); return m ? (MIME[m[1].toLowerCase()] || null) : null; }
+
+  // deps: { putImage(blob) -> Promise<ref>, size?(blob) -> Promise<{w,h}|null> }
+  async function specFromImage(bytes, name, deps) {
+    var mime = mimeOf(name);
+    if (!mime) { throw new Error('這個編輯器只能開 png、jpg、gif、webp 圖片'); }
+    if (!deps || typeof deps.putImage !== 'function') { throw new Error('圖片存放區不能用'); }
+    var blob = new Blob([bytes], { type: mime });
+    var ref = await deps.putImage(blob);
+    var sz = typeof deps.size === 'function' ? await deps.size(blob) : null;
+    var w = sz && sz.w > 0 ? Math.round(sz.w) : 800, h = sz && sz.h > 0 ? Math.round(sz.h) : 600;
+    var spec = C.starter('blank');
+    spec.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec.title;
+    var r = C.applyEdits(spec, [
+      { op: 'set_canvas', w: w, h: h },
+      { op: 'add_object', object: { type: 'image', name: '匯入的圖', ref: ref, mime: mime, x: 0, y: 0, w: w, h: h, opacity: 1 } }
+    ]);
+    if (r.rejected && r.rejected.length) { throw new Error('讀不了這張圖：' + r.rejected.map(function (x) { return x.error; }).join('；')); }
+    return r.spec;
+  }
+
+  // 瀏覽器端的預設依賴：FaEditStore.putImage、createImageBitmap 量尺寸（量不到就用 800×600）
+  function browserDeps() {
+    var store = typeof FaEditStore !== 'undefined' ? FaEditStore : null;
+    return {
+      putImage: function (blob) { if (!store) { throw new Error('圖片存放區不能用'); } return store.putImage(blob); },
+      size: async function (blob) { try { var b = await createImageBitmap(blob), r = { w: b.width, h: b.height }; if (b.close) { b.close(); } return r; } catch (e) { return null; } }
+    };
+  }
+
+  function fromBytes(bytes, name, deps) {
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return specFromImage(u, name, deps || browserDeps());
+  }
+
+  return { mimeOf: mimeOf, specFromImage: specFromImage, fromBytes: fromBytes, browserDeps: browserDeps };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPictureImport;
+})();
+/* EDPICIMP-END */
 /* EDPICUI-BEGIN */
 const FaEditPictureUI = (function () {
 const holder = {};
@@ -56684,6 +56909,8 @@ const holder = {};
     return Shell.mount({
       id: opt.id, kind: 'edit-picture', title: '🎨 圖片編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
       tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'data', label: '🧩 圖層資料' }],
+      // 📂 開啟圖片：變成第一個圖層、畫布跟著圖走（見 picture_import.js）；另存用 PNG 匯出
+      file: { exportId: 'png', maxBytes: 30000000, types: [{ description: '圖片', accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpg', '.jpeg'], 'image/gif': ['.gif'], 'image/webp': ['.webp'] } }], importBytes: function (bytes, name) { return FaPictureImport.fromBytes(bytes, name); } },
       placeholder: '用說的修：「把它變成水彩風格」「調亮一點」「修掉右下角的污點」「在左邊加一隻貓」「找一張飛機的照片」；也可以貼圖進來、給網址',
       intro: '我是用語言主導的概念畫家，也有像 GIMP 的後製：你說要畫什麼、放在哪裡，或要怎麼修，我就加一個新的圖層（圖片、形狀、濾鏡、修復都是圖層），原圖不動，隨時可以隱藏、調整、復原。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個圖層（圖片）的中間。「把這張圖變成油畫／水彩／素描／卡通…」會加一個風格濾鏡，並請視覺模型看過、不像就加強；說「用 AI 重畫成…」則用生圖模型（線上或本機，同 /image）依這張圖的內容重新畫一張。「修復畫筆」可以在畫面上塗出要修的地方。可以貼圖、給網址、或說「找一張…的圖」。',
       objectIcon: function (o) { return o.type === 'shape' ? (SHAPE_ICON[o.shape] || '◻') : (ICON[o.type] || '◻'); },
@@ -59764,6 +59991,39 @@ const holder = {};
 return holder.FaMidi;
 })();
 /* MUSICMIDI-END */
+/* MUSICOPEN-BEGIN */
+const FaMidiOpen = (function () {
+const holder = {};
+(function (module, self) {
+// MIDI 編輯器的「📂 開啟 .mid」：一個 .mid 檔 → 一首曲子（FaMidi 的 song），給 host 開成新的編輯器卡片。
+// 純函式（依賴 midi_core.js 的 FaMidi），node 與瀏覽器都能跑。測試：scripts/edit-tests/midi_open.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js'));
+  else root.FaMidiOpen = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined));
+})(typeof self !== 'undefined' ? self : this, function (M) {
+  'use strict';
+
+  var MIDI_EXT = /\.midi?$/i, MAX_BYTES = 2000000;
+  var TYPES = [{ description: 'MIDI 檔', accept: { 'audio/midi': ['.mid', '.midi'] } }];
+
+  // bytes（Uint8Array 或 ArrayBuffer）＋檔名 → { song, title }。不是 MIDI 或太大就丟錯。
+  function fromFile(bytes, name) {
+    if (!MIDI_EXT.test(String(name || ''))) { throw new Error('這不是 .mid 檔'); }
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (u.length > MAX_BYTES) { throw new Error('MIDI 檔太大（超過 ' + Math.round(MAX_BYTES / 1000) + ' KB）'); }
+    var song;
+    try { song = M.parse(u); } catch (e) { throw new Error('讀不了這個 MIDI 檔：' + String((e && e.message) || e)); }
+    var title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || song.title || 'MIDI';
+    return { song: song, title: title };
+  }
+
+  return { fromFile: fromFile, TYPES: TYPES, MAX_BYTES: MAX_BYTES, MIDI_EXT: MIDI_EXT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMidiOpen;
+})();
+/* MUSICOPEN-END */
 /* MUSICPLAY-BEGIN */
 const FaMidiPlay = (function () {
 const holder = {};
@@ -61987,10 +62247,20 @@ const holder = {};
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
     const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ 匯出');
     dlB.title = '匯出成 MIDI（.mid）或 MP3（.mp3）';
+    // 📂 開啟 .mid：開成新的編輯器卡片（不動目前這首）。沒有 host.openMidi（例如沒接開檔）就不顯示
+    const openB = el('button', BTN, '📂 開啟');
+    openB.title = '開一個 .mid 檔成新的 MIDI 編輯器（不影響目前這首）';
+    openB.style.display = host.openMidi ? '' : 'none';
+    openB.onclick = () => {
+      // 選檔必須在點擊的同一個手勢裡叫出，所以不能先 await
+      const pick = (typeof FaEditImport !== 'undefined' && FaEditImport) ? FaEditImport.pick : null;
+      if (!pick || !host.openMidi) { say('⚠️ 這裡不能開檔'); return; }
+      pick(FaMidiOpen.TYPES, { maxBytes: FaMidiOpen.MAX_BYTES }).then((f) => { if (f) { return host.openMidi(f.bytes, f.name); } }).catch((e) => say('⚠️ ' + String((e && e.message) || e)));
+    };
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
+    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(openB, undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
     // 匯出小選單:按「⬇ 匯出」展開,選 MIDI 或 MP3;同一列再按一次或按 ✕ 收起
     const exBar = el('div', 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;');
     exBar.appendChild(el('span', 'opacity:.8', '匯出成:'));
@@ -63292,6 +63562,65 @@ const holder = {};
 return holder.FaEdit3dPart;
 })();
 /* ED3DP-END */
+/* ED3DIMP-BEGIN */
+const FaEdit3dImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-3d-model、/edit-3d 的「📂 開啟」：一個 3D 場景檔（.yaml／.yml，就是 3D 編輯器自己的 YAML）或一個模型檔（.stl、.obj、.3mf、.fbx）→ 場景文件。
+// 模型的轉換（跑在 worker 裡）由呼叫端注入：deps.convertModel(name, bytes) → Promise<{ ok, yaml, error }>；YAML 讀取的準備由 deps.prepare() 負責（載入 js-yaml）。
+// glb、gltf 目前不支援（轉換器只認 stl、obj、3mf、fbx），會明講而不是假裝能讀。純函式：測試在 scripts/edit-tests/edit3d_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit3d_core.js'));
+  else root.FaEdit3dImport = factory(root.FaEdit3d || (typeof FaEdit3d !== 'undefined' ? FaEdit3d : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+
+  var YAML_EXT = /\.ya?ml$/i, MODEL_EXT = /\.(stl|obj|3mf|fbx)$/i, UNSUPPORTED = /\.(glb|gltf)$/i;
+  var TYPES = [{ description: '3D 場景或模型', accept: {
+    'application/x-3dscene+yaml': ['.yaml', '.yml'], 'model/stl': ['.stl'], 'model/obj': ['.obj'], 'model/3mf': ['.3mf'], 'model/fbx': ['.fbx']
+  } }];
+
+  // 檔名 → 'yaml' | 'model' | 'unsupported' | null
+  function kindOf(name) {
+    var n = String(name || '');
+    if (YAML_EXT.test(n)) { return 'yaml'; }
+    if (MODEL_EXT.test(n)) { return 'model'; }
+    if (UNSUPPORTED.test(n)) { return 'unsupported'; }
+    return null;
+  }
+
+  // bytes → 場景文件（spec）。不能讀就丟出可讀的錯誤。
+  async function fromBytes(bytes, name, deps) {
+    deps = deps || {};
+    var kind = kindOf(name), u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (kind === 'unsupported') { throw new Error('目前不支援 glb／gltf 模型（能讀的是 stl、obj、3mf、fbx，或 3D 場景 .yaml）'); }
+    if (!kind) { throw new Error('這個 3D 編輯器只能開 .yaml 場景或 stl、obj、3mf、fbx 模型'); }
+    var stem = String(name || '').replace(/\.[^.]+$/, '').replace(/\.3dscene$/i, '').slice(0, 80);
+    if (kind === 'yaml') {
+      if (typeof deps.prepare === 'function') { await deps.prepare(); }
+      var r = C.fromYaml(new TextDecoder('utf-8').decode(u));
+      if (!r.ok) { throw new Error(r.error || '讀不了這個場景'); }
+      if (stem && !r.spec.title) { r.spec.title = stem; }
+      return r.spec;
+    }
+    // 模型：轉成場景 YAML，再照場景讀（同 /edit-3d-model 對話裡 file_id 的做法）
+    if (typeof deps.convertModel !== 'function') { throw new Error('這裡還不能轉換 3D 模型'); }
+    if (typeof deps.prepare === 'function') { await deps.prepare(); }
+    var conv = await deps.convertModel(String(name || ''), u);
+    if (!conv || !conv.ok) { throw new Error((conv && conv.error) || '讀不了這個模型'); }
+    var m = C.fromYaml(conv.yaml);
+    if (!m.ok) { throw new Error(m.error || '讀不了這個模型'); }
+    if (stem) { m.spec.title = stem; }
+    return m.spec;
+  }
+
+  return { kindOf: kindOf, fromBytes: fromBytes, TYPES: TYPES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEdit3dImport;
+})();
+/* ED3DIMP-END */
 /* ED3DUI-BEGIN */
 const FaEdit3dUI = (function () {
 const holder = {};
@@ -63397,6 +63726,8 @@ const holder = {};
     var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-3d', title: '🧊 3D 場景編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟場景 YAML 或模型檔（stl、obj、3mf、fbx）；另存用場景 YAML 匯出（見 edit3d_import.js）
+      file: opt.importModel ? { exportId: 'scene', maxBytes: 50000000, types: FaEdit3dImport.TYPES, importBytes: function (bytes, name) { return opt.importModel(bytes, name); } } : null,
       tabs: [{ id: 'view', label: '🎲 場景', viewer: true }, { id: 'source', label: '🧾 YAML 原始碼' }],
       placeholder: '用說的擺：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」「把球貼上這張圖」（貼圖可以直接貼進來）；位置都是以你現在看的角度來說',
       intro: '我是 3D 場景的助手：你說要放什麼、放在哪裡，我就加一個新的物件，位置是用「你現在看的角度」算的——「我的左前方」就是相機看過去的左前方，「桌子的右邊」就是從你這邊看桌子的右邊。物件欄是樹狀的（可以把東西綁成群組）；雙擊物件欄的項目（或畫面裡的物件）可以進到「單一物件編輯」，像做塑膠模型一樣決定每個面貼什麼圖、塗什麼顏色。拖曳畫面空白處轉視角、滾輪縮放、右鍵平移；點物件選取、拖曳可以移動。「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面就會立刻呈現。貼一張圖進來可以當選取物件的貼圖。每一步都能復原。',
@@ -64347,7 +64678,38 @@ const FaEditHost = (function () {
             } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
         },
+        // 網頁版 /gui 的起手式面板用：回傳這個斜線指令的編輯器資料（名稱、說明、起手式清單、空白起手式 id）。沒有這個編輯器或沒有起手式就回 null（面板不出現，照舊走 handler('')）。
+        // 面板的按鈕一律呼叫原指令的 handler 並帶起手式 id，不另做一份開啟流程。
+        _edStarterList(cmd) {
+            const want = String(cmd || '').trim(), ALIAS = { '/edit-3d': '/edit-3d-model', '/edit-md': '/edit-markdown', '/edit-txt': '/edit-text' };
+            const name = ALIAS[want] || want, kind = Object.keys(KINDS).filter((k) => KINDS[k].cmd === name)[0];
+            if (!kind) return null;
+            const K = KINDS[kind];
+            let starters = []; try { starters = K.core().listStarters() || []; } catch (_) { return null; }
+            if (!starters.length) return null;
+            const ids = starters.map((s) => s.id);
+            // 📂 開檔時先開的起手式：有空白就用空白（xlsx 的空白是 sheet），沒有就用第一個
+            const openId = ids.indexOf('blank') >= 0 ? 'blank' : (ids.indexOf('sheet') >= 0 ? 'sheet' : ids[0]);
+            return { cmd: K.cmd, label: K.label(), lead: K.lead || '', openId, starters: starters.map((s) => ({ id: s.id, label: s.label, desc: s.desc })) };
+        },
+        // 「<指令>-blank」：直接開這個編輯器的空白起手式（blank）。實作是呼叫原指令的 handler 並帶 blank，同一條路、不另寫一份；原指令不帶參數仍是說明與起手式清單。
+        // 名稱是字面量（網頁版產生器 gen-aiweb-pages.js 才查得到）；原指令在別的模組註冊，所以到呼叫時才去查（lazy）。沒有 blank 起手式的（MIDI、遊戲、簡報、影片）不做。
+        _registerEditBlankCommands() {
+            // starter：這個編輯器的空白起手式 id。xlsx 的空白是 'sheet'（sheet_host 把 blank 對到 sheet），其他都是 'blank'。
+            // 描述寫成字面量（網頁版 /gui 清單取最長的字面量當說明）。
+            const viaBlank = (orig, starter) => (argsText, run) => { const e = this.slashCommands.get(orig); if (!e || typeof e.handler !== 'function') return undefined; return e.handler(starter || 'blank', run || this); };
+            this.register_slash_command('/edit-svg-blank', '', '空白 SVG 畫布（起手式 blank）：直接開一張空白的 SVG 編輯器，不用說話。不帶參數的 /edit-svg 仍是說明與起手式清單。', viaBlank('/edit-svg'));
+            this.register_slash_command('/edit-picture-blank', '', '空白畫布（起手式 blank）：直接開一張空白的圖片編輯器，不用說話。不帶參數的 /edit-picture 仍是說明與起手式清單。', viaBlank('/edit-picture'));
+            this.register_slash_command('/edit-3d-model-blank', '', '空白 3D 場景（起手式 blank）：直接開一個空白的 3D 場景編輯器，不用說話。不帶參數的 /edit-3d-model 仍是說明與起手式清單。', viaBlank('/edit-3d-model'));
+            this.register_slash_command('/edit-markdown-blank', '', '空白 Markdown 文件（起手式 blank）：直接開一份空白的 Markdown 編輯器，不用說話。不帶參數的 /edit-markdown 仍是說明與起手式清單。', viaBlank('/edit-markdown'));
+            this.register_slash_command('/edit-text-blank', '', '空白純文字（起手式 blank）：直接開一份空白的純文字編輯器，不用說話。不帶參數的 /edit-text 仍是說明與起手式清單。', viaBlank('/edit-text'));
+            this.register_slash_command('/edit-docx-blank', '', '空白 Word 文件（起手式 blank）：直接開一份空白的 Word 文件編輯器（.docx），不用說話。不帶參數的 /edit-docx 仍是說明與起手式清單。', viaBlank('/edit-docx'));
+            this.register_slash_command('/edit-csv-blank', '', '空白表格（起手式 blank）：直接開一份空白的 CSV 編輯器，不用說話。不帶參數的 /edit-csv 仍是說明與起手式清單。', viaBlank('/edit-csv'));
+            this.register_slash_command('/edit-xlsx-blank', '', '空白試算表（起手式 sheet）：直接開一份空白的試算表編輯器（xlsx），不用說話。不帶參數的 /edit-xlsx 仍是說明與起手式清單。', viaBlank('/edit-xlsx', 'sheet'));
+            this.register_slash_command('/edit-html-blank', '', '空白網頁（起手式 blank）：直接開一份空白的網頁編輯器（HTML），不用說話。不帶參數的 /edit-html 仍是說明與起手式清單。', viaBlank('/edit-html'));
+        },
         _registerEditCommands() {
+            this._registerEditBlankCommands();
             const hint = '[起手式｜一句話描述｜圖片網址]';
             this.register_slash_command('/edit-svg', hint,
                 'SVG 編輯器（用語言主導的概念畫家）：你說要畫什麼、放在哪個東西的哪一邊，AI 就加一個新物件；畫面沒有邊界，可以加在任何地方。可以貼圖讓 AI 描成 SVG、給網址或說「找一張…的圖」。物件欄、屬性面板、復原／重做、整理成 prompt、匯出 SVG／PNG。/edit-svg shapes 從起手式開始、/edit-svg 畫一隻紅色的小鳥站在樹枝上。',
@@ -64394,7 +64756,7 @@ const FaEditHost = (function () {
         polishSystem: 'You tidy a prompt that rebuilds a 3D scene. Keep every fact (objects, sizes, colours, textures, and WHERE things are relative to the viewer or to other objects); make it one clear, reusable prompt. Answer with the prompt only.',
         prepare: async function () { await this._ensureThreeJsLoaded(); await this._ensureJsYamlLoaded(); },
         collectRefs: (proj) => { const out = []; try { (JSON.stringify([proj.spec, ((proj.state && proj.state.states) || []).map((x) => x.spec)]).match(/ref:[A-Za-z0-9_-]+/g) || []).forEach((r) => { const k = r.slice(4); if (out.indexOf(k) < 0) out.push(k); }); } catch (_) { /* */ } return out; },
-        mountOpts: function (id, proj) { const self = this; return { buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob), openPart: (o) => self._ed3dOpenPart(id, o), origin: !!(proj && proj.origin), updateOrigin: (yml) => self._ed3dUpdateOrigin(id, yml) }; },
+        mountOpts: function (id, proj) { const self = this; return { buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob), openPart: (o) => self._ed3dOpenPart(id, o), origin: !!(proj && proj.origin), updateOrigin: (yml) => self._ed3dUpdateOrigin(id, yml), importModel: (bytes, name) => self._ed3dImportFile(bytes, name) }; },
         ask: function (req, ed) { return this._edAsk3d(req, ed); },
         help: (starters) => '**' + T('3D 場景編輯器', '3D scene editor') + '**\n\n' + T('像 /edit-svg 那樣用說的，不過是 3D：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」。位置是以**你現在看的角度**算的（相機的前方、左右）；拖曳畫面轉視角，位置就跟著變。物件欄是樹狀的（可以綁成群組），雙擊物件進到「單一物件編輯」（貼皮、上色，像做塑膠模型）；「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面立刻呈現。圖可以貼進對話框當貼圖。匯出：場景 YAML（可直接播放）、PNG、專案 YAML；也可以把成品放進對話、或更新回原本的場景。', 'Talk to it like /edit-svg, but in 3D: "put a red ball in front-left of me", "move it onto the table". Places are worked out from the way YOU are looking now. The objects view is a tree; double click an object for the single-object (skin) editor; the YAML tab is editable.') + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `/edit-3d-model ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n') + '\n\n' + T('接著上一個 3D 場景：`/edit-3d-model last`（把對話裡最近的 3D 場景當起點）。', 'Continue the last 3D scene of the conversation: `/edit-3d-model last`.'),
     });
@@ -64543,6 +64905,13 @@ const FaEditHost = (function () {
         await this._ensureJsYamlLoaded(); const r = FaEdit3d.fromYaml(yaml); if (!r.ok) throw new Error(r.error); (r.problems || []).slice(0, 3).forEach((p) => notes.push(p)); return r.spec;
     };
     // everything above, and the common ways: yaml (text), file_id (a .3dscene.yaml or a model: STL / OBJ / 3MF / FBX), last (the latest scene of the conversation)
+    // 📂 開啟場景 YAML 或模型（見 edit3d_import.js）：模型的轉換跑在 worker 裡，跟對話裡 file_id 的做法同一條路
+    M._ed3dImportFile = function (bytes, name) {
+        return FaEdit3dImport.fromBytes(bytes, name, {
+            prepare: () => this._ensureJsYamlLoaded(),
+            convertModel: (n, u) => this._convertModelFileToSceneYaml({ filename: n, blob: new Blob([u], { type: 'application/octet-stream' }) }, () => {}),
+        });
+    };
     M._ed3dOpen = async function (a) {
         a = a || {}; const notes = []; let spec = null, origin = null;
         try {
@@ -67060,7 +67429,12 @@ const holder = {};
     }
     return { pack, open };
   }
-  return { create, FORMAT, fnv };
+  // 開啟遊戲包時：檔案的維度跟編輯器不一樣就給一句說明（2D 編輯器不收 3D 包，反之亦然）；一樣就回 null
+  function dimensionProblem(spec, want) {
+    const got = spec && spec.game && spec.game.dimension === '3d' ? '3d' : '2d', w = want === '3d' ? '3d' : '2d';
+    return got === w ? null : '這是' + (got === '3d' ? '3D' : '2D') + '遊戲包，請用 /edit-game-' + got + ' 開';
+  }
+  return { create, FORMAT, fnv, dimensionProblem };
 });
 
 }).call(null, undefined, holder);
@@ -67314,6 +67688,12 @@ const holder = {};
     let stageRef = null, ctxRef = null;
     return Shell.mount({
       id: opt.id, kind, title: dim === 3 ? '🎮 3D 遊戲編輯器' : '🎮 2D 遊戲編輯器', W, spec: opt.spec, state: opt.state, host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟 .fagame：取代目前內容（可復原）；只收同一個維度的遊戲包（2D 編輯器不收 3D 包，反之亦然）
+      file: opt.importPack ? { exportId: 'fagame', maxBytes: 20000000, types: [{ description: '遊戲包', accept: { 'application/zip': ['.fagame'] } }], importBytes: async function (bytes, name) {
+        const sp = await opt.importPack(bytes, name), bad = FaGamePack.dimensionProblem(sp, dim === 3 ? '3d' : '2d');
+        if (bad) { throw new Error(bad); }
+        return sp;
+      } } : null,
       tabs: [{ id: 'play', label: '🎮 場景', viewer: true }, { id: 'graph', label: '🗺 場景圖' }, { id: 'rules', label: '🧩 行為' }, { id: 'audio', label: '🔊 音訊' }, { id: 'src', label: '🧾 YAML' }, { id: 'pack', label: '📦 套件' }],
       placeholder: dim === 3 ? '用說的設計:「在玩家前面放一個寶石」「讓守衛碰到玩家就扣血」「新增一個洞穴場景接在終點柱後面」;按「🎯 焦點」點一個東西再說「把它變大」' : '用說的設計:「在玩家右邊放一個史萊姆」「讓史萊姆碰到玩家就扣血」「新增一個洞穴場景」「這個場景放緊張的背景音樂」;按「🎯 焦點」點一個東西再說「讓它變快」',
       intro: (dim === 3 ? '我是 3D 遊戲的助手' : '我是 2D 遊戲的助手') + ':你說要什麼我就加進遊戲裡——東西、行為(規則與狀態機)、碰撞、路線、場景切換、對白、背景音樂與音效。位置是相對的(玩家右邊、畫面中間、地上、桌子上面);中間的畫面可以直接玩(▶),玩到一半按 ⏸ 就是編輯器,缺什麼說一聲就加(這時「這個」「這裡」指的是你選取的東西,按「🎯 焦點」點物件或拖出一個範圍)。\n第一件事:這個遊戲要怎麼玩?(鍵盤、滑鼠、手把或觸控:在左下角「遊戲」屬性裡選,或直接說「改成滑鼠點哪走到哪」;邊玩邊改也可以)。我改的東西會先用疊層預覽(綠＝新增、黃＝修改、紅虛線＝刪除),你按「接受」才套用。',
@@ -67695,6 +68075,7 @@ return holder.FaGameUI;
                 return P.pack(spec, Object.assign({}, o || {}, { assets, modified: new Date().toISOString().slice(0, 19) }));
             },
             openPack: async (file) => self._gameOpenPack(file),
+            importPack: (bytes, name) => self._gameImportPack(bytes, name),
             gen: {
                 targets: (spec) => FaGameGen.targets(spec),
                 run: (tid, spec, onStatus) => self._gameGenerate(tid, spec, onStatus),
@@ -67702,10 +68083,20 @@ return holder.FaGameUI;
         };
     };
     // 開一個 .fagame:拆開、圖片素材放回這個瀏覽器、開一個新的編輯器接著編輯
-    M._gameOpenPack = async function (file) {
-        await this._ensureJSZipLoaded(); await this._ensureJsYamlLoaded(); const P = FaGamePack.create(window.JSZip); const bytes = new Uint8Array(await file.arrayBuffer()); const r = await P.open(bytes);
+    // .fagame 的位元組 → 遊戲規格（圖片素材放回這個瀏覽器）；開新編輯器與取代目前內容共用
+    M._gameSpecFromPack = async function (bytes) {
+        await this._ensureJSZipLoaded(); await this._ensureJsYamlLoaded(); const P = FaGamePack.create(window.JSZip); const r = await P.open(new Uint8Array(bytes));
         const spec = r.spec; for (const k of Object.keys(r.assets || {})) { const id = k.replace(/\.[A-Za-z0-9]+$/, ''); const a = spec.assets[id]; if (a && a.kind === 'image') { try { const ref = await FaEditStore.putImage(new Blob([r.assets[k]], { type: /\.png$/i.test(k) ? 'image/png' : 'image/jpeg' })); a.ref = 'ref:' + ref; } catch (_) { /* 沒有圖就留空 */ } } }
+        return { spec: spec, problems: r.problems };
+    };
+    M._gameOpenPack = async function (file) {
+        const got = await this._gameSpecFromPack(await file.arrayBuffer()), spec = got.spec, r = { problems: got.problems };
         const dim = spec.game.dimension === '3d' ? '3d' : '2d'; const res = await this._edOpen('edit-game-' + dim, { spec }); if (res && res.ok) { res.problems = r.problems; res.title = spec.game.title; res.dim = dim; } return res;
+    };
+    // 📂 開啟 .fagame：取代目前這個編輯器的內容（可復原），維度不同時也照檔案的內容（同一個編輯器接著編）
+    M._gameImportPack = async function (bytes, name) {
+        if (!/\.fagame$/i.test(String(name || ''))) { throw new Error('這不是 .fagame 遊戲包'); }
+        const got = await this._gameSpecFromPack(bytes); return got.spec;
     };
     // 目標原始碼:程式直接產生的(網頁、Electron、Node.js、three.js)與 AI 逐檔的
     M._gameGenerate = async function (tid, spec, onStatus) {
@@ -68002,6 +68393,38 @@ const holder = {};
 }).call(null, undefined, holder);
 return holder.FaDeckEdit;
 })();
+const FaDeckImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-media-presentation 的「📂 開啟簡報」：編輯器自己的簡報 YAML（.deck.yaml）→ 文件，取代目前內容（可復原）。
+// 讀取器用 FaDeckEdit.fromYaml（跟「📥 另存」匯出的是同一種格式，所以往返不會丟東西）。
+// 不支援 .pptx：目前沒有 .pptx 讀取器，會明講而不是假裝能讀。純函式，測試：scripts/edit-tests/deck_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./deck_edit_core.js'));
+  else root.FaDeckImport = factory(root.FaDeckEdit || (typeof FaDeckEdit !== 'undefined' ? FaDeckEdit : undefined));
+})(typeof self !== 'undefined' ? self : this, function (D) {
+  'use strict';
+
+  var DECK_EXT = /\.(deck\.)?ya?ml$/i, PPTX_EXT = /\.pptx$/i;
+  var TYPES = [{ description: '簡報 YAML', accept: { 'text/yaml': ['.deck.yaml', '.yaml', '.yml'] } }];
+
+  // bytes → 簡報文件（spec）。不能讀就丟出可讀的錯誤。
+  function fromBytes(bytes, name) {
+    var n = String(name || '');
+    if (PPTX_EXT.test(n)) { throw new Error('目前還不能開 .pptx 投影片（只能開簡報的 .deck.yaml）'); }
+    if (!DECK_EXT.test(n)) { throw new Error('這個編輯器只能開簡報的 .deck.yaml 檔'); }
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    var r = D.fromYaml(new TextDecoder('utf-8').decode(u));
+    if (!r.ok) { throw new Error(r.error || '讀不了這份簡報'); }
+    return r.spec;
+  }
+
+  return { fromBytes: fromBytes, TYPES: TYPES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDeckImport;
+})();
 const FaDeckEditUI = (function () {
 const holder = {};
 (function (module, self) {
@@ -68019,6 +68442,8 @@ const holder = {};
     let stage = null; const host = opt.host || {}, W = { validate: D.validate, applyEdits: D.applyEdits, editWords: D.editWords, list: D.list, find: D.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-media-presentation', title: '📽 簡報編輯器', W, spec: opt.spec, state: opt.state, host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟簡報 .deck.yaml（取代目前內容，可復原）；另存用簡報 YAML 匯出（見 deck_import.js）；不支援 .pptx
+      file: { exportId: 'yaml', maxBytes: 5000000, types: FaDeckImport.TYPES, importBytes: function (bytes, name) { return FaDeckImport.fromBytes(bytes, name); } },
       tabs: [{ id: 'view', label: '📽 播放', viewer: true }, { id: 'src', label: '🧾 YAML' }],
       placeholder: '用說的改簡報:「這頁加一張飛機的照片」「在這頁後面加一頁,講風險」「旁白講短一點」「第3頁標題改成…」「上網查最新規格,加一章」',
       intro: '我是簡報的助手:中間是原本的簡報播放器,左邊是章與頁的大綱。你現在看的那一頁就是「這頁」——直接說「這頁加一張…的照片」「這頁的旁白改成…」「在這頁後面插入一頁講…」;要上網找圖、查資料、讀網頁或檔案、畫圖表,我會請簡報的代理人(跟 /media-presentation 一樣的工具)去做。我改的會先放進播放器預覽,你按「接受」才算;每一步都能復原。',
@@ -128615,6 +129040,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return id;
     }
     // MIDI 編輯器(階段 2):卡片 fa-midi-edit;曲子存在 _midiSongs,編輯後即時更新;讀不懂的話交給模型(只能回封閉的動作清單)
+    // 📂 開啟 .mid（MIDI 編輯器卡片的按鈕）：解析後開成新的編輯器卡片，不動目前這首
+    _midiOpenFile(bytes, name) {
+        const f = FaMidiOpen.fromFile(bytes, name);
+        return this._midiPushEditor(f.song, f.title);
+    }
     _midiPushEditor(song, title, lead) {
         const id = this._midiStoreSong(song); const ref = { id, title: title || song.title || 'MIDI' };
         try { const bytes = FaMidi.write(song); if (bytes.length <= 90000) ref.b64 = this._midiB64(bytes); } catch (_) { /* */ }
@@ -128680,7 +129110,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (!song && ref.b64) { try { const bin = atob(ref.b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); this._midiStoreSong(song, ref.id); } catch (_) { /* */ } }
                 if (!song) { const w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8'; w.textContent = '⚠️ 找不到這首曲子的內容,請重新開啟編輯器。'; code.parentElement.replaceWith(w); return; }
                 const base = this._midiHost(), self = this;
-                const host = { player: base.player, voice: base.voice, download: base.download, toMp3: base.toMp3, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id) };
+                const host = { player: base.player, voice: base.voice, download: base.download, toMp3: base.toMp3, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id), openMidi: (bytes, name) => self._midiOpenFile(bytes, name) };
                 el = FaMidiEditUI.mount({ song, title: ref.title, host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch }); this._midiEditCards.set(ref.id, el);
                 if (this._midiEditCards.size > 10) { const k = this._midiEditCards.keys().next().value; try { this._midiEditCards.get(k)._midiEdit.destroy(); } catch (_) { /* */ } this._midiEditCards.delete(k); }
             }

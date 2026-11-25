@@ -1477,6 +1477,14 @@
    "size": 7835,
    "md5": "b67e9e34a41cc9ab15f0951b411ece77"
   },
+  "edimport": {
+   "file": "chunks/edimport.js",
+   "names": [
+    "FaEditImport"
+   ],
+   "size": 2020,
+   "md5": "f25758b68ea4ae4f599e4e41d68b6486"
+  },
   "psheet": {
    "file": "chunks/psheet.js",
    "names": [
@@ -1509,6 +1517,14 @@
    "size": 21066,
    "md5": "7a70de5b5e39769fb92c4b868089bea4"
   },
+  "edsvgimp": {
+   "file": "chunks/edsvgimp.js",
+   "names": [
+    "FaSvgImport"
+   ],
+   "size": 1957,
+   "md5": "330441489917c868644e25e5899d6be0"
+  },
   "edtrace": {
    "file": "chunks/edtrace.js",
    "names": [
@@ -1522,16 +1538,16 @@
    "names": [
     "FaEditSvgUI"
    ],
-   "size": 12060,
-   "md5": "7ef450520d0130566087652dfcec9527"
+   "size": 12228,
+   "md5": "c679b8df14942d3b950b5e9c272323b0"
   },
   "edtextui": {
    "file": "chunks/edtextui.js",
    "names": [
     "FaEditTextUI"
    ],
-   "size": 17174,
-   "md5": "bbf094d9a0a2393784a5ff718b358dec"
+   "size": 16398,
+   "md5": "a5de698ce1fb4861b9f820d4d22471fc"
   },
   "edsheetf": {
    "file": "chunks/edsheetf.js",
@@ -1554,8 +1570,8 @@
    "names": [
     "FaEditSheetUI"
    ],
-   "size": 21339,
-   "md5": "8cabf40972f143f0d6419ddd0d3150f9"
+   "size": 20276,
+   "md5": "6b5ef6e5f0826a249a186ab84bf34ac8"
   },
   "eddocx": {
    "file": "chunks/eddocx.js",
@@ -1570,8 +1586,8 @@
    "names": [
     "FaEditDocxUI"
    ],
-   "size": 17343,
-   "md5": "da789aa5c0c70a3ab8088bb594a8ef8f"
+   "size": 16419,
+   "md5": "f6e7232d22f0a018493cc122e3dfc17a"
   },
   "edlocalfile": {
    "file": "chunks/edlocalfile.js",
@@ -1610,8 +1626,8 @@
    "names": [
     "FaEditPictureUI"
    ],
-   "size": 27351,
-   "md5": "4bbd7b26b4d72036e65fe999ff6057be"
+   "size": 27586,
+   "md5": "a99217f57b009d465f442c878cb4a62a"
   },
   "edpici18n": {
    "file": "chunks/edpici18n.js",
@@ -1818,8 +1834,8 @@
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 20001,
-   "md5": "8ec26f4821112fff696aebed8e0ee0ef"
+   "size": 20457,
+   "md5": "01e0b04527ce8d5bf7204e72c8ec359b"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -2135,7 +2151,7 @@
   }
  },
  "core": {
-  "size": 6933253,
-  "md5": "56ca63c79cf4ab6453609d54be3d19a7"
+  "size": 6944727,
+  "md5": "69f2a80387a99f69c917b97166dc2160"
  }
 }

@@ -312,6 +312,28 @@
     }
     function openFileMenu() { if (fileBox) { fileBox.remove(); fileBox = null; return; } fileBox = h('div', 'filepanel'); fileBox.style.cssText = 'position:absolute;z-index:50;top:36px;left:40px;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:10px;min-width:260px;max-width:380px;box-shadow:0 4px 18px rgba(0,0,0,.3);font-size:13px'; el.appendChild(fileBox); renderFileBox(); if (LF && LF.check) { LF.check().then(function (c) { if (c && c.changed) { fileExt = true; renderFile(); renderFileBox(); } }); } }
     var ctx0 = { say: function (t) { stat.textContent = t; setTimeout(function () { if (stat.textContent === t) { stat.textContent = ''; } }, 4000); } };
+    // ───── 📂 開啟檔案（共用：所有 opt.file 有 importBytes 的編輯器；選檔或拖進來；只是讀進來，不綁定）─────
+    var IMPORT = typeof FaEditImport !== 'undefined' ? FaEditImport : null, IMP = opt.file && typeof opt.file.importBytes === 'function' && IMPORT ? opt.file : null;
+    if (IMP) {
+      var OPEN = IMP.openTypes || IMP.types;   // 開檔可選的格式（另存、綁定仍用 IMP.types）
+      var bOpenF = h('button', null, '📂 開啟檔案');
+      bOpenF.setAttribute('data-fa-open-file', '');   // 網頁版 /gui 的起手式面板用來找到這顆按鈕（見 fa-gui.template.js）
+      bOpenF.title = '把本機檔案讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）。' + IMPORT.hint(OPEN) + '；也可以直接把檔案拖進來';
+      // 讀進來之後的內容：原本綁定的檔案就解除綁定，否則之後按 Ctrl+S 會把新內容寫進舊檔
+      async function openPlain(f) {
+        var ns = await IMP.importBytes(f.bytes, f.name), wasBound = !!(LF && fileInfo());
+        if (wasBound) { LF.unbind(); fileSig = null; fileExt = false; }
+        commit(ns, '開啟檔案 ' + f.name, '', 'panel');
+        ctx0.say('已開啟 ' + f.name + (ns && ns.notes && ns.notes.length ? '（' + ns.notes.length + ' 項注意事項）' : '') + (wasBound ? '；原本綁定的檔案已解除綁定（檔案不動）' : ''));
+      }
+      function openIt(f) { return openPlain(f).then(null, function (e) { ctx0.say('開不起來：' + String((e && e.message) || e).slice(0, 160)); }); }
+      bOpenF.onclick = function () {
+        // 必須在點擊的同一個手勢裡叫出選檔，所以這裡不能先 await
+        IMPORT.pick(OPEN, { maxBytes: IMP.maxBytes }).then(function (f) { if (f) { return openIt(f); } }, function (e) { ctx0.say(String((e && e.message) || e)); });
+      };
+      bar.insertBefore(bOpenF, bSum);
+      IMPORT.dropOpen(el, OPEN, openIt,function (msg) { ctx0.say(msg); }, IMP.maxBytes);
+    }
     if (LF) {
       bFile = h('button', null, '💾 本機檔案'); fileStat = h('span', 'st'); bFile.onclick = openFileMenu; bar.insertBefore(bFile, bSum); bar.insertBefore(fileStat, bSum);
       if (LF.ready) { LF.ready().then(function () { fileSig = fileInfo() ? sigNow() : null; renderFile(); }); } else { fileSig = fileInfo() ? sigNow() : null; }

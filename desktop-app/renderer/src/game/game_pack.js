@@ -47,5 +47,10 @@
     }
     return { pack, open };
   }
-  return { create, FORMAT, fnv };
+  // 開啟遊戲包時：檔案的維度跟編輯器不一樣就給一句說明（2D 編輯器不收 3D 包，反之亦然）；一樣就回 null
+  function dimensionProblem(spec, want) {
+    const got = spec && spec.game && spec.game.dimension === '3d' ? '3d' : '2d', w = want === '3d' ? '3d' : '2d';
+    return got === w ? null : '這是' + (got === '3d' ? '3D' : '2D') + '遊戲包，請用 /edit-game-' + got + ' 開';
+  }
+  return { create, FORMAT, fnv, dimensionProblem };
 });

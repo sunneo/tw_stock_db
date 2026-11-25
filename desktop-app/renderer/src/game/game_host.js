@@ -67,6 +67,7 @@
                 return P.pack(spec, Object.assign({}, o || {}, { assets, modified: new Date().toISOString().slice(0, 19) }));
             },
             openPack: async (file) => self._gameOpenPack(file),
+            importPack: (bytes, name) => self._gameImportPack(bytes, name),
             gen: {
                 targets: (spec) => FaGameGen.targets(spec),
                 run: (tid, spec, onStatus) => self._gameGenerate(tid, spec, onStatus),
@@ -74,10 +75,20 @@
         };
     };
     // 開一個 .fagame:拆開、圖片素材放回這個瀏覽器、開一個新的編輯器接著編輯
-    M._gameOpenPack = async function (file) {
-        await this._ensureJSZipLoaded(); await this._ensureJsYamlLoaded(); const P = FaGamePack.create(window.JSZip); const bytes = new Uint8Array(await file.arrayBuffer()); const r = await P.open(bytes);
+    // .fagame 的位元組 → 遊戲規格（圖片素材放回這個瀏覽器）；開新編輯器與取代目前內容共用
+    M._gameSpecFromPack = async function (bytes) {
+        await this._ensureJSZipLoaded(); await this._ensureJsYamlLoaded(); const P = FaGamePack.create(window.JSZip); const r = await P.open(new Uint8Array(bytes));
         const spec = r.spec; for (const k of Object.keys(r.assets || {})) { const id = k.replace(/\.[A-Za-z0-9]+$/, ''); const a = spec.assets[id]; if (a && a.kind === 'image') { try { const ref = await FaEditStore.putImage(new Blob([r.assets[k]], { type: /\.png$/i.test(k) ? 'image/png' : 'image/jpeg' })); a.ref = 'ref:' + ref; } catch (_) { /* 沒有圖就留空 */ } } }
+        return { spec: spec, problems: r.problems };
+    };
+    M._gameOpenPack = async function (file) {
+        const got = await this._gameSpecFromPack(await file.arrayBuffer()), spec = got.spec, r = { problems: got.problems };
         const dim = spec.game.dimension === '3d' ? '3d' : '2d'; const res = await this._edOpen('edit-game-' + dim, { spec }); if (res && res.ok) { res.problems = r.problems; res.title = spec.game.title; res.dim = dim; } return res;
+    };
+    // 📂 開啟 .fagame：取代目前這個編輯器的內容（可復原），維度不同時也照檔案的內容（同一個編輯器接著編）
+    M._gameImportPack = async function (bytes, name) {
+        if (!/\.fagame$/i.test(String(name || ''))) { throw new Error('這不是 .fagame 遊戲包'); }
+        const got = await this._gameSpecFromPack(bytes); return got.spec;
     };
     // 目標原始碼:程式直接產生的(網頁、Electron、Node.js、three.js)與 AI 逐檔的
     M._gameGenerate = async function (tid, spec, onStatus) {

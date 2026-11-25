@@ -23,6 +23,8 @@
     return Shell.mount({
       id: opt.id, kind: 'edit-svg', title: '🖍 SVG 編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
       tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'source', label: '🧩 原始碼' }],
+      // 📂 開啟 .svg：整份變成一個圖形物件（見 svg_import.js）；另存用 svg 匯出
+      file: { exportId: 'svg', maxBytes: 5000000, types: [{ description: 'SVG 向量圖', accept: { 'image/svg+xml': ['.svg'] } }], importBytes: function (bytes, name) { return FaSvgImport.fromBytes(bytes, name); } },
       placeholder: '用說的畫：「在中間畫一個紅色的圓」「在太陽的右邊加一朵雲」「把煙囪放到房子上面」「找一張飛機的照片」；也可以貼一張圖進來，我試著把它變成 SVG（向量圖）',
       intro: '我是用語言來畫的概念畫家：你說要畫什麼、放在哪個東西的哪一邊，我就加一個新的物件（形狀、手繪的圖、網路上找的圖片都是物件），可以隨時隱藏、改名、鎖定、移動或刪掉，改錯了按「復原」。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個物件（圖片）的中間。貼一張圖進來，我會試著把它變成 SVG：先用程式描出每個顏色的輪廓，再用視覺模型看過、比對，不夠像就重來。也可以直接給網址，或說「找一張…的圖」。',
       objectIcon: function (o) { return o.type === 'shape' ? (ICON[o.shape] || '◻') : o.type === 'svg' ? '🖍' : '🖼'; },

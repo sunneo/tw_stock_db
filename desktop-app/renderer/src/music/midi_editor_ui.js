@@ -27,10 +27,20 @@
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
     const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ 匯出');
     dlB.title = '匯出成 MIDI（.mid）或 MP3（.mp3）';
+    // 📂 開啟 .mid：開成新的編輯器卡片（不動目前這首）。沒有 host.openMidi（例如沒接開檔）就不顯示
+    const openB = el('button', BTN, '📂 開啟');
+    openB.title = '開一個 .mid 檔成新的 MIDI 編輯器（不影響目前這首）';
+    openB.style.display = host.openMidi ? '' : 'none';
+    openB.onclick = () => {
+      // 選檔必須在點擊的同一個手勢裡叫出，所以不能先 await
+      const pick = (typeof FaEditImport !== 'undefined' && FaEditImport) ? FaEditImport.pick : null;
+      if (!pick || !host.openMidi) { say('⚠️ 這裡不能開檔'); return; }
+      pick(FaMidiOpen.TYPES, { maxBytes: FaMidiOpen.MAX_BYTES }).then((f) => { if (f) { return host.openMidi(f.bytes, f.name); } }).catch((e) => say('⚠️ ' + String((e && e.message) || e)));
+    };
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
+    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(openB, undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
     // 匯出小選單:按「⬇ 匯出」展開,選 MIDI 或 MP3;同一列再按一次或按 ✕ 收起
     const exBar = el('div', 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;');
     exBar.appendChild(el('span', 'opacity:.8', '匯出成:'));
