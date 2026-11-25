@@ -722,7 +722,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
           // 要求失敗就退回預設（不能因為這個讓 GPU 整個不能用）。
           var reqLim = null;
           try { var mb = Number(pa.adapter.limits && pa.adapter.limits.maxStorageBuffersPerShaderStage); if (mb > 8) reqLim = { maxStorageBuffersPerShaderStage: Math.min(mb, 16) }; } catch (_) { reqLim = null; }
-          try { st.device = await (reqLim ? pa.adapter.requestDevice({ requiredLimits: reqLim }).catch(function () { return pa.adapter.requestDevice(); }) : pa.adapter.requestDevice()); try { st.device.lost.then(function (i) { console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用 */ } }
+          try { st.device = await (reqLim ? pa.adapter.requestDevice({ requiredLimits: reqLim }).catch(function () { return pa.adapter.requestDevice(); }) : pa.adapter.requestDevice()); try { st.device.lost.then(function (i) { noteDeviceLost(i); console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用 */ } }
           catch (e) { st.probe.reason = '要求 WebGPU 裝置失敗：' + msg(e); return null; }
           var dev = st.device;
           if (dev.lost && typeof dev.lost.then === 'function') {
@@ -1441,7 +1441,28 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     return api;
   }
 
+  // ===== 裝置遺失的全域紀錄 =====
+  // 裝置遺失（Windows 顯示驅動逾時，DXGI_ERROR_DEVICE_HUNG 等）後，整個頁面共用的 GPU 都不能再用：這裡記下原因（含 HRESULT、最近的 GPU 工作），
+  // nn_ops 的 getDevice 會拒絕之後的取得，音訊路徑讀 deviceLostInfo() 記旗標並退回 WASM。記在 globalThis 才能跨模組看到。
+  function noteDeviceLost(info) {
+    if (globalThis.__faGpuLost) return globalThis.__faGpuLost;
+    var i = info || {};
+    var reason = String(i.reason || 'unknown');
+    var message = String(i.message || '').slice(0, 300);
+    var m = /DXGI_ERROR_[A-Z_]+|0x[0-9A-Fa-f]{8}/.exec(reason + ' ' + message);
+    globalThis.__faGpuLost = { reason: reason, message: message, hresult: m ? m[0] : '', last: String(globalThis.__faGpuLast || '未知'), at: Date.now() };
+    return globalThis.__faGpuLost;
+  }
+  function deviceLostInfo() { return globalThis.__faGpuLost || null; }
+  function deviceLostText() {
+    var d = deviceLostInfo(); if (!d) return '';
+    return '（' + d.reason + '）' + (d.hresult ? '，' + d.hresult : '') + (d.message ? '：' + d.message : '') + '；最近的 GPU 工作：' + d.last;
+  }
+
   return {
+    noteDeviceLost: noteDeviceLost,
+    deviceLostInfo: deviceLostInfo,
+    deviceLostText: deviceLostText,
     probeAdapter: probeAdapter,
     probeWebgl2: probeWebgl2,
     profileOf: profileOf,
