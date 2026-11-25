@@ -37,6 +37,7 @@ const suites = [
     ['專案索引的定義抽取（C# 方法／屬性／namespace、Kotlin object、Java）', 'scripts/repo-extract.test.js'],
     ['離線圖像轉文字（模型登記、裝置、快取用量）', 'renderer/src/vlm/vlm_core.test.js'],
     ['離線訓練工作室：後端介面／登錄表／規劃中後端阻礙／cpu-js／Configure 核心數設定', 'renderer/src/studio/backend_core.test.js'],
+    ['離線訓練工作室：/offline-training-studio 斜線指令與別名、開窗接線、網頁版 /gui 清單與全螢幕頁產生', 'renderer/src/studio/offline_training_studio_slash.test.js'],
     ['離線訓練工作室：規範化 float32 檢查點、PCG32、相容性負向、跨後端 loss 比對、暫停續訓前 20 步（迷你訓練器模擬）', 'renderer/src/studio/checkpoint_core.test.js'],
     ['離線訓練工作室：基準測試（暖機／中斷 3 秒內／60 秒上限）、一致性四項、快取、自動選擇（命中／指紋失效／降級／釘選）', 'renderer/src/studio/bench_core.test.js'],
     ['離線訓練工作室：cpu-py 後端（有／無 Python 的 probe、進度解析、暫停續訓、基準中斷，用假子行程）', 'renderer/src/studio/backend_cpu_py.test.js'],
