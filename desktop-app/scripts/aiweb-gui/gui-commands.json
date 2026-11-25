@@ -12,6 +12,15 @@
     "/edit-game-3d",
     "/edit-media-presentation",
     "/knowledge-ui",
-    "/offline-training-studio"
+    "/offline-training-studio",
+    "/edit-svg-blank",
+    "/edit-picture-blank",
+    "/edit-3d-model-blank",
+    "/edit-markdown-blank",
+    "/edit-text-blank",
+    "/edit-docx-blank",
+    "/edit-csv-blank",
+    "/edit-xlsx-blank",
+    "/edit-html-blank"
   ]
 }

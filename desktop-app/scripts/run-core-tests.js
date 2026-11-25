@@ -369,6 +369,7 @@ const suites = [
     ['網頁編輯器：描述驗證、預覽內嵌、起手式、編輯動作、後端分流', 'scripts/webedit-tests/webedit_core.test.js'],
     ['SVG／圖片／3D 編輯器共用的物件模型：封閉動作、相對放置、無邊界畫布', 'scripts/edit-tests/edit_objects_core.test.js'],
     ['SVG／圖片編輯器的圖片來源：維基共享資源與 Openverse 的排序、網址、授權', 'scripts/edit-tests/picture_source.test.js'],
+    ['編輯器 <指令>-blank 空白起手式：登錄、命名規則、沒有 blank 的不做、原指令不帶參數仍是說明、網頁版 /gui 清單', 'scripts/edit-tests/edit_blank_commands.test.js'],
     ['SVG 編輯器：形狀與自由 SVG 物件、合成、拆回物件、安全檢查', 'scripts/edit-tests/edit_svg_core.test.js'],
     ['SVG 描圖：量化、輪廓追蹤、簡化、相似度', 'scripts/edit-tests/svg_trace.test.js'],
     ['圖片編輯器：風格濾鏡、修復（補洞／去雜訊／去污點）', 'scripts/edit-tests/pic_fx.test.js'],
