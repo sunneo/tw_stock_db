@@ -144,6 +144,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   y[idx] = acc;
 }`;
 
+// 批次路徑（整批一次提交）的工作量上限（乘加次數）：超過就改走分批的直接卷積，避免單次提交太久觸發顯示驅動逾時
+const IM2COL_MAX_MACS = 67108864;
 const MAX_BUF = 134217728; // WebGPU 預設 maxStorageBufferBindingSize
 function checkFit() { for (const n of arguments) if (n * 4 > MAX_BUF) throw new Error('張量 ' + n + ' 個 float 超過單一儲存緩衝區上限（128 MB），退 CPU'); }
 
@@ -175,7 +177,8 @@ async function conv2d(x, N, C, H, W, w, M, Cg, KH, KW, b, p, ops) {
   return nn.tryLayers('conv2d', { navigator: o.navigator }, async (dev) => {
     checkFit(total, x.length, w.length);
     // R5：groups = 1、單一批次時用 im2col＋平鋪矩陣乘（實測 1.9 → 0.37 ms，2.7–5.3 倍，兩者對參考相對誤差都 ≤1e-6）；ops.conv === 'direct' 強制舊的直接卷積
-    if (o.conv !== 'direct' && q.groups === 1 && N === 1 && IM2COL && MM_TILED_WGSL) {
+    // 批次路徑（im2col＋矩陣乘）整批只提交一次、無法分批；工作量超過 IM2COL_MAX_MACS 時改走分批的直接卷積（見 nn_ops 的 CHUNK 說明）
+    if (o.conv !== 'direct' && q.groups === 1 && N === 1 && IM2COL && MM_TILED_WGSL && M * C * KH * KW * Hout * Wout <= IM2COL_MAX_MACS) {
       const K = C * KH * KW, P = Hout * Wout;
       const bt = nn.createBatch(dev);
       const hx = bt.upload(Float32Array.from(x)), hw = bt.upload(Float32Array.from(w));

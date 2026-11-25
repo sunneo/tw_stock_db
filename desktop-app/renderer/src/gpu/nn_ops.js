@@ -168,6 +168,8 @@ function measureLockState() { return { running: exclHeld, pending: exclPending, 
 const devCache = new Map();
 function getDevice(nav) {
   if (!nav || !nav.gpu) return Promise.resolve({ dev: null, reason: 'WebGPU 不可用（navigator.gpu 不存在）' });
+  // 裝置一旦遺失（Windows 顯示驅動逾時、DXGI_ERROR_DEVICE_HUNG 等）就不再拿壞掉的裝置做事：直接回報原因，呼叫端退回 WASM／CPU
+  if (core.deviceLostInfo()) return Promise.resolve({ dev: null, reason: 'GPU 裝置已遺失，之後不再使用 GPU：' + core.deviceLostText() });
   if (!devCache.has(nav)) {
     devCache.set(nav, (async () => {
       try {
@@ -180,12 +182,61 @@ function getDevice(nav) {
         const wantSg = !!(feats && typeof feats.has === 'function' && feats.has('subgroups'));
         const reqF = [].concat(wantF16 ? ['shader-f16'] : [], wantSg ? ['subgroups'] : []);
         const dev = await pa.adapter.requestDevice(reqF.length ? { requiredFeatures: reqF } : undefined);
-        try { dev.lost.then((i) => console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知'))); } catch (_) { /* 診斷用，失敗不影響 */ }
+        try { dev.lost.then((i) => { core.noteDeviceLost(i); devCache.delete(nav); console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用，失敗不影響 */ }
         return { dev: dev, reason: null };
       } catch (e) { return { dev: null, reason: 'WebGPU 初始化失敗：' + String((e && e.message) || e) }; }
     })());
   }
   return devCache.get(nav);
+}
+
+// ---- 分批派發（防止 Windows 顯示驅動逾時）----
+// 實測（Demucs 走 GPU）：單次提交的 GPU 工作跑超過約 2 秒，Windows 會判定顯示卡卡死（DXGI_ERROR_DEVICE_HUNG），整個畫面變黑。
+// 因此扁平索引的核心（conv／mm：一格一個 invocation、64 格一群）不再一次派發：每批只派 chunk 個 invocation，批與批之間等 GPU 做完（onSubmittedWorkDone），
+// 並讓出時間給顯示。批量自適應：單批太快就加倍、太慢（超過 CHUNK_SLOW_MS）就減半，上限 CHUNK_MAX（65536 格），每份 WGSL 記住學到的批量。
+const CHUNK_WG = 64;                 // 只有 64 格一群的扁平核心才能切（與 idx = gid.x + gid.y·4194240 的假設一致）
+const CHUNK_START = 4096, CHUNK_MIN = 64, CHUNK_MAX = 65536;
+const CHUNK_FAST_MS = 60, CHUNK_SLOW_MS = 300;
+const chunkHint = new Map();         // WGSL 原文 → 下次起跑的批量（invocation 數）
+const FLAT_IDX_RE = /let idx = gid\.x \+ gid\.y \* 4194240u;/;
+function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
+// 只有「扁平索引＋64 格一群」的核心能切：其他核心（注意力、正規化等）仍一次派發（見 report）
+function flatChunkable(code) {
+  return FLAT_IDX_RE.test(code) && /@workgroup_size\(64\)/.test(code);
+}
+// 注入批次參數：新增一個 uniform 綁定 __fa_chunk（x＝批次起點、y＝本批格數）；超出本批的格直接返回
+function chunkedCode(code, bindIdx) {
+  const at = code.indexOf('@compute');
+  const decl = '@group(0) @binding(' + bindIdx + ') var<uniform> __fa_chunk: vec2<u32>;\n';
+  return code.slice(0, at) + decl + code.slice(at).replace(FLAT_IDX_RE,
+    'let __fa_loc = gid.x + gid.y * 4194240u; if (__fa_loc >= __fa_chunk.y) { return; } let idx = __fa_loc + __fa_chunk.x;');
+}
+// 逐批提交：每批 writeBuffer 批次參數 → 派發 → 提交 → 等完成 → 依耗時調整下一批的大小
+async function dispatchChunks(dev, pipe, entries, cb, cbBind, code, totalInv) {
+  let cnt = Math.min(totalInv, chunkHint.get(code) || CHUNK_START), base = 0;
+  const hasDone = !!(dev.queue && typeof dev.queue.onSubmittedWorkDone === 'function');
+  while (base < totalInv) {
+    const n = Math.min(cnt, totalInv - base), g = Math.ceil(n / CHUNK_WG);
+    dev.queue.writeBuffer(cb, 0, new Uint32Array([base, n, 0, 0]));
+    const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries.concat([{ binding: cbBind, resource: { buffer: cb } }]) });
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+    if (g > 65535) pass.dispatchWorkgroups(65535, Math.ceil(g / 65535)); else pass.dispatchWorkgroups(g);
+    pass.end();
+    const t0 = nowMs();
+    dev.queue.submit([enc.finish()]);
+    if (hasDone) await dev.queue.onSubmittedWorkDone();
+    const dt = nowMs() - t0;
+    // 量測用（評測檔讀）：批數與單批最長耗時
+    const st = globalThis.__faGpuChunkStat || (globalThis.__faGpuChunkStat = { batches: 0, maxMs: 0 });
+    st.batches++; if (dt > st.maxMs) st.maxMs = dt;
+    base += n;
+    if (dt < CHUNK_FAST_MS && cnt < CHUNK_MAX) cnt = Math.min(CHUNK_MAX, cnt * 2);
+    else if (dt > CHUNK_SLOW_MS && cnt > CHUNK_MIN) cnt = Math.max(CHUNK_MIN, Math.floor(cnt / 2));
+    chunkHint.set(code, cnt);
+    if (base < totalInv) await new Promise((r) => setTimeout(r, 0));   // 讓出時間給顯示與其他工作
+  }
 }
 
 // 通用的單次分派：bufs = [{data: Float32Array, out: bool}]，依序綁定 0..n-1；uniform 綁在最後一個索引
@@ -202,24 +253,36 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
   });
   const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
   dev.queue.writeBuffer(ub, 0, uniform);
+  // 扁平索引的核心（64 格一群，conv／mm）改分批派發：每批一次提交、等 GPU 做完再下一批（見下方 CHUNK_* 說明）；其餘形狀照舊一次派發
+  const chunked = typeof groups === 'number' && flatChunkable(code);
   // pipeline 快取（同一份 WGSL 只建一次；原本每次呼叫都重建，是注意力比 CPU 慢的主因之一）
+  const useCode = chunked ? chunkedCode(code, bufs.length + 1) : code;
   const pc = dev.__cudawebPipes || (dev.__cudawebPipes = new Map());
-  let pipe = pc.get(code);
-  if (!pipe) { const module = dev.createShaderModule({ code: code }); pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } }); pc.set(code, pipe); }
+  let pipe = pc.get(useCode);
+  if (!pipe) { const module = dev.createShaderModule({ code: useCode }); pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } }); pc.set(useCode, pipe); }
   const entries = objs.map((buf, i) => ({ binding: i, resource: { buffer: buf } }));
   entries.push({ binding: bufs.length, resource: { buffer: ub } });
-  const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
-  const enc = dev.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipe); pass.setBindGroup(0, bg);
-  // 超過單維 65535 個工作群組時改二維派發；著色器以 gid.x + gid.y·4194240（=65535×64）還原扁平索引
-  // groups 給陣列 [x, y, z] 時照三維派發（平鋪矩陣乘用：x 是欄方向的平鋪、y 是列方向、z 是批次）
-  if (Array.isArray(groups)) pass.dispatchWorkgroups(groups[0], groups[1] || 1, groups[2] || 1);
-  else if (groups > 65535) pass.dispatchWorkgroups(65535, Math.ceil(groups / 65535)); else pass.dispatchWorkgroups(groups);
-  pass.end();
   const rb = bufs.map((b) => (b.out ? dev.createBuffer({ size: b.data.byteLength, usage: USAGE.MAP_READ | USAGE.COPY_DST }) : null));
-  bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
-  dev.queue.submit([enc.finish()]);
+  if (chunked) {
+    const cb = dev.createBuffer({ size: 16, usage: USAGE.UNIFORM | USAGE.COPY_DST });
+    await dispatchChunks(dev, pipe, entries, cb, bufs.length + 1, code, groups * CHUNK_WG);
+    if (cb.destroy) cb.destroy();
+    const enc = dev.createCommandEncoder();
+    bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
+    dev.queue.submit([enc.finish()]);
+  } else {
+    const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+    // 超過單維 65535 個工作群組時改二維派發；著色器以 gid.x + gid.y·4194240（=65535×64）還原扁平索引
+    // groups 給陣列 [x, y, z] 時照三維派發（平鋪矩陣乘用：x 是欄方向的平鋪、y 是列方向、z 是批次）
+    if (Array.isArray(groups)) pass.dispatchWorkgroups(groups[0], groups[1] || 1, groups[2] || 1);
+    else if (groups > 65535) pass.dispatchWorkgroups(65535, Math.ceil(groups / 65535)); else pass.dispatchWorkgroups(groups);
+    pass.end();
+    bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
+    dev.queue.submit([enc.finish()]);
+  }
   const outs = [];
   for (let i = 0; i < bufs.length; i++) {
     if (!bufs[i].out) continue;
