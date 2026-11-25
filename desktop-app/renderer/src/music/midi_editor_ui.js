@@ -9,12 +9,16 @@
   const COLORS = ['#4aa3ff', '#ff7a59', '#5fd38d', '#e5c35c', '#c084fc', '#f472b6', '#22d3ee', '#a3e635'];
   const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
   const gsName = (p) => (p + 1) + '. ' + (GS_NAMES[p] || ('音色 ' + p));
+  // 網頁版全螢幕 GUI 頁（fa-gui.js 會在 body 加 fa-gui-mode）：編輯器撐滿容器，每拍寬與列高依容器大小算；
+  // 一般對話裡維持原本的每拍 40px、每列 12px。fillMetrics 是純函式（node 可測）。
+  const onFaGuiPage = () => typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode');
+  const fillMetrics = (availW, availH, rows, end) => ({ pxBeat: Math.max(4, availW / Math.max(1, end)), rowH: Math.max(10, availH / Math.max(1, rows)) });
 
   function mount(opts) {
     const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
     let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
-    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const hidden = new Set(); let focus = false; const mute = new Set(), solo = new Set(); // hidden／focus:只是畫面(眼睛、單軌檢視),不影響聽到什麼
+    let sel = 0, grid = 0.5, pxBeat = 40, rowH = 12, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const hidden = new Set(); let focus = false; const mute = new Set(), solo = new Set(); // hidden／focus:只是畫面(眼睛、單軌檢視),不影響聽到什麼
     const visible = (i) => (focus ? i === sel : !hidden.has(i));
     const alphaOf = (i) => (visible(i) ? (i === sel ? 1 : 0.35) : (focus ? 0.1 : 0)); // 靜音／獨奏只是試聽狀態(不進曲子、不匯出 MIDI);音量與左右平衡才寫進曲子
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
@@ -90,16 +94,27 @@
       const on = vp.style.display === 'none'; vp.style.display = on ? '' : 'none'; vp._vpiano.setActive(on); pianoB.style.background = on ? '#4aa3ff' : ''; pianoB.style.color = on ? '#fff' : ''; recB.style.display = on ? '' : 'none'; rec = on; recStart.clear(); paintRec(); if (on) say('虛擬鋼琴彈的音會寫進選取的音軌「' + ((hist.song.tracks[sel] || {}).name || '(沒有音軌)') + '」;只想試彈不寫入,按「⏺ 錄入中」關掉。');
       if (on) getVoice();
     };
+    // 全螢幕頁：卡片、中間列、畫布外框用 flex 撐滿容器；外框量到大小才依它算每拍寬與列高（外框 1px×2、刻度尺 16px）
+    function fillLayout(end) {
+      // 卡片是訊息卡說明文字之後的一個區塊：父層（fa-gui 的說明卡）是直向 flex，卡片吃掉剩下的高度（不用 height:100%，免得超出父層）
+      card.style.maxWidth = 'none'; card.style.width = '100%'; card.style.flex = '1 1 auto'; card.style.minHeight = '0'; card.style.boxSizing = 'border-box'; card.style.display = 'flex'; card.style.flexDirection = 'column';
+      mid.style.flex = '1 1 auto'; mid.style.minHeight = '0';
+      canvasWrap.style.flex = '1 1 auto'; canvasWrap.style.maxHeight = 'none'; canvasWrap.style.minHeight = '0'; canvasWrap.style.minWidth = '0';
+      const aw = canvasWrap.clientWidth - 2, ah = canvasWrap.clientHeight - 2 - 16;
+      if (aw > 0 && ah > 0) { const m = fillMetrics(aw, ah, rows, end); pxBeat = m.pxBeat; rowH = m.rowH; }
+    }
     function draw() {
       const s = hist.song, dpr = window.devicePixelRatio || 1;
       // 單軌檢視:音高範圍貼合看得到的軌(上下各留 2 格),不用在 36 格裡找
       if (focus) { let lo = 127, hi = 0; s.tracks.forEach((tr, i) => { if (visible(i)) tr.notes.forEach((n) => { if (n.n < lo) lo = n.n; if (n.n > hi) hi = n.n; }); }); if (hi >= lo) { rows = Math.max(14, hi - lo + 5); pitchLo = Math.max(0, Math.min(127 - rows + 1, lo - 2)); } } else { rows = 36; pitchLo = 36; }
-      const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4), W = end * pxBeat, H = rows * 12;
+      const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4);
+      if (onFaGuiPage()) fillLayout(end);   // 全螢幕頁：撐滿容器（容器還沒排版時維持預設）
+      const W = end * pxBeat, H = rows * rowH;
       inner.style.width = W + 'px'; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
       const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-      for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * 12, W, 12); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * 12 + 11, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * 12 + 9); } }
+      for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * rowH, W, rowH); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * rowH + rowH - 1, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * rowH + Math.min(9, rowH - 2)); } }
       for (let b = 0; b <= end; b++) { g.fillStyle = b % s.timesig.n === 0 ? 'rgba(128,128,128,.5)' : 'rgba(128,128,128,.2)'; g.fillRect(b * pxBeat, 0, 1, H); }
-      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = alphaOf(i); if (!g.globalAlpha) return; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * 12 + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), 10); }); }); g.globalAlpha = 1;
+      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = alphaOf(i); if (!g.globalAlpha) return; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * rowH + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), Math.max(2, rowH - 2)); }); }); g.globalAlpha = 1;
       undoB.disabled = !hist.canUndo(); redoB.disabled = !hist.canRedo();
       rv.width = W * dpr; rv.height = 16 * dpr; rv.style.width = W + 'px'; const r = rv.getContext('2d'); r.setTransform(dpr, 0, 0, dpr, 0, 0); r.clearRect(0, 0, W, 16); r.fillStyle = 'rgba(128,128,128,.18)'; r.fillRect(0, 0, W, 16); r.font = '10px sans-serif'; r.fillStyle = 'rgba(128,128,128,.95)';
       for (let b = 0; b <= end; b += s.timesig.n) { r.fillRect(b * pxBeat, 8, 1, 8); r.fillText(String(b / s.timesig.n + 1), b * pxBeat + 3, 10); }
@@ -177,7 +192,7 @@
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
       const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; } if (!visible(sel)) { say('這一軌被隱藏了,先按 👁 顯示再編輯'); return; }
       const rc = cv.getBoundingClientRect(), x = ev.clientX - rc.left, y = ev.clientY - rc.top;
-      const beat = x / pxBeat, pitch = pitchLo + rows - 1 - Math.floor(y / 12), tick = beat * s.ppq;
+      const beat = x / pxBeat, pitch = pitchLo + rows - 1 - Math.floor(y / rowH), tick = beat * s.ppq;
       const hit = tr.notes.find((n) => n.n === pitch && tick >= n.t && tick < n.t + n.d);
       if (hit) run({ act: 'remove_notes', track: sel, fromBeat: hit.t / s.ppq, toBeat: (hit.t + hit.d) / s.ppq - 0.0001, pitchLo: pitch, pitchHi: pitch });
       else run({ act: 'add_note', track: sel, beat: Math.floor(beat / grid) * grid, beats: grid, pitch });
@@ -206,12 +221,15 @@
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; pt.dispose(); if (vp) vp._vpiano.destroy(); },
+      destroy() { destroyed = true; if (card._midiRO) card._midiRO.disconnect(); pt.dispose(); if (vp) vp._vpiano.destroy(); },
     };
-    drawSide(); draw(); return card;
+    drawSide(); draw();
+    // 全螢幕頁：容器大小改變（視窗縮放、版面重排）就重算畫布
+    if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(() => { if (!destroyed && onFaGuiPage()) draw(); }); ro.observe(canvasWrap); card._midiRO = ro; }
+    return card;
   }
   // 匯出選單的選項與檔名（純函式，node 可測）：MIDI 直接存 .mid；MP3 先渲染再存 .mp3
   const EXPORT_CHOICES = [{ id: 'midi', label: 'MIDI（.mid）' }, { id: 'mp3', label: 'MP3（.mp3）' }];
   const exportName = (title, ext) => String(title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.' + ext;
-  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName };
+  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName, fillMetrics };
 });

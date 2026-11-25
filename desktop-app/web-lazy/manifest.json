@@ -1818,8 +1818,8 @@
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 19166,
-   "md5": "db6fa23a39b2af2a1fe14225450b6358"
+   "size": 20001,
+   "md5": "8ec26f4821112fff696aebed8e0ee0ef"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -2135,7 +2135,7 @@
   }
  },
  "core": {
-  "size": 6932377,
-  "md5": "7e8840b5841708df7930835f93aa2239"
+  "size": 6933253,
+  "md5": "56ca63c79cf4ab6453609d54be3d19a7"
  }
 }

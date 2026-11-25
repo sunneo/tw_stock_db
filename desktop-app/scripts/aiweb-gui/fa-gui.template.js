@@ -55,8 +55,8 @@
       /* 撐滿（2026-11-25 量測）：焦點訊息本身、訊息卡（.ai-msg）、說明卡（.ai-markdown-body）原本只有 86.5% 寬、內容高度，
          改成整個訊息區滿寬、滿高，卡片直向排、內容區吃掉剩下的高度。 */
       'body.fa-gui-mode .fa-gui-focus{display:flex !important;flex-direction:column;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;min-height:100% !important;margin:0 !important;padding:0 !important;}' +
-      'body.fa-gui-mode .fa-gui-focus .ai-msg{flex:1 1 auto;display:flex !important;flex-direction:column;min-height:0;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;margin:0 !important;}' +
-      'body.fa-gui-mode .fa-gui-focus .ai-markdown-body{flex:1 1 auto;min-height:0;box-sizing:border-box;width:100%;max-width:none;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-msg{flex:1 1 auto;display:flex !important;flex-direction:column;min-height:0;box-sizing:border-box;width:100% !important;max-width:none !important;height:100% !important;margin:0 !important;padding:6px !important;}' +
+      'body.fa-gui-mode .fa-gui-focus .ai-markdown-body{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;width:100%;max-width:none;}' +
       /* 全螢幕頁忽略「彈出成小視窗」的狀態（同源 localStorage 記的，或 GUI 開啟時自己彈出）：彈出副本可能已被搬到 body 底下，
          所以整頁的 fwin-pop 一律收起，留下的就是滿版那一份（不會再冒出 520×520 的浮動小窗蓋住 GUI）。 */
       'body.fa-gui-mode .fwin-host.fwin-pop{display:none !important;}';

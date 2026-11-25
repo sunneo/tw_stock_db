@@ -47,6 +47,9 @@
   var isBtn = function (t) { return /^(BUTTON|INPUT|SELECT|TEXTAREA|A|LABEL)$/.test(t.tagName); };
   function load(id) { try { return id ? JSON.parse(localStorage.getItem('fwin:' + id) || 'null') : null; } catch (e) { return null; } }
   function save(id, st) { try { if (id) localStorage.setItem('fwin:' + id, JSON.stringify(st)); } catch (e) { /* 存不了就算了 */ } }
+  // 網頁版全螢幕 GUI 頁（fa-gui.js 會在 body 加 fa-gui-mode）：GUI 本身就是整個視窗，不彈出成小窗。
+  // 源頭擋住（pop() 直接不動作、⤢ 按鈕收起），不靠 CSS 把彈出副本藏起來——彈出副本會被搬到 body 底下，CSS 容易漏。
+  function inFaGuiPage() { return typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode'); }
 
   function decorate(el, opts) {
     opts = opts || {}; injectCss(); if (el._fwin) return el._fwin;
@@ -55,6 +58,7 @@
     el.classList.add('fwin-host'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
     var bMax = h('button', null, '☐'), bPop = h('button', null, '⤢'); bMax.title = '最大化（也可以雙擊標題列）'; bPop.title = '彈出成可以拖曳、改大小的視窗';
     var bFs = h('button', null, '⛶'); bFs.title = '全螢幕（Esc 離開）'; if (typeof document === 'undefined' || !document.fullscreenEnabled) bFs.style.display = 'none';
+    if (inFaGuiPage()) bPop.style.display = 'none';   // 全螢幕 GUI 頁不提供彈出（見 inFaGuiPage）
     var tools = null;
     if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
@@ -76,6 +80,7 @@
       persist(); notify();
     }
     function pop() {
+      if (inFaGuiPage()) return ctl;   // 全螢幕 GUI 頁不彈出（同上）
       if (popped) { front(); return ctl; }
       var r = el.getBoundingClientRect(), st = load(id), start = clamp(st && st.rect ? st.rect : { left: Math.max(20, r.left), top: Math.max(20, Math.min(r.top, window.innerHeight - 420)), width: Math.max(MINW, Math.min(r.width, 960)), height: Math.max(MINH, Math.min(Math.max(r.height, 520), window.innerHeight - 40)) });
       saved = el.getAttribute('style') || ''; ph = h('div', 'fwin-ph'); ph.style.height = Math.min(Math.max(r.height, 60), 220) + 'px'; ph.appendChild(h('span', null, '📌 ' + (titleText || '這個介面') + ' 已彈出成視窗')); var back = h('button', 'fwin-btn', '⤓ 收回'); back.onclick = function () { dock(); }; ph.appendChild(back);

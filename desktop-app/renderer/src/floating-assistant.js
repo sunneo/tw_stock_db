@@ -4448,6 +4448,9 @@ const holder = {};
   var isBtn = function (t) { return /^(BUTTON|INPUT|SELECT|TEXTAREA|A|LABEL)$/.test(t.tagName); };
   function load(id) { try { return id ? JSON.parse(localStorage.getItem('fwin:' + id) || 'null') : null; } catch (e) { return null; } }
   function save(id, st) { try { if (id) localStorage.setItem('fwin:' + id, JSON.stringify(st)); } catch (e) { /* 存不了就算了 */ } }
+  // 網頁版全螢幕 GUI 頁（fa-gui.js 會在 body 加 fa-gui-mode）：GUI 本身就是整個視窗，不彈出成小窗。
+  // 源頭擋住（pop() 直接不動作、⤢ 按鈕收起），不靠 CSS 把彈出副本藏起來——彈出副本會被搬到 body 底下，CSS 容易漏。
+  function inFaGuiPage() { return typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode'); }
 
   function decorate(el, opts) {
     opts = opts || {}; injectCss(); if (el._fwin) return el._fwin;
@@ -4456,6 +4459,7 @@ const holder = {};
     el.classList.add('fwin-host'); if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
     var bMax = h('button', null, '☐'), bPop = h('button', null, '⤢'); bMax.title = '最大化（也可以雙擊標題列）'; bPop.title = '彈出成可以拖曳、改大小的視窗';
     var bFs = h('button', null, '⛶'); bFs.title = '全螢幕（Esc 離開）'; if (typeof document === 'undefined' || !document.fullscreenEnabled) bFs.style.display = 'none';
+    if (inFaGuiPage()) bPop.style.display = 'none';   // 全螢幕 GUI 頁不提供彈出（見 inFaGuiPage）
     var tools = null;
     if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
@@ -4477,6 +4481,7 @@ const holder = {};
       persist(); notify();
     }
     function pop() {
+      if (inFaGuiPage()) return ctl;   // 全螢幕 GUI 頁不彈出（同上）
       if (popped) { front(); return ctl; }
       var r = el.getBoundingClientRect(), st = load(id), start = clamp(st && st.rect ? st.rect : { left: Math.max(20, r.left), top: Math.max(20, Math.min(r.top, window.innerHeight - 420)), width: Math.max(MINW, Math.min(r.width, 960)), height: Math.max(MINH, Math.min(Math.max(r.height, 520), window.innerHeight - 40)) });
       saved = el.getAttribute('style') || ''; ph = h('div', 'fwin-ph'); ph.style.height = Math.min(Math.max(r.height, 60), 220) + 'px'; ph.appendChild(h('span', null, '📌 ' + (titleText || '這個介面') + ' 已彈出成視窗')); var back = h('button', 'fwin-btn', '⤓ 收回'); back.onclick = function () { dock(); }; ph.appendChild(back);
@@ -61964,12 +61969,16 @@ const holder = {};
   const COLORS = ['#4aa3ff', '#ff7a59', '#5fd38d', '#e5c35c', '#c084fc', '#f472b6', '#22d3ee', '#a3e635'];
   const el = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; };
   const gsName = (p) => (p + 1) + '. ' + (GS_NAMES[p] || ('音色 ' + p));
+  // 網頁版全螢幕 GUI 頁（fa-gui.js 會在 body 加 fa-gui-mode）：編輯器撐滿容器，每拍寬與列高依容器大小算；
+  // 一般對話裡維持原本的每拍 40px、每列 12px。fillMetrics 是純函式（node 可測）。
+  const onFaGuiPage = () => typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode');
+  const fillMetrics = (availW, availH, rows, end) => ({ pxBeat: Math.max(4, availW / Math.max(1, end)), rowH: Math.max(10, availH / Math.max(1, rows)) });
 
   function mount(opts) {
     const M = opts.M, E = opts.E, P = opts.P, host = opts.host || {};
     let remote = null;   // 共編:{ session, doc }
     const hist = E.history(opts.song);
-    let sel = 0, grid = 0.5, pxBeat = 40, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const hidden = new Set(); let focus = false; const mute = new Set(), solo = new Set(); // hidden／focus:只是畫面(眼睛、單軌檢視),不影響聽到什麼
+    let sel = 0, grid = 0.5, pxBeat = 40, rowH = 12, pitchLo = 36, rows = 36, playing = null, destroyed = false, posTick = 0, dragging = false; const hidden = new Set(); let focus = false; const mute = new Set(), solo = new Set(); // hidden／focus:只是畫面(眼睛、單軌檢視),不影響聽到什麼
     const visible = (i) => (focus ? i === sel : !hidden.has(i));
     const alphaOf = (i) => (visible(i) ? (i === sel ? 1 : 0.35) : (focus ? 0.1 : 0)); // 靜音／獨奏只是試聽狀態(不進曲子、不匯出 MIDI);音量與左右平衡才寫進曲子
     const card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:720px;font-size:13px;'); card.className = 'fa-midi-edit';
@@ -62045,16 +62054,27 @@ const holder = {};
       const on = vp.style.display === 'none'; vp.style.display = on ? '' : 'none'; vp._vpiano.setActive(on); pianoB.style.background = on ? '#4aa3ff' : ''; pianoB.style.color = on ? '#fff' : ''; recB.style.display = on ? '' : 'none'; rec = on; recStart.clear(); paintRec(); if (on) say('虛擬鋼琴彈的音會寫進選取的音軌「' + ((hist.song.tracks[sel] || {}).name || '(沒有音軌)') + '」;只想試彈不寫入,按「⏺ 錄入中」關掉。');
       if (on) getVoice();
     };
+    // 全螢幕頁：卡片、中間列、畫布外框用 flex 撐滿容器；外框量到大小才依它算每拍寬與列高（外框 1px×2、刻度尺 16px）
+    function fillLayout(end) {
+      // 卡片是訊息卡說明文字之後的一個區塊：父層（fa-gui 的說明卡）是直向 flex，卡片吃掉剩下的高度（不用 height:100%，免得超出父層）
+      card.style.maxWidth = 'none'; card.style.width = '100%'; card.style.flex = '1 1 auto'; card.style.minHeight = '0'; card.style.boxSizing = 'border-box'; card.style.display = 'flex'; card.style.flexDirection = 'column';
+      mid.style.flex = '1 1 auto'; mid.style.minHeight = '0';
+      canvasWrap.style.flex = '1 1 auto'; canvasWrap.style.maxHeight = 'none'; canvasWrap.style.minHeight = '0'; canvasWrap.style.minWidth = '0';
+      const aw = canvasWrap.clientWidth - 2, ah = canvasWrap.clientHeight - 2 - 16;
+      if (aw > 0 && ah > 0) { const m = fillMetrics(aw, ah, rows, end); pxBeat = m.pxBeat; rowH = m.rowH; }
+    }
     function draw() {
       const s = hist.song, dpr = window.devicePixelRatio || 1;
       // 單軌檢視:音高範圍貼合看得到的軌(上下各留 2 格),不用在 36 格裡找
       if (focus) { let lo = 127, hi = 0; s.tracks.forEach((tr, i) => { if (visible(i)) tr.notes.forEach((n) => { if (n.n < lo) lo = n.n; if (n.n > hi) hi = n.n; }); }); if (hi >= lo) { rows = Math.max(14, hi - lo + 5); pitchLo = Math.max(0, Math.min(127 - rows + 1, lo - 2)); } } else { rows = 36; pitchLo = 36; }
-      const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4), W = end * pxBeat, H = rows * 12;
+      const end = Math.max(16, Math.ceil(M.endTick(s) / s.ppq) + 4);
+      if (onFaGuiPage()) fillLayout(end);   // 全螢幕頁：撐滿容器（容器還沒排版時維持預設）
+      const W = end * pxBeat, H = rows * rowH;
       inner.style.width = W + 'px'; cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px';
       const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-      for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * 12, W, 12); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * 12 + 11, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * 12 + 9); } }
+      for (let r = 0; r < rows; r++) { const p = pitchLo + rows - 1 - r; if ([1, 3, 6, 8, 10].indexOf(p % 12) >= 0) { g.fillStyle = 'rgba(128,128,128,.12)'; g.fillRect(0, r * rowH, W, rowH); } if (p % 12 === 0) { g.fillStyle = 'rgba(128,128,128,.35)'; g.fillRect(0, r * rowH + rowH - 1, W, 1); g.fillStyle = 'rgba(128,128,128,.8)'; g.font = '9px sans-serif'; g.fillText(M.noteName(p), 2, r * rowH + Math.min(9, rowH - 2)); } }
       for (let b = 0; b <= end; b++) { g.fillStyle = b % s.timesig.n === 0 ? 'rgba(128,128,128,.5)' : 'rgba(128,128,128,.2)'; g.fillRect(b * pxBeat, 0, 1, H); }
-      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = alphaOf(i); if (!g.globalAlpha) return; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * 12 + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), 10); }); }); g.globalAlpha = 1;
+      s.tracks.forEach((tr, i) => { g.fillStyle = COLORS[i % COLORS.length]; g.globalAlpha = alphaOf(i); if (!g.globalAlpha) return; tr.notes.forEach((n) => { const r = pitchLo + rows - 1 - n.n; if (r < 0 || r >= rows) return; g.fillRect(n.t / s.ppq * pxBeat, r * rowH + 1, Math.max(3, n.d / s.ppq * pxBeat - 1), Math.max(2, rowH - 2)); }); }); g.globalAlpha = 1;
       undoB.disabled = !hist.canUndo(); redoB.disabled = !hist.canRedo();
       rv.width = W * dpr; rv.height = 16 * dpr; rv.style.width = W + 'px'; const r = rv.getContext('2d'); r.setTransform(dpr, 0, 0, dpr, 0, 0); r.clearRect(0, 0, W, 16); r.fillStyle = 'rgba(128,128,128,.18)'; r.fillRect(0, 0, W, 16); r.font = '10px sans-serif'; r.fillStyle = 'rgba(128,128,128,.95)';
       for (let b = 0; b <= end; b += s.timesig.n) { r.fillRect(b * pxBeat, 8, 1, 8); r.fillText(String(b / s.timesig.n + 1), b * pxBeat + 3, 10); }
@@ -62132,7 +62152,7 @@ const holder = {};
     cv.onclick = (ev) => { // 點空白處新增、點音符刪除
       const s = hist.song, tr = s.tracks[sel]; if (!tr) { say('先新增一軌'); return; } if (!visible(sel)) { say('這一軌被隱藏了,先按 👁 顯示再編輯'); return; }
       const rc = cv.getBoundingClientRect(), x = ev.clientX - rc.left, y = ev.clientY - rc.top;
-      const beat = x / pxBeat, pitch = pitchLo + rows - 1 - Math.floor(y / 12), tick = beat * s.ppq;
+      const beat = x / pxBeat, pitch = pitchLo + rows - 1 - Math.floor(y / rowH), tick = beat * s.ppq;
       const hit = tr.notes.find((n) => n.n === pitch && tick >= n.t && tick < n.t + n.d);
       if (hit) run({ act: 'remove_notes', track: sel, fromBeat: hit.t / s.ppq, toBeat: (hit.t + hit.d) / s.ppq - 0.0001, pitchLo: pitch, pitchHi: pitch });
       else run({ act: 'add_note', track: sel, beat: Math.floor(beat / grid) * grid, beats: grid, pitch });
@@ -62161,14 +62181,17 @@ const holder = {};
       getSong: () => hist.song, attach,
       setSong(song) { hist.push(song); drawSide(); draw(); },
       applyRemote(actions) { (actions || []).forEach((a) => run(a, true)); },
-      destroy() { destroyed = true; pt.dispose(); if (vp) vp._vpiano.destroy(); },
+      destroy() { destroyed = true; if (card._midiRO) card._midiRO.disconnect(); pt.dispose(); if (vp) vp._vpiano.destroy(); },
     };
-    drawSide(); draw(); return card;
+    drawSide(); draw();
+    // 全螢幕頁：容器大小改變（視窗縮放、版面重排）就重算畫布
+    if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(() => { if (!destroyed && onFaGuiPage()) draw(); }); ro.observe(canvasWrap); card._midiRO = ro; }
+    return card;
   }
   // 匯出選單的選項與檔名（純函式，node 可測）：MIDI 直接存 .mid；MP3 先渲染再存 .mp3
   const EXPORT_CHOICES = [{ id: 'midi', label: 'MIDI（.mid）' }, { id: 'mp3', label: 'MP3（.mp3）' }];
   const exportName = (title, ext) => String(title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.' + ext;
-  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName };
+  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName, fillMetrics };
 });
 
 }).call(null, undefined, holder);
@@ -165218,6 +165241,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 觸發的_renderMessageHistory()整個重繪會讓終端機畫面/session狀態
         // 憑空歸零，使用者剛打的指令/正在跑的vim都會不見。
         if (msg._displayTerminal) {
+            // 網頁版全螢幕 GUI 頁：對話紀錄跟網頁版共用，每開一次 /run-terminal 就多一則終端機訊息；舊的（後面還有新的終端機訊息）
+            // 不再掛載 xterm 與 shell 工作階段（它們被焦點規則藏起來，卻各自佔一個 xterm 與 WASM 工作階段）。只留最新的一則。
+            const fillGuiPage = typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode');
+            const msgIdx = fillGuiPage && Array.isArray(this.messages) ? this.messages.indexOf(msg) : -1;
+            if (msgIdx >= 0 && this.messages.slice(msgIdx + 1).some((m) => m && m._displayTerminal)) {
+                const stale = document.createElement('div');
+                stale.style.cssText = 'font-size:12px; opacity:.6; margin-bottom:8px;';
+                stale.textContent = '（較早的終端機，全螢幕頁只保留最新一個）';
+                container.appendChild(stale);
+                return;
+            }
             if (this._liveWidgetCache.has(msg)) {
                 const cachedWrap = this._liveWidgetCache.get(msg);
                 if (cachedWrap._termWin && cachedWrap._termWin.windowed) { container.appendChild(cachedWrap._termWin.makePlaceholder()); return; }
@@ -165229,8 +165263,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // tw_stock_db客製: 2026-09-18使用者實測回報「外面保留的框太小」
             // ——640x360加大到900x480（max-width:95%維持不變，小螢幕還是會
             // 自動夾住）。
+            // 網頁版全螢幕 GUI 頁（body.fa-gui-mode）：外框撐滿視窗（flex 直向，xterm 的外框吃掉剩下的高度）；
+            // 容器大小改變時 fitTermRows 的 ResizeObserver 會重算行列數。一般對話裡維持原本 900×480。
+            const fillGui = typeof document !== 'undefined' && !!document.body && document.body.classList.contains('fa-gui-mode');
             const wrap = document.createElement('div');
-            wrap.style.cssText = 'margin-bottom:12px; max-width:95%; width:900px;';
+            wrap.style.cssText = fillGui ? 'margin-bottom:0; max-width:none; width:100%; height:100%; display:flex; flex-direction:column; box-sizing:border-box;' : 'margin-bottom:12px; max-width:95%; width:900px;';
             const terminalName = msg._displayTerminal.name ? this._escapeHtml(msg._displayTerminal.name) : '';
             wrap.innerHTML = `
                 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
@@ -165241,7 +165278,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         <div class="ai-terminal-win-slot" style="display:flex; gap:4px;"></div>
                     </div>
                 </div>
-                <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; height:480px; border:1px solid ${palette.windowBorder};"></div>
+                <div class="ai-terminal-embed" style="background:#1e1e1e; border-radius:8px; padding:8px; ${fillGui ? 'flex:1 1 auto; min-height:0; box-sizing:border-box;' : 'height:480px;'} border:1px solid ${palette.windowBorder};"></div>
             `;
             container.appendChild(wrap);
             this._liveWidgetCache.set(msg, wrap);
