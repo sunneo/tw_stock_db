@@ -59985,6 +59985,39 @@ const holder = {};
 return holder.FaMidi;
 })();
 /* MUSICMIDI-END */
+/* MUSICOPEN-BEGIN */
+const FaMidiOpen = (function () {
+const holder = {};
+(function (module, self) {
+// MIDI 編輯器的「📂 開啟 .mid」：一個 .mid 檔 → 一首曲子（FaMidi 的 song），給 host 開成新的編輯器卡片。
+// 純函式（依賴 midi_core.js 的 FaMidi），node 與瀏覽器都能跑。測試：scripts/edit-tests/midi_open.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./midi_core.js'));
+  else root.FaMidiOpen = factory(root.FaMidi || (typeof FaMidi !== 'undefined' ? FaMidi : undefined));
+})(typeof self !== 'undefined' ? self : this, function (M) {
+  'use strict';
+
+  var MIDI_EXT = /\.midi?$/i, MAX_BYTES = 2000000;
+  var TYPES = [{ description: 'MIDI 檔', accept: { 'audio/midi': ['.mid', '.midi'] } }];
+
+  // bytes（Uint8Array 或 ArrayBuffer）＋檔名 → { song, title }。不是 MIDI 或太大就丟錯。
+  function fromFile(bytes, name) {
+    if (!MIDI_EXT.test(String(name || ''))) { throw new Error('這不是 .mid 檔'); }
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (u.length > MAX_BYTES) { throw new Error('MIDI 檔太大（超過 ' + Math.round(MAX_BYTES / 1000) + ' KB）'); }
+    var song;
+    try { song = M.parse(u); } catch (e) { throw new Error('讀不了這個 MIDI 檔：' + String((e && e.message) || e)); }
+    var title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || song.title || 'MIDI';
+    return { song: song, title: title };
+  }
+
+  return { fromFile: fromFile, TYPES: TYPES, MAX_BYTES: MAX_BYTES, MIDI_EXT: MIDI_EXT };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMidiOpen;
+})();
+/* MUSICOPEN-END */
 /* MUSICPLAY-BEGIN */
 const FaMidiPlay = (function () {
 const holder = {};
@@ -62204,10 +62237,20 @@ const holder = {};
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
     const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ 匯出');
     dlB.title = '匯出成 MIDI（.mid）或 MP3（.mp3）';
+    // 📂 開啟 .mid：開成新的編輯器卡片（不動目前這首）。沒有 host.openMidi（例如沒接開檔）就不顯示
+    const openB = el('button', BTN, '📂 開啟');
+    openB.title = '開一個 .mid 檔成新的 MIDI 編輯器（不影響目前這首）';
+    openB.style.display = host.openMidi ? '' : 'none';
+    openB.onclick = () => {
+      // 選檔必須在點擊的同一個手勢裡叫出，所以不能先 await
+      const pick = (typeof FaEditImport !== 'undefined' && FaEditImport) ? FaEditImport.pick : null;
+      if (!pick || !host.openMidi) { say('⚠️ 這裡不能開檔'); return; }
+      pick(FaMidiOpen.TYPES, { maxBytes: FaMidiOpen.MAX_BYTES }).then((f) => { if (f) { return host.openMidi(f.bytes, f.name); } }).catch((e) => say('⚠️ ' + String((e && e.message) || e)));
+    };
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
-    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
+    pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(openB, undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
     // 匯出小選單:按「⬇ 匯出」展開,選 MIDI 或 MP3;同一列再按一次或按 ✕ 收起
     const exBar = el('div', 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;');
     exBar.appendChild(el('span', 'opacity:.8', '匯出成:'));
@@ -128822,6 +128865,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return id;
     }
     // MIDI 編輯器(階段 2):卡片 fa-midi-edit;曲子存在 _midiSongs,編輯後即時更新;讀不懂的話交給模型(只能回封閉的動作清單)
+    // 📂 開啟 .mid（MIDI 編輯器卡片的按鈕）：解析後開成新的編輯器卡片，不動目前這首
+    _midiOpenFile(bytes, name) {
+        const f = FaMidiOpen.fromFile(bytes, name);
+        return this._midiPushEditor(f.song, f.title);
+    }
     _midiPushEditor(song, title, lead) {
         const id = this._midiStoreSong(song); const ref = { id, title: title || song.title || 'MIDI' };
         try { const bytes = FaMidi.write(song); if (bytes.length <= 90000) ref.b64 = this._midiB64(bytes); } catch (_) { /* */ }
@@ -128887,7 +128935,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (!song && ref.b64) { try { const bin = atob(ref.b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); this._midiStoreSong(song, ref.id); } catch (_) { /* */ } }
                 if (!song) { const w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8'; w.textContent = '⚠️ 找不到這首曲子的內容,請重新開啟編輯器。'; code.parentElement.replaceWith(w); return; }
                 const base = this._midiHost(), self = this;
-                const host = { player: base.player, voice: base.voice, download: base.download, toMp3: base.toMp3, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id) };
+                const host = { player: base.player, voice: base.voice, download: base.download, toMp3: base.toMp3, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id), openMidi: (bytes, name) => self._midiOpenFile(bytes, name) };
                 el = FaMidiEditUI.mount({ song, title: ref.title, host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch }); this._midiEditCards.set(ref.id, el);
                 if (this._midiEditCards.size > 10) { const k = this._midiEditCards.keys().next().value; try { this._midiEditCards.get(k)._midiEdit.destroy(); } catch (_) { /* */ } this._midiEditCards.delete(k); }
             }
