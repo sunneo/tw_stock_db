@@ -53342,6 +53342,7 @@ const holder = {};
     if (IMP) {
       var OPEN = IMP.openTypes || IMP.types;   // 開檔可選的格式（另存、綁定仍用 IMP.types）
       var bOpenF = h('button', null, '📂 開啟檔案');
+      bOpenF.setAttribute('data-fa-open-file', '');   // 網頁版 /gui 的起手式面板用來找到這顆按鈕（見 fa-gui.template.js）
       bOpenF.title = '把本機檔案讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）。' + IMPORT.hint(OPEN) + '；也可以直接把檔案拖進來';
       // 讀進來之後的內容：原本綁定的檔案就解除綁定，否則之後按 Ctrl+S 會把新內容寫進舊檔
       async function openPlain(f) {
@@ -64653,6 +64654,20 @@ const FaEditHost = (function () {
                 else { const st = starters.filter((s) => s.id === a.toLowerCase())[0]; const res = await r._edOpen(kind, st ? { starter: st.id } : { starter: 'blank', request: a }); if (res && res.ok === false) r._pushAssistantMessage('⚠️ ' + (res.error || T('開不起來', 'could not open it')), null); }
             } catch (e) { r._pushAssistantMessage('⚠️ ' + T('開不起來：', 'Could not open it: ') + String((e && e.message) || e), null); }
             try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
+        },
+        // 網頁版 /gui 的起手式面板用：回傳這個斜線指令的編輯器資料（名稱、說明、起手式清單、空白起手式 id）。沒有這個編輯器或沒有起手式就回 null（面板不出現，照舊走 handler('')）。
+        // 面板的按鈕一律呼叫原指令的 handler 並帶起手式 id，不另做一份開啟流程。
+        _edStarterList(cmd) {
+            const want = String(cmd || '').trim(), ALIAS = { '/edit-3d': '/edit-3d-model', '/edit-md': '/edit-markdown', '/edit-txt': '/edit-text' };
+            const name = ALIAS[want] || want, kind = Object.keys(KINDS).filter((k) => KINDS[k].cmd === name)[0];
+            if (!kind) return null;
+            const K = KINDS[kind];
+            let starters = []; try { starters = K.core().listStarters() || []; } catch (_) { return null; }
+            if (!starters.length) return null;
+            const ids = starters.map((s) => s.id);
+            // 📂 開檔時先開的起手式：有空白就用空白（xlsx 的空白是 sheet），沒有就用第一個
+            const openId = ids.indexOf('blank') >= 0 ? 'blank' : (ids.indexOf('sheet') >= 0 ? 'sheet' : ids[0]);
+            return { cmd: K.cmd, label: K.label(), lead: K.lead || '', openId, starters: starters.map((s) => ({ id: s.id, label: s.label, desc: s.desc })) };
         },
         // 「<指令>-blank」：直接開這個編輯器的空白起手式（blank）。實作是呼叫原指令的 handler 並帶 blank，同一條路、不另寫一份；原指令不帶參數仍是說明與起手式清單。
         // 名稱是字面量（網頁版產生器 gen-aiweb-pages.js 才查得到）；原指令在別的模組註冊，所以到呼叫時才去查（lazy）。沒有 blank 起手式的（MIDI、遊戲、簡報、影片）不做。

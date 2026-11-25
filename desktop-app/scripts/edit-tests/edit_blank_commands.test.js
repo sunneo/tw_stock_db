@@ -91,6 +91,37 @@ test('原始碼沒有其他模組另外登錄同名的 -blank（只在 edit_host
   assert.deepEqual(hits, [path.join('renderer', 'src', 'edit', 'edit_host.js')]);
 });
 
+// ---- 網頁版 /gui 起手式面板（無參數的編輯器頁不推說明文字，改成置中的起手式按鈕）----
+const TPL = fs.readFileSync(path.join(ROOT, 'scripts', 'aiweb-gui', 'fa-gui.template.js'), 'utf8');
+const SHELL = fs.readFileSync(path.join(ROOT, 'renderer', 'src', 'edit', 'edit_shell.js'), 'utf8');
+
+test('面板：edit_host 提供 _edStarterList(cmd)，沒有起手式就回 null（面板不出現）', () => {
+  assert.match(hostSrc, /_edStarterList\(cmd\) \{/);
+  assert.match(hostSrc, /if \(!starters\.length\) return null;/);
+});
+
+test('面板：只有有起手式的編輯器才走面板；-blank 與沒有起手式的照舊 handler("")', () => {
+  assert.match(TPL, /!\/-blank\$\/\.test\(CMD\) && typeof fa\._edStarterList === 'function' \? fa\._edStarterList\(CMD\) : null/);
+  assert.match(TPL, /if \(sl\) \{ showStarterPanel\(fa, entry, sl\); setStatus\('就緒'\); return; \}/);
+  assert.match(TPL, /entry\.handler\('', fa\)/);
+});
+
+test('面板：起手式按鈕呼叫原指令的 handler 並帶起手式 id（不另做一份開啟流程）', () => {
+  assert.match(TPL, /function runEntry\(id\) \{\s*return Promise\.resolve\(entry\.handler\(id, fa\)\)/);
+  assert.match(TPL, /b\.addEventListener\('click', function \(\) \{ panel\.remove\(\); setStatus\('開啟 ' \+ CMD \+ ' …'\); runEntry\(s\.id\); \}\);/);
+});
+
+test('面板：沒有文字輸入框（只有按鈕與拖放）', () => {
+  const panelSrc = TPL.slice(TPL.indexOf('function showStarterPanel'), TPL.indexOf('function waitOpenButton'));
+  assert.ok(!/createElement\('input'\)|createElement\('textarea'\)/.test(panelSrc), '面板不該有文字輸入框');
+});
+
+test('面板的 📂：用 data-fa-open-file 找編輯器的開檔按鈕，拖進來的檔案用 drop 事件丟過去', () => {
+  assert.match(SHELL, /bOpenF\.setAttribute\('data-fa-open-file', ''\);/);
+  assert.match(TPL, /querySelectorAll\('#app \[data-fa-open-file\]'\)/);
+  assert.match(TPL, /new DragEvent\('drop', \{ bubbles: true, cancelable: true, dataTransfer: dt \}\)/);
+});
+
 let ok = 0; const bad = [];
 for (const [name, fn] of tests) {
   try { fn(); ok++; } catch (e) { bad.push(name + '\n    ' + String((e && e.message) || e).split('\n').slice(0, 4).join('\n    ')); }

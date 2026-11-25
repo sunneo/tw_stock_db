@@ -317,6 +317,7 @@
     if (IMP) {
       var OPEN = IMP.openTypes || IMP.types;   // 開檔可選的格式（另存、綁定仍用 IMP.types）
       var bOpenF = h('button', null, '📂 開啟檔案');
+      bOpenF.setAttribute('data-fa-open-file', '');   // 網頁版 /gui 的起手式面板用來找到這顆按鈕（見 fa-gui.template.js）
       bOpenF.title = '把本機檔案讀進來（取代目前的內容，可復原；沒改過再匯出就是原檔）。' + IMPORT.hint(OPEN) + '；也可以直接把檔案拖進來';
       // 讀進來之後的內容：原本綁定的檔案就解除綁定，否則之後按 Ctrl+S 會把新內容寫進舊檔
       async function openPlain(f) {
