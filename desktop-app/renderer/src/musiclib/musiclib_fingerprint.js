@@ -191,14 +191,119 @@
     return { cells: cells, bytes: out };
   }
 
-  // 主入口：samples 為單聲道（或多聲道陣列），srcRate 為取樣率。回傳 { v, sr, hop, frames, dur, hashes, times, cells, chroma }
+  // ───── 主旋律線（階段二，與地標、色度共用同一份頻譜，不另外解碼）─────
+  // 每格算「諧波加總顯著度」：音高為 MIDI 33（55 Hz）～93（1760 Hz) 每半音一格，第 h 個諧波取最近的頻譜格（前後各看一格取最大）。
+  // 每格再除以該格最強的音高、乘上「該格能量相對全曲最響」的閘門（安靜的格子不會把雜音當旋律）。
+  // Viterbi：每格的狀態是「一個音高」或「靜音」；發射分數＝顯著度－MEL_THR，靜音＝0；換狀態一律扣 MEL_CHANGE（音高穩定、不亂跳）。
+  // 取出一條線後把它的音高（±1 半音）的顯著度遮掉，再取下一條（第二聲部、低音），最多 MEL_LINES 條。
+  // 已知限制：遮掉只到 ±1 半音，八度上下的重複音仍可能被第二條線拿去；頻譜格約 5.4 Hz，低音（55 Hz 附近）解析度不足。
+  var MEL_MIDI0 = 33, MEL_NP = 61, MEL_HARM = [1, 0.7, 0.5, 0.4, 0.3, 0.25];
+  var MEL_THR = 0.35, MEL_CHANGE = 1.0, MEL_MIN_RUN = 4, MEL_LINES = 3, MEL_MIN_NOTES = 8, MEL_MIN_VOICED = 0.08;
+  // 低音域的懲罰：旋律通常在上面，低音（伴奏、貝斯）會把旋律線拖出一串八度下的音；低於 MEL_LOW_MIDI 的音每低一個八度扣 MEL_LOW_PEN
+  var MEL_LOW_MIDI = 52, MEL_LOW_PEN = 0.3;
+  var MEL_REGP = (function () { var out = new Float64Array(MEL_NP); for (var p = 0; p < MEL_NP; p++) out[p] = MEL_LOW_PEN * Math.max(0, MEL_LOW_MIDI - (MEL_MIDI0 + p)) / 12; return out; })();
+  var MEL_HB = (function () {
+    var H = MEL_HARM.length, out = new Int16Array(MEL_NP * H);
+    for (var p = 0; p < MEL_NP; p++) for (var h = 0; h < H; h++) {
+      var fr = 440 * Math.pow(2, (MEL_MIDI0 + p - 69) / 12) * (h + 1);
+      var b = Math.round(fr * WIN / SR);
+      out[p * H + h] = b < MAXBIN ? b : -1;
+    }
+    return out;
+  })();
+  // 每格的顯著度（0..1）與閘門（0..1）。回傳 { sal: Float32Array(F×MEL_NP), gate: Float32Array(F) }
+  function salienceFrames(S, F) {
+    var maxDb = -Infinity, i, f, p, h, k, H = MEL_HARM.length;
+    for (i = 0; i < S.length; i++) if (S[i] > maxDb) maxDb = S[i];
+    var sal = new Float32Array(F * MEL_NP), gate = new Float32Array(F), amp = new Float64Array(MAXBIN);
+    for (f = 0; f < F; f++) {
+      var o = f * MAXBIN, fmax = -Infinity;
+      for (k = 0; k < MAXBIN; k++) { var v = S[o + k]; if (v > fmax) fmax = v; amp[k] = Math.pow(10, v / 20); }
+      var g = (fmax - (maxDb - DB_RANGE)) / DB_RANGE;
+      if (g <= 0) continue;
+      g = Math.min(1, g); gate[f] = g;
+      var mx = 0, row = f * MEL_NP;
+      for (p = 0; p < MEL_NP; p++) {
+        var s = 0;
+        for (h = 0; h < H; h++) {
+          var b = MEL_HB[p * H + h];
+          if (b < 0) break;
+          var m = amp[b];
+          if (b > 0 && amp[b - 1] > m) m = amp[b - 1];
+          if (b + 1 < MAXBIN && amp[b + 1] > m) m = amp[b + 1];
+          s += MEL_HARM[h] * m;
+        }
+        sal[row + p] = s; if (s > mx) mx = s;
+      }
+      if (mx > 0) for (p = 0; p < MEL_NP; p++) sal[row + p] = sal[row + p] / mx * g;
+    }
+    return { sal: sal, gate: gate };
+  }
+  // Viterbi：回傳每格的狀態（0..MEL_NP-1 為音高，MEL_NP 為靜音）
+  function viterbiPitch(sal, F) {
+    var NS = MEL_NP + 1, V = new Float64Array(NS), NV = new Float64Array(NS), bp = new Uint8Array(F * NS), st = new Uint8Array(F);
+    var f, q, e0, mArg, mBest, stay, go;
+    for (q = 0; q < NS; q++) V[q] = q === MEL_NP ? 0 : sal[q] - MEL_THR - MEL_REGP[q];
+    for (f = 1; f < F; f++) {
+      mBest = -Infinity; mArg = MEL_NP;
+      for (q = 0; q < NS; q++) if (V[q] > mBest) { mBest = V[q]; mArg = q; }
+      var row = f * MEL_NP;
+      for (q = 0; q < NS; q++) {
+        e0 = q === MEL_NP ? 0 : sal[row + q] - MEL_THR - MEL_REGP[q];
+        stay = V[q]; go = mBest - MEL_CHANGE;
+        if (stay >= go) { NV[q] = stay + e0; bp[f * NS + q] = q; } else { NV[q] = go + e0; bp[f * NS + q] = mArg; }
+      }
+      var tmp = V; V = NV; NV = tmp;
+    }
+    var cur = 0, bv = -Infinity;
+    for (q = 0; q < NS; q++) if (V[q] > bv) { bv = V[q]; cur = q; }
+    for (f = F - 1; f >= 0; f--) { st[f] = cur; if (f > 0) cur = bp[f * NS + cur]; }
+    return st;
+  }
+  // 狀態序列 → 音符（同音高連續格、長度 ≥ MEL_MIN_RUN 格）
+  function runsToNotes(st, F) {
+    var out = [], f = 0;
+    while (f < F) {
+      var p = st[f], g = f;
+      while (g < F && st[g] === p) g++;
+      if (p !== MEL_NP && g - f >= MEL_MIN_RUN) out.push({ t: round3(f * HOP / SR), d: round3((g - f) * HOP / SR), n: MEL_MIDI0 + p });
+      f = g;
+    }
+    return out;
+  }
+  // 取出最多 MEL_LINES 條主旋律線（每條是音符陣列 [{t, d, n}]，秒與 MIDI 音高）
+  function melodyLines(S, F) {
+    var sg = salienceFrames(S, F), sal = sg.sal, lines = [], L, k;
+    for (L = 0; L < MEL_LINES; L++) {
+      var st = viterbiPitch(sal, F), notes = runsToNotes(st, F);
+      var voiced = 0; for (k = 0; k < F; k++) if (st[k] !== MEL_NP) voiced++;
+      if (notes.length < MEL_MIN_NOTES || voiced < MEL_MIN_VOICED * F) break;
+      lines.push(notes);
+      // 遮掉這條線用掉的能量（每格的這個音高 ±1 半音）
+      for (k = 0; k < F; k++) {
+        if (st[k] === MEL_NP) continue;
+        for (var q = Math.max(0, st[k] - 1); q <= Math.min(MEL_NP - 1, st[k] + 1); q++) sal[k * MEL_NP + q] = 0;
+      }
+    }
+    return lines;
+  }
+
+  // 主入口：samples 為單聲道（或多聲道陣列），srcRate 為取樣率。
+  // 回傳 { v, sr, hop, frames, dur, hashes, times, cells, chroma, lines }；lines 是階段二的主旋律線（最多 3 條，每條 [{t, d, n}]）
   function fingerprint(samples, srcRate) {
     var x = resampleTo11025(toMono(samples), srcRate);
     var sp = spectrogram(x);
     var pk = findPeaks(sp.S, sp.F);
     var lm = landmarks(pk);
     var ch = chroma(sp.S, sp.F);
-    return { v: FP_VERSION, sr: SR, hop: HOP, frames: sp.F, dur: round3(x.length / SR), hashes: lm.hashes, times: lm.times, cells: ch.cells, chroma: ch.bytes };
+    var lines = melodyLines(sp.S, sp.F);
+    return { v: FP_VERSION, sr: SR, hop: HOP, frames: sp.F, dur: round3(x.length / SR), hashes: lm.hashes, times: lm.times, cells: ch.cells, chroma: ch.bytes, lines: lines };
+  }
+  // 只要色度（哼歌查詢用，不做地標與旋律）：回傳 { cells, chroma }，格式與 fingerprint 的色度相同
+  function chromaOf(samples, srcRate) {
+    var x = resampleTo11025(toMono(samples), srcRate);
+    var sp = spectrogram(x), ch = chroma(sp.S, sp.F);
+    return { cells: ch.cells, chroma: ch.bytes, dur: round3(x.length / SR) };
   }
 
   // ───── 存檔格式（base64，小端序）─────
@@ -333,10 +438,115 @@
     return result;
   }
 
+  // ───── 和聲（色度）比對：哼歌用 ─────
+  // 色度每格約 0.23 秒；比對時兩格併成一格（約 0.46 秒），每格轉成單位向量（全零＝沒有和聲，不算分）。
+  var CH_MERGE = 2, CH_SEC = CH_MERGE * CH_CELL * HOP / SR;      // 併過後每格的秒數
+  function chromaVectors(bytes, cells) {
+    var m = Math.ceil(cells / CH_MERGE), out = new Float32Array(m * 12), acc = new Float64Array(12);
+    for (var c = 0; c < m; c++) {
+      acc.fill(0);
+      for (var g = c * CH_MERGE; g < Math.min(cells, (c + 1) * CH_MERGE); g++) for (var p = 0; p < 12; p++) acc[p] += bytes[g * 12 + p];
+      var nrm = 0; for (p = 0; p < 12; p++) nrm += acc[p] * acc[p];
+      nrm = Math.sqrt(nrm);
+      if (nrm > 0) for (p = 0; p < 12; p++) out[c * 12 + p] = acc[p] / nrm;
+    }
+    return { m: m, v: out };
+  }
+  // 查詢的色度向量 12 個調都試：第 p 維變成原本第 (p + k) 維（等於把哼歌的音高往下移 k 個半音去對歌；哼得比原曲高 k 個半音，k 就是那個數）
+  function rotateVectors(v, m, k) {
+    if (!k) return v;
+    var out = new Float32Array(m * 12);
+    for (var i = 0; i < m; i++) for (var p = 0; p < 12; p++) out[i * 12 + p] = v[i * 12 + ((p + k) % 12)];
+    return out;
+  }
+  // 子序列 DTW：查詢（mq 格）可以從歌的任何格開始、任何格結束（自由起點、自由終點），中間允許快慢伸縮（水平或垂直移動）。
+  // 格與格的相似度＝內積（兩個單位向量）；路徑上的平均相似度是分數（1 最像）。回傳 { score, start, end }（格號，end 含）
+  function dtwSub(q, mq, s, ns) {
+    var prev = new Float64Array(ns), cur = new Float64Array(ns), ps = new Int32Array(ns), cs = new Int32Array(ns), i, j, p;
+    var bestEnd = Infinity, bestJ = 0;
+    for (i = 0; i < mq; i++) {
+      for (j = 0; j < ns; j++) {
+        var dot = 0, qo = i * 12, so = j * 12;
+        for (p = 0; p < 12; p++) dot += q[qo + p] * s[so + p];
+        var d = 1 - dot;
+        if (i === 0) { cur[j] = d; cs[j] = j; continue; }
+        var best = prev[j], bs = ps[j];
+        if (j > 0) {
+          if (prev[j - 1] < best) { best = prev[j - 1]; bs = ps[j - 1]; }
+          if (cur[j - 1] < best) { best = cur[j - 1]; bs = cs[j - 1]; }
+        }
+        cur[j] = best + d; cs[j] = bs;
+      }
+      var tmp = prev; prev = cur; cur = tmp; var ti = ps; ps = cs; cs = ti;
+    }
+    for (j = 0; j < ns; j++) if (prev[j] < bestEnd) { bestEnd = prev[j]; bestJ = j; }
+    return { score: 1 - bestEnd / mq, start: ps[bestJ], end: bestJ };
+  }
+  // 色度比對：查詢（unpack 前的 { cells, chroma }）對每首歌（entries：[{ key, name, path, cells, chroma }]）做 12 個調的子序列 DTW，取最高分的調與段落。
+  // 回傳依分數排序的前 limit 首：{ key, name, path, score, shift（哼歌要降幾個半音才對上歌）, startSec, endSec（歌內秒數） }
+  // 查詢格數不足（少於 MIN_CH_CELLS 格有和聲）回傳空陣列，不硬比。
+  var MIN_CH_CELLS = 4;
+  // 和聲有把握：第一名的分數 ≥ CHROMA_OK，且比第二名高 CHROMA_MARGIN 以上（校準：合成資料上真命中 0.78–0.96、第二名 0.52–0.59；
+  // 沒收錄的旋律：第一名 0.47–0.59 而且與第二名只差不到 0.05，所以只看分數不夠，要看邊際）
+  var CHROMA_OK = 0.7, CHROMA_MARGIN = 0.12;
+  function chromaSearch(query, entries, opts) {
+    opts = opts || {};
+    var limit = opts.limit || 10, qv = chromaVectors(query.chroma, query.cells), mq = qv.m;
+    var nz = 0, i, p0;
+    for (i = 0; i < mq; i++) { for (p0 = 0; p0 < 12; p0++) if (qv.v[i * 12 + p0] !== 0) { nz++; break; } }
+    if (nz < MIN_CH_CELLS) return [];
+    var rot = []; for (var k = 0; k < 12; k++) rot.push(rotateVectors(qv.v, mq, k));
+    var out = [];
+    (entries || []).forEach(function (e) {
+      if (!e || !e.chroma || !e.cells) return;
+      var sv = chromaVectors(e.chroma, e.cells);
+      if (sv.m < 1) return;
+      var best = null;
+      for (var kk = 0; kk < 12; kk++) {
+        var r = dtwSub(rot[kk], mq, sv.v, sv.m);
+        if (!best || r.score > best.score) best = { score: r.score, shift: kk, start: r.start, end: r.end };
+      }
+      out.push({ key: e.key, name: e.name, path: e.path, score: round3(best.score), shift: best.shift, startSec: round3(best.start * CH_SEC), endSec: round3((best.end + 1) * CH_SEC) });
+    });
+    out.sort(function (a, b) { return b.score - a.score || String(a.name).localeCompare(String(b.name)); });
+    return out.slice(0, limit);
+  }
+  // 名次融合（Reciprocal Rank Fusion）：每一層取前幾名，依名次加分 w / (K + 名次)；同一首歌在哪幾層出現、每層的名次與分數都保留，供畫面標示命中層
+  // layers：{ 層名: [{ key, name, score, startSec, endSec, ... }] }（已依分數排序）；weights：{ 層名: 權重 }
+  var RRF_K = 60;
+  function fuseRanks(layers, weights) {
+    var by = {}, names = Object.keys(layers || {});
+    names.forEach(function (ln) {
+      var w = weights && weights[ln] != null ? weights[ln] : 1;
+      (layers[ln] || []).forEach(function (r, idx) {
+        var e = by[r.key] || (by[r.key] = { key: r.key, name: r.name, path: r.path, fused: 0, layers: {} });
+        e.fused += w / (RRF_K + idx + 1);
+        e.layers[ln] = { rank: idx + 1, score: r.score, startSec: r.startSec, endSec: r.endSec, label: r.label || '', noteFrom: r.noteFrom, noteTo: r.noteTo, shift: r.shift };
+      });
+    });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return b.fused - a.fused || String(a.name).localeCompare(String(b.name)); });
+  }
+
+  // 哼歌的判定（純函式）：融合名次＋有沒有把握。melody／chroma 都已依分數排序（每筆有 key、score、名稱等）。
+  // 有把握＝旋律第一名分數 ≥ opts.melodyConfident，或和聲第一名 ≥ CHROMA_OK 且比第二名高 CHROMA_MARGIN 以上；
+  // 而且融合後的第一名就是那一首。沒把握時 confident 為 false，畫面不假裝找到。
+  function humVerdict(melody, chroma, opts) {
+    var mc = opts && opts.melodyConfident != null ? opts.melodyConfident : 0.5;
+    melody = melody || []; chroma = chroma || [];
+    var fused = fuseRanks({ 旋律: melody, 和聲: chroma }, { 旋律: 1, 和聲: 1 }).slice(0, 10);
+    var sureKey = null, mTop = melody[0], cTop = chroma[0], cSec = chroma[1];
+    if (mTop && mTop.score >= mc) sureKey = mTop.key;
+    else if (cTop && cTop.score >= CHROMA_OK && (!cSec || cTop.score - cSec.score >= CHROMA_MARGIN)) sureKey = cTop.key;
+    var top = fused[0] || null;
+    return { fused: fused, top: top, confident: !!(top && sureKey != null && top.key === sureKey) };
+  }
+
   return {
+    humVerdict: humVerdict,
     FP_VERSION: FP_VERSION, SR: SR, HOP: HOP, WIN: WIN,
-    fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, pack: pack, unpack: unpack,
-    buildIndex: buildIndex, search: search,
+    fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, chromaOf: chromaOf, pack: pack, unpack: unpack,
+    buildIndex: buildIndex, search: search, chromaSearch: chromaSearch, fuseRanks: fuseRanks, melodyLines: melodyLines,
+    CH_SEC: CH_SEC, MEL_LINES: MEL_LINES, CHROMA_OK: CHROMA_OK, CHROMA_MARGIN: CHROMA_MARGIN,
     // 測試與除錯用
     _spectrogram: spectrogram, _findPeaks: findPeaks, _toMono: toMono, _resample: resampleTo11025, _b64enc: b64enc, _b64dec: b64dec
   };
