@@ -107475,6 +107475,8 @@ class FloatingAssistant {
             async (argsText, run) => { await (run || this)._studioCommand(argsText); },
             ['reset']
         );
+        // /offline-training-studio 的別名：/training-studio、/訓練工作室（選單隱藏，打了照樣開）
+        { const e = this.slashCommands.get('/offline-training-studio'); if (e) ['/training-studio', '/訓練工作室'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: '（等於 /offline-training-studio）' + e.desc, _menuHidden: true }))); }
         this.register_slash_command(
             '/offline-trainer-by-ai', '<目標>＋清單｜status｜stop｜resume｜report',
             'AI 教離線訓練器（通用）：讓 AI 處理一個任務或一長串同類項目，AI 成功後必須把做法寫回離線訓練器（原始碼工具＋狀態機＋規則）；每一項先讓離線訓練器自己試。需要先打開「自動訓練」',
