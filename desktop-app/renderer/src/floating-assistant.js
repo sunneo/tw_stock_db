@@ -63538,6 +63538,65 @@ const holder = {};
 return holder.FaEdit3dPart;
 })();
 /* ED3DP-END */
+/* ED3DIMP-BEGIN */
+const FaEdit3dImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-3d-model、/edit-3d 的「📂 開啟」：一個 3D 場景檔（.yaml／.yml，就是 3D 編輯器自己的 YAML）或一個模型檔（.stl、.obj、.3mf、.fbx）→ 場景文件。
+// 模型的轉換（跑在 worker 裡）由呼叫端注入：deps.convertModel(name, bytes) → Promise<{ ok, yaml, error }>；YAML 讀取的準備由 deps.prepare() 負責（載入 js-yaml）。
+// glb、gltf 目前不支援（轉換器只認 stl、obj、3mf、fbx），會明講而不是假裝能讀。純函式：測試在 scripts/edit-tests/edit3d_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit3d_core.js'));
+  else root.FaEdit3dImport = factory(root.FaEdit3d || (typeof FaEdit3d !== 'undefined' ? FaEdit3d : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+
+  var YAML_EXT = /\.ya?ml$/i, MODEL_EXT = /\.(stl|obj|3mf|fbx)$/i, UNSUPPORTED = /\.(glb|gltf)$/i;
+  var TYPES = [{ description: '3D 場景或模型', accept: {
+    'application/x-3dscene+yaml': ['.yaml', '.yml'], 'model/stl': ['.stl'], 'model/obj': ['.obj'], 'model/3mf': ['.3mf'], 'model/fbx': ['.fbx']
+  } }];
+
+  // 檔名 → 'yaml' | 'model' | 'unsupported' | null
+  function kindOf(name) {
+    var n = String(name || '');
+    if (YAML_EXT.test(n)) { return 'yaml'; }
+    if (MODEL_EXT.test(n)) { return 'model'; }
+    if (UNSUPPORTED.test(n)) { return 'unsupported'; }
+    return null;
+  }
+
+  // bytes → 場景文件（spec）。不能讀就丟出可讀的錯誤。
+  async function fromBytes(bytes, name, deps) {
+    deps = deps || {};
+    var kind = kindOf(name), u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (kind === 'unsupported') { throw new Error('目前不支援 glb／gltf 模型（能讀的是 stl、obj、3mf、fbx，或 3D 場景 .yaml）'); }
+    if (!kind) { throw new Error('這個 3D 編輯器只能開 .yaml 場景或 stl、obj、3mf、fbx 模型'); }
+    var stem = String(name || '').replace(/\.[^.]+$/, '').replace(/\.3dscene$/i, '').slice(0, 80);
+    if (kind === 'yaml') {
+      if (typeof deps.prepare === 'function') { await deps.prepare(); }
+      var r = C.fromYaml(new TextDecoder('utf-8').decode(u));
+      if (!r.ok) { throw new Error(r.error || '讀不了這個場景'); }
+      if (stem && !r.spec.title) { r.spec.title = stem; }
+      return r.spec;
+    }
+    // 模型：轉成場景 YAML，再照場景讀（同 /edit-3d-model 對話裡 file_id 的做法）
+    if (typeof deps.convertModel !== 'function') { throw new Error('這裡還不能轉換 3D 模型'); }
+    if (typeof deps.prepare === 'function') { await deps.prepare(); }
+    var conv = await deps.convertModel(String(name || ''), u);
+    if (!conv || !conv.ok) { throw new Error((conv && conv.error) || '讀不了這個模型'); }
+    var m = C.fromYaml(conv.yaml);
+    if (!m.ok) { throw new Error(m.error || '讀不了這個模型'); }
+    if (stem) { m.spec.title = stem; }
+    return m.spec;
+  }
+
+  return { kindOf: kindOf, fromBytes: fromBytes, TYPES: TYPES };
+});
+
+}).call(null, undefined, holder);
+return holder.FaEdit3dImport;
+})();
+/* ED3DIMP-END */
 /* ED3DUI-BEGIN */
 const FaEdit3dUI = (function () {
 const holder = {};
@@ -63643,6 +63702,8 @@ const holder = {};
     var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-3d', title: '🧊 3D 場景編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟場景 YAML 或模型檔（stl、obj、3mf、fbx）；另存用場景 YAML 匯出（見 edit3d_import.js）
+      file: opt.importModel ? { exportId: 'scene', maxBytes: 50000000, types: FaEdit3dImport.TYPES, importBytes: function (bytes, name) { return opt.importModel(bytes, name); } } : null,
       tabs: [{ id: 'view', label: '🎲 場景', viewer: true }, { id: 'source', label: '🧾 YAML 原始碼' }],
       placeholder: '用說的擺：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」「把球貼上這張圖」（貼圖可以直接貼進來）；位置都是以你現在看的角度來說',
       intro: '我是 3D 場景的助手：你說要放什麼、放在哪裡，我就加一個新的物件，位置是用「你現在看的角度」算的——「我的左前方」就是相機看過去的左前方，「桌子的右邊」就是從你這邊看桌子的右邊。物件欄是樹狀的（可以把東西綁成群組）；雙擊物件欄的項目（或畫面裡的物件）可以進到「單一物件編輯」，像做塑膠模型一樣決定每個面貼什麼圖、塗什麼顏色。拖曳畫面空白處轉視角、滾輪縮放、右鍵平移；點物件選取、拖曳可以移動。「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面就會立刻呈現。貼一張圖進來可以當選取物件的貼圖。每一步都能復原。',
@@ -64644,7 +64705,7 @@ const FaEditHost = (function () {
         polishSystem: 'You tidy a prompt that rebuilds a 3D scene. Keep every fact (objects, sizes, colours, textures, and WHERE things are relative to the viewer or to other objects); make it one clear, reusable prompt. Answer with the prompt only.',
         prepare: async function () { await this._ensureThreeJsLoaded(); await this._ensureJsYamlLoaded(); },
         collectRefs: (proj) => { const out = []; try { (JSON.stringify([proj.spec, ((proj.state && proj.state.states) || []).map((x) => x.spec)]).match(/ref:[A-Za-z0-9_-]+/g) || []).forEach((r) => { const k = r.slice(4); if (out.indexOf(k) < 0) out.push(k); }); } catch (_) { /* */ } return out; },
-        mountOpts: function (id, proj) { const self = this; return { buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob), openPart: (o) => self._ed3dOpenPart(id, o), origin: !!(proj && proj.origin), updateOrigin: (yml) => self._ed3dUpdateOrigin(id, yml) }; },
+        mountOpts: function (id, proj) { const self = this; return { buildNode: (n) => self._ed3dBuildNode(n), raster: (sc, cam, g, w, h) => self._raster3DFrame(sc, cam, g, w, h), keepTexture: (blob) => self._ed3dKeepTexture(blob), openPart: (o) => self._ed3dOpenPart(id, o), origin: !!(proj && proj.origin), updateOrigin: (yml) => self._ed3dUpdateOrigin(id, yml), importModel: (bytes, name) => self._ed3dImportFile(bytes, name) }; },
         ask: function (req, ed) { return this._edAsk3d(req, ed); },
         help: (starters) => '**' + T('3D 場景編輯器', '3D scene editor') + '**\n\n' + T('像 /edit-svg 那樣用說的，不過是 3D：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」。位置是以**你現在看的角度**算的（相機的前方、左右）；拖曳畫面轉視角，位置就跟著變。物件欄是樹狀的（可以綁成群組），雙擊物件進到「單一物件編輯」（貼皮、上色，像做塑膠模型）；「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面立刻呈現。圖可以貼進對話框當貼圖。匯出：場景 YAML（可直接播放）、PNG、專案 YAML；也可以把成品放進對話、或更新回原本的場景。', 'Talk to it like /edit-svg, but in 3D: "put a red ball in front-left of me", "move it onto the table". Places are worked out from the way YOU are looking now. The objects view is a tree; double click an object for the single-object (skin) editor; the YAML tab is editable.') + '\n\n' + T('起手式：', 'Starters:') + '\n' + starters.map((s) => '- `/edit-3d-model ' + s.id + '` — ' + s.label + '：' + s.desc).join('\n') + '\n\n' + T('接著上一個 3D 場景：`/edit-3d-model last`（把對話裡最近的 3D 場景當起點）。', 'Continue the last 3D scene of the conversation: `/edit-3d-model last`.'),
     });
@@ -64793,6 +64854,13 @@ const FaEditHost = (function () {
         await this._ensureJsYamlLoaded(); const r = FaEdit3d.fromYaml(yaml); if (!r.ok) throw new Error(r.error); (r.problems || []).slice(0, 3).forEach((p) => notes.push(p)); return r.spec;
     };
     // everything above, and the common ways: yaml (text), file_id (a .3dscene.yaml or a model: STL / OBJ / 3MF / FBX), last (the latest scene of the conversation)
+    // 📂 開啟場景 YAML 或模型（見 edit3d_import.js）：模型的轉換跑在 worker 裡，跟對話裡 file_id 的做法同一條路
+    M._ed3dImportFile = function (bytes, name) {
+        return FaEdit3dImport.fromBytes(bytes, name, {
+            prepare: () => this._ensureJsYamlLoaded(),
+            convertModel: (n, u) => this._convertModelFileToSceneYaml({ filename: n, blob: new Blob([u], { type: 'application/octet-stream' }) }, () => {}),
+        });
+    };
     M._ed3dOpen = async function (a) {
         a = a || {}; const notes = []; let spec = null, origin = null;
         try {

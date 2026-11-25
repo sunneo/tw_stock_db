@@ -99,6 +99,8 @@
     var W = { validate: C.validate, applyEdits: C.applyEdits, editWords: C.editWords, list: C.list, find: C.find };
     return Shell.mount({
       id: opt.id, kind: 'edit-3d', title: '🧊 3D 場景編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
+      // 📂 開啟場景 YAML 或模型檔（stl、obj、3mf、fbx）；另存用場景 YAML 匯出（見 edit3d_import.js）
+      file: opt.importModel ? { exportId: 'scene', maxBytes: 50000000, types: FaEdit3dImport.TYPES, importBytes: function (bytes, name) { return opt.importModel(bytes, name); } } : null,
       tabs: [{ id: 'view', label: '🎲 場景', viewer: true }, { id: 'source', label: '🧾 YAML 原始碼' }],
       placeholder: '用說的擺：「在我的左前方放一個紅色的球」「把它移到桌子上面」「把桌子往右移 2 公尺」「把球貼上這張圖」（貼圖可以直接貼進來）；位置都是以你現在看的角度來說',
       intro: '我是 3D 場景的助手：你說要放什麼、放在哪裡，我就加一個新的物件，位置是用「你現在看的角度」算的——「我的左前方」就是相機看過去的左前方，「桌子的右邊」就是從你這邊看桌子的右邊。物件欄是樹狀的（可以把東西綁成群組）；雙擊物件欄的項目（或畫面裡的物件）可以進到「單一物件編輯」，像做塑膠模型一樣決定每個面貼什麼圖、塗什麼顏色。拖曳畫面空白處轉視角、滾輪縮放、右鍵平移；點物件選取、拖曳可以移動。「🧾 YAML 原始碼」分頁可以直接改場景，回到畫面就會立刻呈現。貼一張圖進來可以當選取物件的貼圖。每一步都能復原。',
