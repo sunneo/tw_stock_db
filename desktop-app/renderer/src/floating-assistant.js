@@ -56756,6 +56756,63 @@ const holder = {};
 return holder.FaEditPicture;
 })();
 /* EDPIC-END */
+/* EDPICIMP-BEGIN */
+const FaPictureImport = (function () {
+const holder = {};
+(function (module, self) {
+// /edit-picture 的「📂 開啟圖片」：一張 png／jpg／gif／webp 變成文件的第一個圖層（image 物件），畫布大小跟著圖走。
+// 原圖的像素存在 FaEditStore（putImage 回傳的 ref），文件裡只記 ref，跟貼圖進來的做法一樣。
+// 純函式：putImage 與量尺寸由呼叫端注入（瀏覽器用 FaEditStore 與 createImageBitmap；node 測試用假的）。測試：scripts/edit-tests/picture_import.test.js。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./edit_picture_core.js'));
+  else root.FaPictureImport = factory(root.FaEditPicture || (typeof FaEditPicture !== 'undefined' ? FaEditPicture : undefined));
+})(typeof self !== 'undefined' ? self : this, function (C) {
+  'use strict';
+
+  var MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+
+  function mimeOf(name) { var m = /\.([^./\\]+)$/.exec(String(name || '')); return m ? (MIME[m[1].toLowerCase()] || null) : null; }
+
+  // deps: { putImage(blob) -> Promise<ref>, size?(blob) -> Promise<{w,h}|null> }
+  async function specFromImage(bytes, name, deps) {
+    var mime = mimeOf(name);
+    if (!mime) { throw new Error('這個編輯器只能開 png、jpg、gif、webp 圖片'); }
+    if (!deps || typeof deps.putImage !== 'function') { throw new Error('圖片存放區不能用'); }
+    var blob = new Blob([bytes], { type: mime });
+    var ref = await deps.putImage(blob);
+    var sz = typeof deps.size === 'function' ? await deps.size(blob) : null;
+    var w = sz && sz.w > 0 ? Math.round(sz.w) : 800, h = sz && sz.h > 0 ? Math.round(sz.h) : 600;
+    var spec = C.starter('blank');
+    spec.title = String(name || '').replace(/\.[^.]+$/, '').slice(0, 80) || spec.title;
+    var r = C.applyEdits(spec, [
+      { op: 'set_canvas', w: w, h: h },
+      { op: 'add_object', object: { type: 'image', name: '匯入的圖', ref: ref, mime: mime, x: 0, y: 0, w: w, h: h, opacity: 1 } }
+    ]);
+    if (r.rejected && r.rejected.length) { throw new Error('讀不了這張圖：' + r.rejected.map(function (x) { return x.error; }).join('；')); }
+    return r.spec;
+  }
+
+  // 瀏覽器端的預設依賴：FaEditStore.putImage、createImageBitmap 量尺寸（量不到就用 800×600）
+  function browserDeps() {
+    var store = typeof FaEditStore !== 'undefined' ? FaEditStore : null;
+    return {
+      putImage: function (blob) { if (!store) { throw new Error('圖片存放區不能用'); } return store.putImage(blob); },
+      size: async function (blob) { try { var b = await createImageBitmap(blob), r = { w: b.width, h: b.height }; if (b.close) { b.close(); } return r; } catch (e) { return null; } }
+    };
+  }
+
+  function fromBytes(bytes, name, deps) {
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return specFromImage(u, name, deps || browserDeps());
+  }
+
+  return { mimeOf: mimeOf, specFromImage: specFromImage, fromBytes: fromBytes, browserDeps: browserDeps };
+});
+
+}).call(null, undefined, holder);
+return holder.FaPictureImport;
+})();
+/* EDPICIMP-END */
 /* EDPICUI-BEGIN */
 const FaEditPictureUI = (function () {
 const holder = {};
@@ -56846,6 +56903,8 @@ const holder = {};
     return Shell.mount({
       id: opt.id, kind: 'edit-picture', title: '🎨 圖片編輯器', W: W, spec: opt.spec, state: opt.state, host: host, container: opt.container, restoring: opt.restoring, windowApi: opt.windowApi,
       tabs: [{ id: 'canvas', label: '🖼 畫面', viewer: true }, { id: 'data', label: '🧩 圖層資料' }],
+      // 📂 開啟圖片：變成第一個圖層、畫布跟著圖走（見 picture_import.js）；另存用 PNG 匯出
+      file: { exportId: 'png', maxBytes: 30000000, types: [{ description: '圖片', accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpg', '.jpeg'], 'image/gif': ['.gif'], 'image/webp': ['.webp'] } }], importBytes: function (bytes, name) { return FaPictureImport.fromBytes(bytes, name); } },
       placeholder: '用說的修：「把它變成水彩風格」「調亮一點」「修掉右下角的污點」「在左邊加一隻貓」「找一張飛機的照片」；也可以貼圖進來、給網址',
       intro: '我是用語言主導的概念畫家，也有像 GIMP 的後製：你說要畫什麼、放在哪裡，或要怎麼修，我就加一個新的圖層（圖片、形狀、濾鏡、修復都是圖層），原圖不動，隨時可以隱藏、調整、復原。畫面沒有邊界，可以加在任何地方；中間的畫面可以拖曳、縮放，⌖ 回到第一個圖層（圖片）的中間。「把這張圖變成油畫／水彩／素描／卡通…」會加一個風格濾鏡，並請視覺模型看過、不像就加強；說「用 AI 重畫成…」則用生圖模型（線上或本機，同 /image）依這張圖的內容重新畫一張。「修復畫筆」可以在畫面上塗出要修的地方。可以貼圖、給網址、或說「找一張…的圖」。',
       objectIcon: function (o) { return o.type === 'shape' ? (SHAPE_ICON[o.shape] || '◻') : (ICON[o.type] || '◻'); },
