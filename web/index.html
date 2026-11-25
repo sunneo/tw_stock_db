@@ -1712,10 +1712,10 @@ select:focus { outline: 2px solid var(--acc); }
         放進 window.__FA_PREFETCH；沒有預抓到的區塊照舊由核心同步載入（行為不變）。
      3. preconnect／preload 讓核心下載在這段 script 執行前就開始。 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@9bc907a5bbe74e0cedf7abe3debede51f4649c05/desktop-app/web-lazy/core.js">
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@adcb9dea2d8db0dd6bf76e0d383925f7413e9a38/desktop-app/web-lazy/core.js">
 <script>
 (function () {
-  var SHA = '9bc907a5bbe74e0cedf7abe3debede51f4649c05';
+  var SHA = 'adcb9dea2d8db0dd6bf76e0d383925f7413e9a38';
   var JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + SHA + '/desktop-app/web-lazy/';
   var RAWB = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + SHA + '/desktop-app/web-lazy/';
   var TIMEOUT_MS = 8000;
