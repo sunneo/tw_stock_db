@@ -872,6 +872,7 @@
         if (st && sigOfRec(src) === sigOfStat(st)) {
           var filled = false;
           if (!local.melody && src.melody && src.melody.status === 'ok') { local.melody = cloneJson(src.melody); filled = true; }
+          if (!local.fp && src.fp) local.fp = cloneJson(src.fp);
           if (!local.lyrics && src.lyrics) { local.lyrics = cloneJson(src.lyrics); local.lyricStatus = src.lyricStatus || 'done'; filled = true; }
           if (filled) stats.filledIndex++;
         }
@@ -882,6 +883,7 @@
         var lm = byHash[0];
         keyMap[src.key] = lm.key; stats.matched++; stats.matchedByMd5++;
         if (!lm.melody && src.melody && src.melody.status === 'ok') { lm.melody = cloneJson(src.melody); stats.filledIndex++; }
+        if (!lm.fp && src.fp) lm.fp = cloneJson(src.fp);
         if (!lm.lyrics && src.lyrics) { lm.lyrics = cloneJson(src.lyrics); lm.lyricStatus = src.lyricStatus || 'done'; stats.filledIndex++; }
         return;
       }
@@ -904,7 +906,7 @@
         if (!same) {
           // 檔案變了：索引與歌詞是舊內容的，不沿用；紀錄本身保留，標為索引過期（下次建索引會重算）
           nr.indexStale = true; stats.indexStale++;
-          nr.melody = null; nr.lyrics = null; nr.lyricStatus = 'none'; nr.lyricError = null;
+          nr.melody = null; nr.fp = null; nr.lyrics = null; nr.lyricStatus = 'none'; nr.lyricError = null;
         } else delete nr.indexStale;
       }
       base.records.push(nr);
@@ -1013,6 +1015,7 @@
     (plan.absorb || []).forEach(function (a) {
       var o = a.old, into = a.into;
       if (!into.melody && o.melody && o.melody.status === 'ok') into.melody = o.melody;
+      if (!into.fp && o.fp) into.fp = o.fp;
       if (!into.lyrics && o.lyrics) { into.lyrics = o.lyrics; into.lyricStatus = o.lyricStatus || 'done'; }
       ghosts.push(o); touched[o.sourceId] = true; absorbed++;
     });
