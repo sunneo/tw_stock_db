@@ -2010,24 +2010,24 @@
    "names": [
     "FaMusicLibMelody"
    ],
-   "size": 12067,
-   "md5": "fa4276b2098e9c75a4ac12cdfb4675bc"
+   "size": 13099,
+   "md5": "8836ff9d16e1598e272ea415e0361e4b"
   },
   "mlfp": {
    "file": "chunks/mlfp.js",
    "names": [
     "FaMusicLibFP"
    ],
-   "size": 12002,
-   "md5": "c1141b11babe3b6ab25f0aa9e187d010"
+   "size": 12412,
+   "md5": "e61d8123f0eda4d75a9c88612c2a81d0"
   },
   "mlaud": {
    "file": "chunks/mlaud.js",
    "names": [
     "FaMusicLibAudio"
    ],
-   "size": 3529,
-   "md5": "fd5692ce78f8825d683e439a1a18c588"
+   "size": 8029,
+   "md5": "e3453cea0793c3c1a85869c1430a6208"
   },
   "mlrix": {
    "file": "chunks/mlrix.js",
@@ -2194,8 +2194,8 @@
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 54471,
-   "md5": "b8184f8563eff1819da8de86bf73613c"
+   "size": 54974,
+   "md5": "ed8f7c2f14c18491ea58ded94517e4a8"
   }
  },
  "core": {
