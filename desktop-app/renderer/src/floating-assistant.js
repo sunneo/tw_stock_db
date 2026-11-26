@@ -107777,7 +107777,7 @@ class FloatingAssistant {
                 } catch (e) { r._pushAssistantMessage('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
-        this.register_slash_command('/media-audio-to-midi', '[音訊檔] [拆軌]',
+        this.register_slash_command('/media-audio-to-midi', '[音訊檔] [拆軌] [簡化|和弦]',
             '把 mp3／wav 轉成 MIDI 並開編輯器(用 📎 上傳音訊再打這個指令;離線小模型,第一次下載約 16 MB;加「拆軌」會再用 Demucs 分鼓／貝斯／人聲／吉他／鋼琴,多下載約 136 MB 且很慢)。結果不保證準確。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-audio-to-midi' + (raw ? ' ' + raw : '') });
                 try {
@@ -107788,7 +107788,7 @@ class FloatingAssistant {
                         else if (pk && pk.kind === 'error') r._pushAssistantMessage('⚠️ ' + pk.error);
                         else if (!pk) r._pushAssistantMessage('已取消。要轉 MIDI 可以用 📎 上傳 mp3／wav 再打 /media-audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
                     }
-                    if (att) { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
+                    if (att) { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), mode: /和弦|chords/i.test(raw) ? 'chords' : /簡化|melody/i.test(raw) ? 'melody' : 'full', title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
                 } catch (e) { r._pushAssistantMessage('⚠️ /media-audio-to-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -112520,7 +112520,7 @@ ${fnData.code}
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._audioToMidi(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的音訊檔' }, stems: { type: 'boolean', description: 'true＝先用 Demucs 分軌(下載約 136 MB、很慢)' }, title: { type: 'string' } }, required: ['file_id'], additionalProperties: false }
+            { type: 'object', properties: { file_id: { type: 'string', description: '使用者上傳的音訊檔' }, stems: { type: 'boolean', description: 'true＝先用 Demucs 分軌(下載約 136 MB、很慢)' }, title: { type: 'string' }, mode: { type: 'string', enum: ['full', 'melody', 'chords'], description: 'full＝完整;melody＝只留旋律;chords＝旋律加和弦' } }, required: ['file_id'], additionalProperties: false }
         );
         registerOptional('music_topic',
             '查音樂知識:basics(音高與記號、速度、tick)、scales(音階與調性)、chords(和弦與常見進行)、rhythm(拍號與鼓型)、ranges(各樂器音域與鼓組編號)、instrumentation(GM 音色編號與配器)、structure(曲式)、styles(各風格典型)。不帶 topic 回傳全部主題名稱。',
@@ -128963,11 +128963,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
             o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
             if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
-            const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
+            o.mode = ['melody', 'chords'].includes(a.mode) ? a.mode : 'full'; const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
             prog.update({ pct: 100 }); prog.finish('完成(' + Math.round((Date.now() - t0) / 1000) + ' 秒)');
             const skipped = notes.concat(r.report.skipped), tracks = r.song.tracks.map((t) => t.name + '(' + t.notes.length + ' 個音)').join('、');
-            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI,速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
-            return { ok: true, song_id: id, seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
+            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI(處理:' + (((r.report && r.report.methods) || []).join('') || '基本流程') + '),速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
+            return { ok: true, song_id: id, methods: (r.report && r.report.methods) || [], seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
         } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
     }
     // 音訊轉 MIDI(階段 5):解碼 → Basic Pitch 多音轉譜(wasm)＋YAMNet 挑音色 ＋(選用)Demucs 6 軌分軌 → 進編輯器。只出一張進度卡;模型載不起來就退回規則做法並在結果裡寫明
@@ -128988,11 +128988,11 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             o.transcriber = await load('basic-pitch', 4, 8, FaAudioRuntime.makeTranscriber, ['wasm'], undefined, '改用單音音高追蹤(同時只能抓一個音)');
             o.classifier = await load('yamnet', 8, 12, FaAudioRuntime.makeClassifier, ['wasm'], undefined, '音色改用音域規則挑');
             if (a.stems) o.separator = await load('demucs-6s', 12, 20, FaAudioRuntime.makeSeparator, ['wasm'], FaAudioRuntime.DEMUCS_OPT, '不分軌,整個混音當一軌'); if (o.separator) o.stems = FaAudioRuntime.STEMS;
-            const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
+            o.mode = ['melody', 'chords'].includes(a.mode) ? a.mode : 'full'; const r = await FaAudioPipeline.run({ left: L, right: R, sampleRate: buf.sampleRate }, o);
             prog.update({ pct: 100 }); prog.finish('完成(' + Math.round((Date.now() - t0) / 1000) + ' 秒)');
             const skipped = notes.concat(r.report.skipped), tracks = r.song.tracks.map((t) => t.name + '(' + t.notes.length + ' 個音)').join('、');
-            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI,速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
-            return { ok: true, song_id: id, seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
+            const id = this._midiPushEditor(r.song, o.title, '🎼 已從音訊轉出 MIDI(處理:' + (((r.report && r.report.methods) || []).join('') || '基本流程') + '),速度約 ' + Math.round(r.tempo.bpm) + ' 拍/分' + (r.tempo.confident === false ? '(速度是猜的,可能差一倍)' : '') + ',音軌:' + tracks + '。\n\n**沒做到的部分(誠實列出):**\n' + skipped.map((s) => '- ' + s).join('\n') + '\n\n按「試聽」比對原曲,再用編輯器修正。');
+            return { ok: true, song_id: id, methods: (r.report && r.report.methods) || [], seconds: Math.round(buf.duration), tracks: r.song.tracks.map((t) => ({ name: t.name, program: t.program, drum: !!t.drum, notes: t.notes.length })), tempo: Math.round(r.tempo.bpm), skipped, resumed_chunks: r.report.resumed };
         } catch (e) { try { prog.fail(String((e && e.message) || e)); } catch (_) { /* */ } return { ok: false, error: String((e && e.message) || e) }; }
     }
     // 音樂庫的「拆軌」：載入 Demucs 6 軌分軌模型（鼓、貝斯、其他、人聲、吉他、鋼琴），載入順序同 _audioToMidi：GPU → 桌面原生 → onnxruntime-web（wasm）。
