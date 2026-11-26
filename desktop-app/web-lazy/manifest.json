@@ -81,6 +81,22 @@
    "size": 15817,
    "md5": "95a033aeff4f5852401b5a07565adafc"
   },
+  "chunkstore": {
+   "file": "chunks/chunkstore.js",
+   "names": [
+    "FA_CHUNK_STORE_SRC"
+   ],
+   "size": 7986,
+   "md5": "178160b9746fbe433d50761cd6ddbf30"
+  },
+  "bigstash": {
+   "file": "chunks/bigstash.js",
+   "names": [
+    "FA_BIG_STASH_SRC"
+   ],
+   "size": 6185,
+   "md5": "11b788b34700a64a6ce5d02484aa90a1"
+  },
   "aidocview": {
    "file": "chunks/aidocview.js",
    "names": [
@@ -1765,6 +1781,30 @@
    "size": 9338,
    "md5": "e6d211a5d5d51411b1ebe8c624abbcce"
   },
+  "musicnp": {
+   "file": "chunks/musicnp.js",
+   "names": [
+    "FaNotePost"
+   ],
+   "size": 3920,
+   "md5": "71f8cbe181e7365878967febc279bfd3"
+  },
+  "musicdrum": {
+   "file": "chunks/musicdrum.js",
+   "names": [
+    "FaDrumFlux"
+   ],
+   "size": 5112,
+   "md5": "038897bd165e956f704569a494749c0b"
+  },
+  "musicdsp": {
+   "file": "chunks/musicdsp.js",
+   "names": [
+    "FaAudioDsp"
+   ],
+   "size": 5235,
+   "md5": "0f0e622abbfbaf1d4ff8713e9d1ba35d"
+  },
   "musica2m": {
    "file": "chunks/musica2m.js",
    "names": [
@@ -1778,8 +1818,8 @@
    "names": [
     "FaAudioPipeline"
    ],
-   "size": 4862,
-   "md5": "0ea66f964e4fd2ccabdc7ae8a0b2a202"
+   "size": 7175,
+   "md5": "812f8afbc446aa5aff3247372bad77ab"
   },
   "musicbp": {
    "file": "chunks/musicbp.js",
@@ -1802,8 +1842,8 @@
    "names": [
     "FaAudioRuntime"
    ],
-   "size": 3251,
-   "md5": "1d4cf2a9f715b0fb148fcea5ff79480d"
+   "size": 4154,
+   "md5": "543b0c9e600d3a21ee8ef58adfd8d8f8"
   },
   "musicnative": {
    "file": "chunks/musicnative.js",
@@ -1916,6 +1956,14 @@
    ],
    "size": 30803,
    "md5": "a240bef32f25a28535de8de0b768b52c"
+  },
+  "dialogue": {
+   "file": "chunks/dialogue.js",
+   "names": [
+    "FaDialogueAct"
+   ],
+   "size": 5789,
+   "md5": "fcf64730711ef2ff5a8d28b67e5fb507"
   },
   "ytnet": {
    "file": "chunks/ytnet.js",
@@ -2151,7 +2199,7 @@
   }
  },
  "core": {
-  "size": 6943487,
-  "md5": "3e02f87d3fe94c118aa1e6b047e1bc76"
+  "size": 6951375,
+  "md5": "dc85685724cc44a504a5ebebfe24239d"
  }
 }

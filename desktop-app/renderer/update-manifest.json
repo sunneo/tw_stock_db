@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-26T04:38:56.077Z",
+  "generatedAt": "2026-11-26T05:27:30.786Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "b3ce098ef750e0e1f152461abe0d8920",
-    "renderer/floating-assistant.js": "95744964e9bf6345e205de0fe30b4497",
-    "renderer/floating-assistant.min.js": "95744964e9bf6345e205de0fe30b4497",
+    "renderer/floating-assistant.js": "801e2340507ad97afeeabec604bce481",
+    "renderer/floating-assistant.min.js": "801e2340507ad97afeeabec604bce481",
     "renderer/vendor/jsnes/LICENSE": "a3154330b15994b9ca951fd9da724416",
     "renderer/vendor/jsnes/SHA256SUMS.txt": "49e1270ebb2357ea157785168026b19d",
     "renderer/vendor/jsnes/VERSION.txt": "ad478b6088b7f84e9f8491274ebef2fa",
@@ -113,18 +113,18 @@
     "knowledge-native.js": "c350c62c2a65c8f4d11ff68299e4ad94",
     "local-proxy.js": "158f13c8135c1dc736efe6d8aebb5b05",
     "lora-slot-build.js": "0f12371323819fcbc01c6ba5c8f6daa9",
-    "main-ext.js": "08b09a3021ecbf29096e6c6aeab05f72",
+    "main-ext.js": "e11e7b227b7e8c07cca45c2810132a0f",
     "native-slot-model.js": "1d5d913233faf73df77f69c22b6e0c4a",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
     "sqlite-engine.js": "11018c00a80b760bb3fccdf978adfc16",
-    "preload.js": "562ba3a4e6489d15de9e39366f015134"
+    "preload.js": "641a55c8bb54c784217c11736ff64b02"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 203248,
-    "renderer/floating-assistant.js": 17261548,
-    "renderer/floating-assistant.min.js": 17261548,
+    "renderer/floating-assistant.js": 17306532,
+    "renderer/floating-assistant.min.js": 17306532,
     "renderer/vendor/jsnes/LICENSE": 10758,
     "renderer/vendor/jsnes/SHA256SUMS.txt": 4528,
     "renderer/vendor/jsnes/VERSION.txt": 178,
@@ -231,11 +231,11 @@
     "knowledge-native.js": 6716,
     "local-proxy.js": 27272,
     "lora-slot-build.js": 18366,
-    "main-ext.js": 171688,
+    "main-ext.js": 174794,
     "native-slot-model.js": 16878,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
     "sqlite-engine.js": 23159,
-    "preload.js": 15897
+    "preload.js": 16398
   }
 }

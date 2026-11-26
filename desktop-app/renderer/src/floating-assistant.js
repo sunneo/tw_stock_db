@@ -61419,6 +61419,487 @@ const holder = {};
 return holder.FaMidigenBridge;
 })();
 /* MUSICBRIDGE-END */
+/* MUSICNP-BEGIN */
+const FaNotePost = (function () {
+const holder = {};
+(function (module, self) {
+// 音訊轉 MIDI 的音符後處理(階段一)。全部是純函式:輸入輸出都是音符清單 { t(秒), d(秒), n(MIDI 音高), v(力度 0~127) }。
+// 規則一覽(門檻都是下方的具名常數):
+//   joinSplitNotes     顫音、抖音、鼓聲造成的假起音不切斷長音;只有起音夠明顯才切開
+//   alignChordOnsets   60 毫秒內起始的各音對齊到中間值(和弦各音同時發聲),持續時間跟著調整
+//   enforceMinLength   最短音:至少 4 格;不到 8 格必須有明顯起音
+//   melodyFlags        旋律線:每個音的中點看同時在響的音,最高的那個算頂線;連續 3 個以上才成立
+//   emphasizeMelody    旋律音量拉高、背景小音降低
+//   simplifyForMode    'melody' 只留旋律;'chords' 旋律加和弦(從已轉出的音符分類,不重跑模型)
+//   stereoToMono       左右強烈反相時改取較有資訊的聲道,不平均成靜音
+//   evidenceFromActivations  由 Basic Pitch 的起音矩陣與啟動矩陣,給每個音一份「起音證據」
+//   postprocess        依序套用上面的規則(給 audio_pipeline 用)
+// 「格」= Basic Pitch 的一幀,256 個樣本 ÷ 22050 Hz ≈ 11.6 毫秒。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaNotePost = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const FRAME_SEC = 256 / 22050;     // Basic Pitch 一格的秒數
+  const ONSET_STRONG = 0.8;          // 起音強度到這裡以上一定切開(明顯的新音)
+  const DIP_MIN = 0.35;              // 該音高的啟動值在起音前凹陷超過這個量,才算有新音(顫音的回落)
+  const RISE_MIN = 0.3;              // 起音後啟動值急升超過這個量,才算有新音
+  const MAX_JOIN_GAP = 0.12;         // 同音高兩段之間的空隙在這之內才考慮併回去(秒)
+  const CHORD_WINDOW = 0.06;         // 起始時間相差在這之內視為同一個和弦(秒)
+  const MIN_FRAMES = 4;              // 最短音:至少 4 格(約 46 毫秒)
+  const SHORT_FRAMES = 8;            // 不到 8 格的音必須有明顯起音
+  const SHORT_ONSET = 0.6;           // 「明顯起音」的門檻(只用在短音)
+  const MELODY_MIN_RUN = 3;          // 旋律線至少連續這麼多個音才算數
+  const MELODY_MAX_GAP = 0.5;        // 旋律線相鄰兩音的空隙超過這麼多秒就斷開(秒)
+  const MELODY_BOOST = 1.2;          // 旋律音量倍率
+  const BACKGROUND_CUT = 0.8;        // 背景音(力度不高於中位數)音量倍率
+  const CHORD_MAX_VOICES = 4;        // 和弦模式每組最多幾個音
+  const ANTI_CORR = -0.5;            // 左右相關係數不高於這個值視為強烈反相
+
+  const sorted = (ns) => ns.slice().sort((a, b) => a.t - b.t || a.n - b.n);
+  const median = (xs) => { if (!xs.length) return 0; const s = xs.slice().sort((a, b) => a - b), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  function lowerBound(arr, x) { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
+
+  // 起音證據夠明顯才切開長音:起音強度高、或起音前啟動值凹陷、或起音後急升。三者都不成立就是慢起音／顫音／鼓聲造成的假起音,不切。
+  function shouldCutAtOnset(ev) { return !!ev && (ev.onset >= ONSET_STRONG || ev.dip >= DIP_MIN || ev.rise >= RISE_MIN); }
+
+  // 同音高、空隙很小、而且新起音沒有明顯證據 → 併回前一個音。沒有證據函式就什麼都不併(保守)。
+  function joinSplitNotes(notes, evidenceAt, opt) {
+    if (typeof evidenceAt !== 'function') return sorted(notes);
+    const maxGap = (opt && opt.maxGap) || MAX_JOIN_GAP; const out = [];
+    for (const n of sorted(notes)) {
+      const p = out.length ? out[out.length - 1] : null;
+      if (p && p.n === n.n && n.t - (p.t + p.d) <= maxGap) {
+        const ev = evidenceAt(n.t, n.n);
+        if (ev && !shouldCutAtOnset(ev)) { p.d = Math.max(p.d, n.t + n.d - p.t); p.v = Math.max(p.v, n.v); continue; }
+      }
+      out.push(Object.assign({}, n));
+    }
+    return out;
+  }
+
+  // 起始時間在 CHORD_WINDOW 內的音,起點對齊到中間值(偶數個取兩個中間值的平均),結束時間保留,持續時間跟著縮短或拉長。
+  function alignChordOnsets(notes) {
+    const s = sorted(notes), out = []; let i = 0;
+    while (i < s.length) {
+      let j = i + 1; while (j < s.length && s[j].t - s[i].t <= CHORD_WINDOW) j++;
+      const grp = s.slice(i, j); const mid = median(grp.map((n) => n.t));
+      for (const n of grp) { const end = n.t + n.d; out.push(Object.assign({}, n, { t: mid, d: Math.max(FRAME_SEC, end - mid) })); }
+      i = j;
+    }
+    return out;
+  }
+
+  // 最短音。沒有證據函式時只看 4 格;有證據時,4 到 7 格還要有明顯起音。
+  function enforceMinLength(notes, evidenceAt) {
+    const minSec = MIN_FRAMES * FRAME_SEC, shortSec = SHORT_FRAMES * FRAME_SEC;
+    return notes.filter((n) => {
+      if (n.d < minSec) return false;
+      if (n.d >= shortSec || typeof evidenceAt !== 'function') return true;
+      const ev = evidenceAt(n.t, n.n); return !!ev && ev.onset >= SHORT_ONSET;
+    });
+  }
+
+  // 旋律線旗標:每個音取中點,看哪些音在那一刻同時在響;同時在響的音裡最高的那個算頂線。
+  // 頂線要連續 MELODY_MIN_RUN 個以上(相鄰起點空隙不超過 MELODY_MAX_GAP)才算旋律。回傳與輸入同順序的布林陣列。
+  function melodyFlags(notes) {
+    const n = notes.length, flags = new Array(n).fill(false); if (!n) return flags;
+    const order = notes.map((_, i) => i).sort((a, b) => notes[a].t - notes[b].t);
+    const starts = order.map((i) => notes[i].t); const maxD = Math.max.apply(null, notes.map((x) => x.d));
+    const top = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) {
+      const mid = notes[i].t + notes[i].d / 2; let best = -Infinity;
+      for (let q = lowerBound(starts, mid - maxD); q < order.length && starts[q] <= mid; q++) { const m = notes[order[q]]; if (m.t + m.d > mid) best = Math.max(best, m.n); }
+      top[i] = notes[i].n >= best;
+    }
+    let run = []; const flush = () => { if (run.length >= MELODY_MIN_RUN) for (const k of run) flags[k] = true; run = []; };
+    for (const i of order) {
+      if (!top[i]) continue; // 背景音不切斷旋律線,只有頂線之間的空隙太大才斷開
+      if (run.length && notes[i].t - notes[run[run.length - 1]].t > MELODY_MAX_GAP) flush();
+      run.push(i);
+    }
+    flush();
+    return flags;
+  }
+
+  // 旋律拉高、背景(力度不高於中位數的非旋律音)降低
+  function emphasizeMelody(notes) {
+    const flags = melodyFlags(notes), med = median(notes.map((x) => x.v));
+    return notes.map((x, i) => {
+      if (flags[i]) return Object.assign({}, x, { v: Math.min(127, Math.round(x.v * MELODY_BOOST)) });
+      if (x.v <= med) return Object.assign({}, x, { v: Math.max(1, Math.round(x.v * BACKGROUND_CUT)) });
+      return Object.assign({}, x);
+    });
+  }
+
+  // 模式簡化。'full' 原樣;'melody' 只留旋律,並把相鄰旋律音的空隙切開(不重疊);
+  // 'chords' 旋律加和弦:非旋律音依 CHORD_WINDOW 分組,每組取最低的 CHORD_MAX_VOICES 個不同音高,持續時間取該組最長者。
+  function simplifyForMode(notes, mode) {
+    if (mode !== 'melody' && mode !== 'chords') return sorted(notes);
+    const flags = melodyFlags(notes); const mel = [], rest = [];
+    notes.forEach((x, i) => (flags[i] ? mel : rest).push(x));
+    const legato = sorted(mel);
+    for (let i = 0; i + 1 < legato.length; i++) if (legato[i].t + legato[i].d > legato[i + 1].t) legato[i].d = Math.max(FRAME_SEC, legato[i + 1].t - legato[i].t);
+    if (mode === 'melody') return legato;
+    const groups = []; let grp = null;
+    for (const x of sorted(rest)) { if (grp && x.t - grp[0].t <= CHORD_WINDOW) grp.push(x); else { grp = [x]; groups.push(grp); } }
+    const chords = [];
+    for (const g of groups) {
+      const pitches = Array.from(new Set(g.map((x) => x.n))).sort((a, b) => a - b).slice(0, CHORD_MAX_VOICES);
+      const t = Math.min.apply(null, g.map((x) => x.t)), d = Math.max.apply(null, g.map((x) => x.d)), v = Math.round(g.reduce((s, x) => s + x.v, 0) / g.length);
+      for (const p of pitches) chords.push({ t, d, n: p, v });
+    }
+    return sorted(legato.concat(chords));
+  }
+
+  // 立體聲:相關係數夠負(左右反相)時,相加會互相抵消成靜音,改取能量較大的那一聲道;其餘情況平均。
+  function stereoToMono(L, R) {
+    if (!R || !R.length) return L;
+    let sLR = 0, sLL = 0, sRR = 0; const n = Math.min(L.length, R.length);
+    for (let i = 0; i < n; i++) { sLR += L[i] * R[i]; sLL += L[i] * L[i]; sRR += R[i] * R[i]; }
+    const corr = sLR / Math.sqrt(sLL * sRR + 1e-20); const o = new Float32Array(n);
+    if (corr <= ANTI_CORR) { const src = sLL >= sRR ? L : R; for (let i = 0; i < n; i++) o[i] = src[i]; return o; }
+    for (let i = 0; i < n; i++) o[i] = 0.5 * (L[i] + R[i]);
+    return o;
+  }
+
+  // 由 Basic Pitch 的 stitch 結果 st = { onset, note, frames } 做證據函式 (秒, MIDI) → { onset, dip, rise } 或 null
+  function evidenceFromActivations(st, opt) {
+    opt = opt || {}; const BINS = opt.bins || 88, LOW = opt.low || 21, F = st.frames;
+    const at = (arr, f, b) => (f < 0 || f >= F) ? 0 : arr[f * BINS + b];
+    return function (tSec, midi) {
+      const b = Math.round(midi) - LOW; if (b < 0 || b >= BINS) return null;
+      const f = Math.round(tSec / FRAME_SEC);
+      let on = 0; for (let g = f - 1; g <= f + 1; g++) on = Math.max(on, at(st.onset, g, b));
+      let before = 0; for (let g = f - 10; g <= f - 2; g++) before = Math.max(before, at(st.note, g, b));
+      let low = 1; for (let g = f - 2; g <= f; g++) low = Math.min(low, at(st.note, g, b));
+      const dip = Math.max(0, before - low);
+      const rise = Math.max(0, Math.min(1, at(st.note, f + 3, b) - at(st.note, f, b)));
+      return { onset: on, dip, rise };
+    };
+  }
+
+  // 組合:併回假切 → 最短音 → 和弦對齊 →(選用)旋律強調
+  function postprocess(notes, opt) {
+    opt = opt || {};
+    let out = joinSplitNotes(notes, opt.evidenceAt, opt);
+    out = enforceMinLength(out, opt.evidenceAt);
+    out = alignChordOnsets(out);
+    if (opt.melody) out = emphasizeMelody(out);
+    return sorted(out);
+  }
+
+  return { FRAME_SEC, ONSET_STRONG, DIP_MIN, RISE_MIN, MAX_JOIN_GAP, CHORD_WINDOW, MIN_FRAMES, SHORT_FRAMES, SHORT_ONSET, MELODY_MIN_RUN, MELODY_MAX_GAP, MELODY_BOOST, BACKGROUND_CUT, CHORD_MAX_VOICES, ANTI_CORR,
+    shouldCutAtOnset, joinSplitNotes, alignChordOnsets, enforceMinLength, melodyFlags, emphasizeMelody, simplifyForMode, stereoToMono, evidenceFromActivations, postprocess };
+});
+
+}).call(null, undefined, holder);
+return holder.FaNotePost;
+})();
+/* MUSICNP-END */
+/* MUSICDRUM-BEGIN */
+const FaDrumFlux = (function () {
+const holder = {};
+(function (module, self) {
+// 音訊轉 MIDI 的鼓軌(階段二):不下載任何模型,用頻譜變化量找鼓的打擊。
+// 三個頻段各算一條「頻譜通量」(頻譜增加量,對數壓縮後只計增加):大鼓 40–160 Hz、小鼓 180–1500 Hz、踩鑔 6000–10000 Hz。
+//   挑峰:與歌曲自己的局部中位數比(自適應),再加整首 90 百分位的一小段底線;相鄰打擊至少 60 毫秒。
+//   大鼓能量外溢到小鼓頻段的部分先扣掉(BLEED),避免大鼓被誤認成小鼓。
+//   存在檢查(整首有沒有鼓):因為挑峰是跟歌曲自己比,獨奏鋼琴也會找到「擊打」,所以還要看三件事:
+//     打擊夠多(MIN_HITS)、打擊間隔有規律(REG_MIN)、能量集中在打擊時刻附近(CONC_MIN)。三件都要過才輸出鼓軌。
+// 輸入:單聲道取樣(Float32Array)與取樣率;非 22050 Hz 會先線性降取樣到 22050。輸出音符用 GM 鼓音高:大鼓 36、小鼓 38、踩鑔 42。
+// 注意:這是規則做法,沒有模型辨識樂器;規律的鋼琴曲仍可能被誤判為有鼓,真實樣本的表現待驗證。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDrumFlux = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const WORK_SR = 22050, N = 1024, HOP = 256;
+  const BANDS = { kick: [40, 160], snare: [180, 1500], hat: [6000, 10000] };
+  const GM = { kick: 36, snare: 38, hat: 42 };
+  const LOG_GAIN = 100;        // 對數壓縮的增益(幅度先除以 N)
+  const LOCAL_SEC = 0.5;       // 自適應門檻的局部視窗(每側秒數)
+  const MULT = 1.6;            // 峰值要超過局部中位數的倍數
+  const FLOOR_FRAC = 0.02;     // 峰值至少要有本頻段最大峰值的這個比例(濾掉尾音裡的微小起伏;靜音多時百分位底線太小,不用它)
+  const MIN_GAP_SEC = 0.06;    // 相鄰打擊的最小間隔(秒)
+  const BLEED = 0.4;           // 大鼓流入小鼓頻段的扣除比例
+  const MIN_HITS = 8;          // 大鼓加小鼓的打擊至少這麼多下才算有鼓
+  const REG_TOL = 0.06;        // 間隔與規律週期倍數的相對容差
+  const REG_MIN = 0.6;         // 規律間隔佔全部間隔的比例下限
+  const CONC_MIN = 2.0;        // 能量集中倍率下限(打擊時刻附近的能量比例 ÷ 那段時間佔全曲的比例)
+  const NEAR_BEFORE = 1, NEAR_AFTER = 8; // 「打擊時刻附近」:打擊前 1 格到後 8 格(約 93 毫秒)
+  const STRONG_FRAC = 0.1;     // 峰值至少要有本頻段最大峰值的 10% 才算打擊(噪音造成的小起伏在 2%~8%,實測)
+  const SAME_HIT_FRAMES = 3;   // 大鼓與小鼓的峰值距離在這之內視為同一個打擊,只留較強者(大鼓的低頻會洩漏到小鼓時刻)
+
+  // 預先算好的 FFT 表(N 固定)
+  const COS = new Float64Array(N / 2), SIN = new Float64Array(N / 2), REV = new Uint32Array(N), WIN = new Float64Array(N);
+  for (let k = 0; k < N / 2; k++) { COS[k] = Math.cos(-2 * Math.PI * k / N); SIN[k] = Math.sin(-2 * Math.PI * k / N); }
+  for (let i = 0, bits = Math.log2(N); i < N; i++) { let r = 0; for (let b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b); REV[i] = r; }
+  for (let i = 0; i < N; i++) WIN[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  function fft(re, im) {
+    for (let i = 0; i < N; i++) { const j = REV[i]; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let size = 2; size <= N; size <<= 1) {
+      const half = size >> 1, step = N / size;
+      for (let start = 0; start < N; start += size) for (let k = 0; k < half; k++) {
+        const wr = COS[k * step], wi = SIN[k * step], a = start + k, b = a + half;
+        const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+      }
+    }
+  }
+  function toWork(x, sr) {
+    if (sr === WORK_SR) return x;
+    const n = Math.floor(x.length * WORK_SR / sr), o = new Float32Array(n), k = sr / WORK_SR;
+    for (let i = 0; i < n; i++) { const a = i * k, i0 = Math.floor(a), i1 = Math.min(x.length - 1, i0 + 1), f = a - i0; o[i] = x[Math.min(x.length - 1, i0)] * (1 - f) + x[i1] * f; }
+    return o;
+  }
+  const binRange = (name) => { const [f0, f1] = BANDS[name], sr = WORK_SR; return [Math.max(1, Math.ceil(f0 * N / sr)), Math.min(N / 2 - 1, Math.floor(f1 * N / sr))]; };
+
+  // 逐格算三個頻段的通量與能量。回傳 { flux: {kick,snare,hat}, energy: {kick,snare,hat}, frames }
+  function analyze(x) {
+    const F = x.length >= N ? Math.floor((x.length - N) / HOP) + 1 : 0;
+    const names = Object.keys(BANDS), ranges = {}; names.forEach((b) => { ranges[b] = binRange(b); });
+    const flux = {}, energy = {}; names.forEach((b) => { flux[b] = new Float64Array(F); energy[b] = new Float64Array(F); });
+    const re = new Float64Array(N), im = new Float64Array(N), prev = new Float64Array(N / 2), mag = new Float64Array(N / 2);
+    for (let f = 0; f < F; f++) {
+      const off = f * HOP; for (let i = 0; i < N; i++) { re[i] = x[off + i] * WIN[i]; im[i] = 0; }
+      fft(re, im);
+      for (let k = 0; k < N / 2; k++) mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]) / N;
+      for (const b of names) {
+        const [k0, k1] = ranges[b]; let fl = 0, en = 0;
+        for (let k = k0; k <= k1; k++) {
+          const d = Math.log(1 + LOG_GAIN * mag[k]) - Math.log(1 + LOG_GAIN * prev[k]); if (d > 0) fl += d;
+          en += mag[k] * mag[k];
+        }
+        flux[b][f] = fl; energy[b][f] = en;
+      }
+      for (let k = 0; k < N / 2; k++) prev[k] = mag[k];
+    }
+    return { flux, energy, frames: F };
+  }
+
+  // 自適應挑峰:局部中位數 × MULT ＋ 整首 90 百分位的底線;局部最大;相鄰打擊最小間隔(強者留下)。回傳 [{ f, v }] 依時間排序
+  function pickPeaks(O, sr) {
+    const F = O.length; if (F < 5) return [];
+    const W = Math.max(2, Math.round(LOCAL_SEC * sr / HOP)), gap = Math.max(1, Math.round(MIN_GAP_SEC * sr / HOP));
+    let maxO = 0; for (let f = 0; f < F; f++) if (O[f] > maxO) maxO = O[f];
+    const floor = FLOOR_FRAC * maxO;
+    const cand = [];
+    for (let f = 2; f < F - 2; f++) {
+      const v = O[f]; if (v <= 0) continue;
+      if (!(v >= O[f - 1] && v >= O[f + 1] && v >= O[f - 2] && v >= O[f + 2])) continue;
+      const win = Float64Array.from(O.subarray(Math.max(0, f - W), Math.min(F, f + W + 1))).sort();
+      const med = win[win.length >> 1];
+      if (v > MULT * med + floor) cand.push({ f, v });
+    }
+    cand.sort((a, b) => b.v - a.v); const taken = [];
+    for (const c of cand) { if (!taken.some((t) => Math.abs(t.f - c.f) < gap)) taken.push(c); }
+    return taken.sort((a, b) => a.f - b.f);
+  }
+
+  // 存在檢查:打擊夠多、間隔有規律、能量集中在打擊時刻附近。回傳 { ok, reason, stats }
+  function presence(kickP, snareP, eK, eS, sr) {
+    const F = eK.length, times = kickP.concat(snareP).map((p) => p.f).sort((a, b) => a - b);
+    if (times.length < MIN_HITS) return { ok: false, reason: '大鼓加小鼓的打擊只有 ' + times.length + ' 下(需要 ' + MIN_HITS + ' 下以上)', stats: { hits: times.length } };
+    const ioi = []; for (let i = 1; i < times.length; i++) { const s = (times[i] - times[i - 1]) * HOP / sr; if (s >= 0.1 && s <= 2.0) ioi.push(s); }
+    if (ioi.length < MIN_HITS - 1) return { ok: false, reason: '打擊間隔太少無法判斷節奏', stats: { hits: times.length } };
+    // 規律週期:間隔直方圖(10 毫秒一格),三格平滑後取最高者
+    const bins = new Float64Array(200); for (const s of ioi) bins[Math.min(199, Math.floor(s / 0.01))] += 1;
+    let best = 0, bi = 0; for (let i = 1; i < 199; i++) { const v = bins[i - 1] + bins[i] + bins[i + 1]; if (v > best) { best = v; bi = i; } }
+    const P = (bi + 0.5) * 0.01;
+    const regular = ioi.filter((s) => [0.5, 1, 2, 3, 4].some((k) => Math.abs(s - k * P) <= REG_TOL * k * P)).length / ioi.length;
+    // 能量集中:打擊前後一小段(NEAR_BEFORE..NEAR_AFTER)佔全曲能量的比例 ÷ 這段佔全部格數的比例
+    const near = new Uint8Array(F); let total = 0, nearE = 0, allE = 0;
+    for (const f of times) for (let g = Math.max(0, f - NEAR_BEFORE); g <= Math.min(F - 1, f + NEAR_AFTER); g++) near[g] = 1;
+    for (let f = 0; f < F; f++) { const e = eK[f] + eS[f]; allE += e; if (near[f]) { nearE += e; total++; } }
+    const frac = total / Math.max(1, F), conc = allE > 0 && frac > 0 ? (nearE / allE) / frac : 0;
+    const stats = { hits: times.length, periodSec: Math.round(P * 1000) / 1000, regular: Math.round(regular * 100) / 100, concentration: Math.round(conc * 100) / 100 };
+    if (regular < REG_MIN) return { ok: false, reason: '打擊間隔沒有規律(' + Math.round(regular * 100) + '%),不像鼓', stats };
+    if (conc < CONC_MIN) return { ok: false, reason: '能量沒有集中在打擊時刻(倍率 ' + stats.concentration + '),不像鼓', stats };
+    return { ok: true, reason: '節奏規律、能量集中', stats };
+  }
+
+  // 同一時刻(SAME_HIT_FRAMES 內)的大鼓與小鼓峰值只留較強的一個(相對各自頻段的最大峰值比較)。回傳 { kick, snare }
+  function resolveKickSnare(kick, snare) {
+    const items = kick.map((p) => ({ p, kind: 'kick' })).concat(snare.map((p) => ({ p, kind: 'snare' }))).sort((a, b) => a.p.f - b.p.f);
+    const dropped = new Set(); let last = null;
+    for (const it of items) {
+      if (last && it.p.f - last.p.f <= SAME_HIT_FRAMES && last.kind !== it.kind) {
+        if (it.p.s > last.p.s) { dropped.add(last.p); last = it; } else dropped.add(it.p);
+        continue;
+      }
+      last = it;
+    }
+    return { kick: kick.filter((p) => !dropped.has(p)), snare: snare.filter((p) => !dropped.has(p)) };
+  }
+
+  // 主入口。回傳 { present, reason, hits:[{t,note,vel}], stats }
+  function detect(x, sr) {
+    sr = sr || WORK_SR; const w = toWork(x || new Float32Array(0), sr);
+    if (w.length < N * 4) return { present: false, reason: '取樣太短', hits: [], stats: {} };
+    const A = analyze(w); const F = A.frames;
+    // 大鼓外溢到小鼓頻段的部分先扣掉
+    const snareF = new Float64Array(F); for (let f = 0; f < F; f++) snareF[f] = Math.max(0, A.flux.snare[f] - BLEED * A.flux.kick[f]);
+    const rel = (ps) => { const mx = ps.reduce((m, p) => Math.max(m, p.v), 1e-12); return ps.map((p) => ({ f: p.f, v: p.v, s: p.v / mx })); };
+    const kickAll = rel(pickPeaks(A.flux.kick, WORK_SR)), snareAll = rel(pickPeaks(snareF, WORK_SR)), hatAll = rel(pickPeaks(A.flux.hat, WORK_SR));
+    const resolved = resolveKickSnare(kickAll, snareAll);
+    const strong = (ps) => ps.filter((p) => p.s >= STRONG_FRAC);
+    const kickP = strong(resolved.kick), snareP = strong(resolved.snare), hatP = strong(hatAll);
+    const pres = presence(kickP, snareP, A.energy.kick, A.energy.snare, WORK_SR);
+    if (!pres.ok) return { present: false, reason: pres.reason, hits: [], stats: pres.stats };
+    const hits = [];
+    const add = (ps, note) => { for (const p of ps) hits.push({ t: (p.f * HOP + N / 2) / WORK_SR, note, vel: Math.max(30, Math.min(127, Math.round(40 + 87 * p.s))) }); };
+    add(kickP, GM.kick); add(snareP, GM.snare); add(hatP, GM.hat);
+    hits.sort((a, b) => a.t - b.t || a.note - b.note);
+    const stats = Object.assign({}, pres.stats, { kick: kickP.length, snare: snareP.length, hat: hatP.length });
+    return { present: true, reason: '頻譜法偵測到鼓:大鼓 ' + kickP.length + '、小鼓 ' + snareP.length + '、踩鑔 ' + hatP.length + ' 下', hits, stats };
+  }
+
+  return { detect, analyze, pickPeaks, presence, GM, BANDS, MIN_HITS, REG_MIN, CONC_MIN, MULT, BLEED, WORK_SR };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDrumFlux;
+})();
+/* MUSICDRUM-END */
+/* MUSICDSP-BEGIN */
+const FaAudioDsp = (function () {
+const holder = {};
+(function (module, self) {
+// 音訊前處理(階段三):高通濾波(高低音分開跑用)、音高校準(錄音偏離 A440 多少音分)、錄音變調的漂移修正,以及時間對應回原始時間。
+// 全部是純函式,在網頁版也能跑(只用 Float32Array / Float64Array,不碰桌面功能)。
+//   highpass(x, sr, fc)            6 階巴特沃斯高通(三節二階,正向＋反向,零相位);沒有訊號時回傳零,不放大浮點殘值;有訊號時正規化到輸入的峰值
+//   estimateTuning(x, sr, start, len)  取一段的頻譜強峰,離平均律的加權圓形平均(單位:音分,範圍 -50~50);conf 越接近 1 越一致
+//   planWarp(mono, sr)             分析整首:整體偏離超過 TUNE_MIN 音分就整首校準;錄音逐漸變調(讀值一致、相鄰差距小、總範圍夠大)就逐秒校準;其他不動
+//   applyWarp(x, sr, plan)         依計畫重新取樣(音高與時間一起變,轉完再用 toOriginalTime 映射回原始時間)
+//   makeTimeMap(plan)              tY(校準後秒數) → tOrig(原始秒數)
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaAudioDsp = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const HP_FC = 200;                 // 高通截止頻率(Hz)
+  const HP_Q = [1 / (2 * Math.sin(Math.PI / 12)), 1 / (2 * Math.sin(Math.PI * 3 / 12)), 1 / (2 * Math.sin(Math.PI * 5 / 12))]; // 6 階巴特沃斯三節的 Q:1.932、0.707、0.518
+  const TUNE_N = 8192;               // 音高估計的 FFT 長度
+  const TUNE_LO = 110, TUNE_HI = 1760; // 只看這個範圍的強峰(Hz)
+  const TUNE_PEAK_FRAC = 0.02;       // 強峰:功率至少是範圍內最大峰的 2%(約 -17 分貝)
+  const CONF_MIN = 0.5;              // 單一視窗的一致度低於這個就不採信
+  const TUNE_MIN = 20;               // 整體偏離超過這個音分數才校準(音分)
+  const DRIFT_WIN = 4;               // 漂移量測:每個視窗 4 秒
+  const DRIFT_RANGE = 25;            // 漂移修正:讀值的總範圍至少這麼大(音分)
+  const DRIFT_STEP = 8;              // 漂移修正:相鄰視窗的差距不能超過這麼多(音分),否則是獨奏人聲的顫音／滑音,不修
+  const DRIFT_VALID = 0.8;           // 漂移修正:至少這個比例的視窗一致度夠高
+
+  // 3 節二階高通(RBJ 公式)
+  function biquadHP(fc, sr, Q) { const w0 = 2 * Math.PI * fc / sr, c = Math.cos(w0), al = Math.sin(w0) / (2 * Q); const a0 = 1 + al; return { b0: (1 + c) / 2 / a0, b1: -(1 + c) / a0, b2: (1 + c) / 2 / a0, a1: -2 * c / a0, a2: (1 - al) / a0 }; }
+  function sectionPass(y, s) { const o = new Float64Array(y.length); let z1 = 0, z2 = 0; for (let i = 0; i < y.length; i++) { const x = y[i], out = s.b0 * x + z1; z1 = s.b1 * x - s.a1 * out + z2; z2 = s.b2 * x - s.a2 * out; o[i] = out; } return o; }
+  function cascade(y, secs) { let v = y; for (const s of secs) v = sectionPass(v, s); return v; }
+  function reverse(y) { const o = new Float64Array(y.length); for (let i = 0; i < y.length; i++) o[i] = y[y.length - 1 - i]; return o; }
+  function peakOf(x) { let p = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > p) p = a; } return p; }
+
+  // 兩端各做 EDGE_SEC 秒的餘弦漸入漸出再濾波,避免起點的突變在高通後變成假的暫態(不然會被正規化放大成假音)
+  const EDGE_SEC = 0.1, NO_SIGNAL_FRAC = 1e-3; // 高通後峰值不到輸入峰值的千分之一,就當沒有訊號
+  function highpass(x, sr, fc) {
+    const n = x ? x.length : 0, out = new Float32Array(n); if (!n) return out;
+    const pk = peakOf(x); if (pk < 1e-4) return out; // 沒有訊號:回傳零,不放大殘值
+    const y = Float64Array.from(x), E = Math.min(Math.floor(EDGE_SEC * sr), Math.floor(n / 2));
+    for (let i = 0; i < E; i++) { const w = 0.5 - 0.5 * Math.cos(Math.PI * i / E); y[i] *= w; y[n - 1 - i] *= w; }
+    const secs = HP_Q.map((q) => biquadHP(fc || HP_FC, sr, q));
+    let z = reverse(cascade(reverse(cascade(y, secs)), secs)); // 零相位:正向、反向、正向、反向
+    const pk2 = peakOf(z); if (pk2 <= NO_SIGNAL_FRAC * pk) return out;
+    const g = pk / pk2; for (let i = 0; i < n; i++) out[i] = z[i] * g; // 正規化到輸入峰值
+    return out;
+  }
+
+  // 一段的音高偏離:多個 8192 點視窗的功率平均,取強峰做拋物線內插,離平均律的偏差以 100 音分為週期做加權圓形平均
+  function estimateTuning(x, sr, start, len) {
+    const N = TUNE_N, half = N / 2, s0 = Math.max(0, Math.floor(start)), total = Math.min(len, x.length - s0);
+    if (total < N) return { cents: 0, conf: 0, peaks: 0 };
+    const K = 3, P = new Float64Array(half), re = new Float64Array(N), im = new Float64Array(N);
+    for (let k = 0; k < K; k++) {
+      const off = s0 + Math.floor((total - N) * k / Math.max(1, K - 1));
+      for (let i = 0; i < N; i++) { re[i] = x[off + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); im[i] = 0; }
+      fftInPlace(re, im);
+      for (let i = 0; i < half; i++) P[i] += re[i] * re[i] + im[i] * im[i];
+    }
+    const lo = Math.max(2, Math.ceil(TUNE_LO * N / sr)), hi = Math.min(half - 2, Math.floor(TUNE_HI * N / sr));
+    let mx = 0; for (let k = lo; k <= hi; k++) if (P[k] > mx) mx = P[k];
+    if (mx <= 0) return { cents: 0, conf: 0, peaks: 0 };
+    let sc = 0, ss = 0, sw = 0, cnt = 0;
+    for (let k = lo; k <= hi; k++) {
+      if (!(P[k] >= P[k - 1] && P[k] >= P[k + 1] && P[k] >= TUNE_PEAK_FRAC * mx)) continue;
+      const a = Math.sqrt(P[k - 1]), b = Math.sqrt(P[k]), c = Math.sqrt(P[k + 1]), den = a - 2 * b + c;
+      const d = Math.abs(den) > 1e-12 ? 0.5 * (a - c) / den : 0;
+      const f = (k + d) * sr / N, midi = 69 + 12 * Math.log2(f / 440), dev = midi - Math.round(midi), cents = dev * 100;
+      const ang = 2 * Math.PI * cents / 100, w = P[k];
+      sc += w * Math.cos(ang); ss += w * Math.sin(ang); sw += w; cnt++;
+    }
+    if (!sw) return { cents: 0, conf: 0, peaks: 0 };
+    return { cents: Math.atan2(ss, sc) * 100 / (2 * Math.PI), conf: Math.sqrt(sc * sc + ss * ss) / sw, peaks: cnt };
+  }
+  // 圓形偏差:把差值折到 (-50, 50] 音分
+  const wrap = (c) => { let v = ((c + 50) % 100 + 100) % 100 - 50; return v === -50 ? 50 : v; };
+
+  function fftInPlace(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= n; len <<= 1) { const ang = -2 * Math.PI / len, wr0 = Math.cos(ang), wi0 = Math.sin(ang); for (let i = 0; i < n; i += len) { let wr = 1, wi = 0; for (let k = 0; k < len / 2; k++) { const a = i + k, b = a + len / 2; const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr; re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi; const nwr = wr * wr0 - wi * wi0; wi = wr * wi0 + wi * wr0; wr = nwr; } } }
+  }
+
+  // 分析整首並決定校準計畫。回傳 { mode: 'none'|'global'|'drift', offset(音分), segments:[{ o0, o1, cents }], reason }
+  // segments 是原始時間的區段(秒);cents 是該段要校正的偏離(音分),速率 = 2^(-cents/1200)
+  function planWarp(mono, sr) {
+    const dur = mono.length / sr, none = { mode: 'none', offset: 0, segments: [], reason: '' };
+    if (!(dur >= 1)) return Object.assign(none, { reason: '太短' });
+    const winLen = Math.min(mono.length, Math.round(DRIFT_WIN * sr)), secs = Math.floor(dur);
+    const est = [];
+    for (let i = 0; i < secs; i++) { const c = Math.round((i + 0.5) * sr), st = Math.max(0, Math.min(mono.length - winLen, c - Math.floor(winLen / 2))); est.push(estimateTuning(mono, sr, st, winLen)); }
+    const good = est.filter((e) => e.conf >= CONF_MIN);
+    if (!good.length) return Object.assign(none, { reason: '沒有夠清楚的音高可以量' });
+    // 整體偏離:一致度為權重的圓形平均
+    let sx = 0, sy = 0; for (const e of good) { sx += e.conf * Math.cos(2 * Math.PI * e.cents / 100); sy += e.conf * Math.sin(2 * Math.PI * e.cents / 100); }
+    const offset = Math.atan2(sy, sx) * 100 / (2 * Math.PI);
+    // 漂移判斷:讀值要一致(大多數視窗一致度夠高)、相鄰差距小、總範圍夠大
+    const dev = est.map((e) => wrap(e.cents - offset));
+    const validRatio = good.length / est.length;
+    let minD = Infinity, maxD = -Infinity, maxStep = 0; for (let i = 0; i < est.length; i++) { if (est[i].conf < CONF_MIN) continue; minD = Math.min(minD, dev[i]); maxD = Math.max(maxD, dev[i]); if (i > 0 && est[i - 1].conf >= CONF_MIN) maxStep = Math.max(maxStep, Math.abs(dev[i] - dev[i - 1])); }
+    const drift = validRatio >= DRIFT_VALID && est.length >= 3 && (maxD - minD) >= DRIFT_RANGE && maxStep <= DRIFT_STEP;
+    if (drift) {
+      const segs = []; for (let i = 0; i < secs; i++) segs.push({ o0: i, o1: Math.min(dur, i + 1), cents: est[i].conf >= CONF_MIN ? wrap(est[i].cents) : offset });
+      return { mode: 'drift', offset, segments: segs, reason: '錄音逐漸變調(範圍 ' + Math.round(maxD - minD) + ' 音分),逐秒校準' };
+    }
+    if (Math.abs(offset) > TUNE_MIN) return { mode: 'global', offset, segments: [{ o0: 0, o1: dur, cents: offset }], reason: '整體偏離 A440 約 ' + Math.round(offset) + ' 音分' };
+    return Object.assign(none, { offset, reason: '音高接近 A440(' + Math.round(offset) + ' 音分),不校準' });
+  }
+
+  // 線性內插的變速重新取樣:y(n) = x(n·s)。s < 1 讓音高升高、長度變長;s = 2^(-cents/1200)
+  function resampleRate(x, s) {
+    const m = Math.max(0, Math.floor(x.length / s)), y = new Float32Array(m);
+    for (let n = 0; n < m; n++) { const p = n * s, i0 = Math.floor(p), f = p - i0; y[n] = x[Math.min(x.length - 1, i0)] * (1 - f) + x[Math.min(x.length - 1, i0 + 1)] * f; }
+    return y;
+  }
+  // 依計畫把整段聲音重新取樣(各段接起來);回傳新的 Float32Array。沒有計畫(mode none)就原樣回傳
+  function applyWarp(x, sr, plan) {
+    if (!plan || plan.mode === 'none' || !plan.segments.length) return x;
+    const parts = []; let total = 0;
+    for (const sg of plan.segments) {
+      const a = Math.max(0, Math.round(sg.o0 * sr)), b = Math.min(x.length, Math.round(sg.o1 * sr)); if (b <= a) continue;
+      const s = Math.pow(2, -sg.cents / 1200), y = resampleRate(x.subarray(a, b), s); parts.push(y); total += y.length;
+    }
+    const out = new Float32Array(total); let o = 0; for (const y of parts) { out.set(y, o); o += y.length; }
+    return out;
+  }
+  // 時間對應:校準後時間 → 原始時間。每段的起點用同一個速率換算
+  function makeTimeMap(plan, sr) {
+    if (!plan || plan.mode === 'none' || !plan.segments.length) return (t) => t;
+    const rows = []; let outStart = 0;
+    for (const sg of plan.segments) { const s = Math.pow(2, -sg.cents / 1200), inLen = Math.max(0, Math.round(sg.o1 * sr) - Math.round(sg.o0 * sr)), outLen = Math.floor(inLen / s) / sr; rows.push({ outStart, origStart: sg.o0, s, outLen }); outStart += outLen; }
+    return function (tY) {
+      if (!isFinite(tY)) return tY;
+      let lo = 0, hi = rows.length - 1; if (tY <= 0) return rows[0].origStart + tY * rows[0].s;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rows[m].outStart <= tY) lo = m; else hi = m - 1; }
+      const r = rows[lo]; return r.origStart + (tY - r.outStart) * r.s;
+    };
+  }
+
+  return { HP_FC, HP_Q, TUNE_MIN, DRIFT_RANGE, DRIFT_STEP, highpass, estimateTuning, planWarp, applyWarp, makeTimeMap, resampleRate, wrap };
+});
+
+}).call(null, undefined, holder);
+return holder.FaAudioDsp;
+})();
+/* MUSICDSP-END */
 /* MUSICA2M-BEGIN */
 const FaAudioToMidi = (function () {
 const holder = {};
@@ -61535,38 +62016,70 @@ return holder.FaAudioToMidi;
 const FaAudioPipeline = (function () {
 const holder = {};
 (function (module, self) {
-// 音訊轉 MIDI 流程:解碼後的取樣 → 分段 → (可插拔)分軌器 → 逐軌轉譜 → 樂器標籤 → 組成多軌 MIDI。
+// 音訊轉 MIDI 流程:解碼後的取樣 → 音高校準／漂移修正 → 分段(20 秒一段、重疊 2 秒) → (可插拔)分軌器 → 逐軌轉譜 → 音符後處理 → 樂器標籤 → 組成多軌 MIDI。
 // 分軌器、轉譜器、分類器都是可插拔函式,沒有就退回規則做法,並在 report 誠實列出哪些被跳過。
 //   separator(chunk{left,right,sr}) → Promise<{ drums, bass, other, vocals, guitar, piano }>  每軌是與輸入同長的單聲道 Float32Array
-//   transcriber(mono, sr, stemName) → Promise<[{ t, d, n, v }]>  (多音轉譜,例如 Basic Pitch;t 相對這段開頭)
+//   transcriber(mono, sr, stemName) → Promise<[{ t, d, n, v }]>  (多音轉譜,例如 Basic Pitch;t 相對這段開頭;可帶 .methods 說明用了哪些處理)
 //   classifier(mono, sr) → Promise<string>  樂器標籤(例如 YAMNet 的類別名),由 labelToProgram 對應 GM,對不上就用音域退路
 //   store { get(key), set(key, value) }  可中斷續跑:每段每軌的結果存起來,同一首再跑就跳過
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_to_midi.js')); else root.FaAudioPipeline = factory(root.FaAudioToMidi || (typeof FaAudioToMidi !== 'undefined' ? FaAudioToMidi : undefined)); })(typeof self !== 'undefined' ? self : this, function (A) {
+//   mode 'full'(預設)| 'melody'(只留旋律)| 'chords'(旋律加和弦):從已轉出的音符分類,不重跑模型
+// 分段規則:每段 20 秒,相鄰兩段重疊 2 秒;每段只負責到重疊的中點(第 k 段負責 [起點+1, 下一段起點+1) 秒),所以段與段之間不會重複或漏掉音。
+// report.methods 列出用了哪些處理(給結果訊息與方法欄用)。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_to_midi.js'), require('./note_postprocess.js'), require('./drum_flux.js'), require('./audio_dsp.js')); else root.FaAudioPipeline = factory(root.FaAudioToMidi || (typeof FaAudioToMidi !== 'undefined' ? FaAudioToMidi : undefined), root.FaNotePost || (typeof FaNotePost !== 'undefined' ? FaNotePost : undefined), root.FaDrumFlux || (typeof FaDrumFlux !== 'undefined' ? FaDrumFlux : undefined), root.FaAudioDsp || (typeof FaAudioDsp !== 'undefined' ? FaAudioDsp : undefined)); })(typeof self !== 'undefined' ? self : this, function (A, NP, DF, DSP) {
   'use strict';
-  const WORK_SR = 22050, CHUNK = 7.8, MARGIN = 0.5;
-  function toMono(l, r) { if (!r) return l; const o = new Float32Array(l.length); for (let i = 0; i < l.length; i++) o[i] = 0.5 * (l[i] + (r[i] || 0)); return o; }
+  const WORK_SR = 22050, CHUNK = 20, OVERLAP = 2;
+  const MODES = ['full', 'melody', 'chords'];
+  // 立體聲取捨交給 NP.stereoToMono(左右反相時不平均成靜音);沒有後處理模組時退回平均
+  function toMono(l, r) { if (NP) return NP.stereoToMono(l, r); if (!r) return l; const o = new Float32Array(l.length); for (let i = 0; i < l.length; i++) o[i] = 0.5 * (l[i] + (r[i] || 0)); return o; }
   // 簡單的區塊平均降取樣(整數倍)加線性內插,夠給音高追蹤與鼓偵測用
   function resample(x, from, to) { if (from === to) return x; const n = Math.floor(x.length * to / from), o = new Float32Array(n), k = from / to; for (let i = 0; i < n; i++) { const a = i * k, i0 = Math.floor(a), i1 = Math.min(x.length - 1, i0 + 1), f = a - i0; let v = x[Math.min(x.length - 1, i0)] * (1 - f) + x[i1] * f; if (k > 1.5) { let s = 0, c = 0; const e = Math.min(x.length, Math.floor(a + k)); for (let j = Math.floor(a); j < e; j++) { s += x[j]; c++; } if (c) v = s / c; } o[i] = v; } return o; }
   function fingerprint(l, sr) { let h = 2166136261 >>> 0; const step = Math.max(1, Math.floor(l.length / 4096)); for (let i = 0; i < l.length; i += step) h = Math.imul(h ^ Math.round(l[i] * 32767), 16777619) >>> 0; return 'a2m:' + l.length + ':' + sr + ':' + h.toString(16); }
   function mergeNotes(ns) { ns = ns.slice().sort((a, b) => a.t - b.t || a.n - b.n); const out = []; for (const n of ns) { const p = out.length ? out.filter((o) => o.n === n.n).pop() : null; if (p && n.t - (p.t + p.d) < 0.02 && n.t - (p.t + p.d) > -0.01) p.d = n.t + n.d - p.t; else out.push({ t: n.t, d: n.d, n: n.n, v: n.v }); } return out; }
   // 取最響的一段(至多 maxSec 秒)給分類器看
   function loudest(x, sr, maxSec) { const w = Math.floor(maxSec * sr); if (x.length <= w) return x; let best = 0, bi = 0; const hop = Math.floor(sr / 2); for (let o = 0; o + w <= x.length; o += hop) { let e = 0; for (let i = o; i < o + w; i += 16) e += x[i] * x[i]; if (e > best) { best = e; bi = o; } } return x.subarray(bi, bi + w); }
+  // 音符後處理(階段一):沒有模組就只做合併
+  const pp = (ns, melody) => { const m = mergeNotes(ns); return NP ? NP.postprocess(m, { melody: !!melody }) : m; };
+  // 把校準後時間換回原始時間(音符的起點與長度都換)
+  const mapNote = (n, tm) => { if (tm === null) return n; const t = tm(n.t); if (n.d == null) return Object.assign({}, n, { t }); return Object.assign({}, n, { t, d: Math.max(0, tm(n.t + n.d) - t) }); };
+  // 結果快取鍵的版本號:後處理、分段或校準規則改了就換版本,避免讀到舊規則的結果
+  const CACHE_VER = 'pp2';
 
   async function run(input, opts) {
-    opts = opts || {}; const sr = input.sampleRate, L = input.left || input.channel, R = input.right || null;
-    if (!L || !L.length || !sr) throw new Error('沒有可轉的音訊取樣');
-    const report = { used: [], skipped: [], stems: [], chunks: 0, resumed: 0, seconds: L.length / sr };
-    const onP = opts.onProgress || (() => {}), store = opts.store, id = opts.id || fingerprint(L, sr);
-    const useSep = typeof opts.separator === 'function', chunk = opts.chunkSec || (useSep && opts.separator.segmentSec ? opts.separator.segmentSec - 2 * MARGIN : CHUNK), total = Math.max(1, Math.ceil(L.length / sr / chunk));
+    opts = opts || {}; const sr = input.sampleRate, L0 = input.left || input.channel, R0 = input.right || null;
+    if (!L0 || !L0.length || !sr) throw new Error('沒有可轉的音訊取樣');
+    const mode = MODES.includes(opts.mode) ? opts.mode : 'full', pitchedMode = mode !== 'full';
+    const origSec = L0.length / sr;
+    const report = { used: [], skipped: [], stems: [], chunks: 0, resumed: 0, seconds: origSec, methods: [] };
+    const onP = opts.onProgress || (() => {}), store = opts.store, id = opts.id || fingerprint(L0, sr);
+    // (1) 音高校準:錄音偏離 A440 就先整段重新取樣;錄音逐漸變調就逐秒校準。之後所有處理都在校準後的時間軸上做,最後換回原始時間
+    let L = L0, R = R0, tm = null;
+    // 校準任何一步出錯都退回原始音高(與舊流程相同),並寫明跳過
+    try {
+      const plan = (DSP && opts.calibrate !== false) ? DSP.planWarp(toMono(L0, R0), sr) : null;
+      if (plan && plan.mode !== 'none') {
+        const L1 = DSP.applyWarp(L0, sr, plan), R1 = R0 ? DSP.applyWarp(R0, sr, plan) : null, tm1 = DSP.makeTimeMap(plan, sr);
+        L = L1; R = R1; tm = tm1;
+        if (plan.mode === 'global') report.methods.push('＋音高校準 ' + (-Math.round(plan.offset)) + ' 音分');
+        else report.methods.push('＋音高漂移修正');
+        report.used.push('音高:' + plan.reason);
+      }
+    } catch (e) { L = L0; R = R0; tm = null; report.skipped.push('音高校準失敗(' + String((e && e.message) || e) + '),沿用原始音高'); }
+    const dur = L.length / sr;
+    // (2) 分段:每段 chunk 秒,相鄰段重疊 OVERLAP 秒;每段負責 [起點 + OVERLAP/2, 下一段起點 + OVERLAP/2),中點切開
+    const chunkSec = opts.chunkSec || CHUNK, step = Math.max(0.5, chunkSec - OVERLAP), starts = [];
+    for (let s = 0; s < dur; s += step) starts.push(s); if (!starts.length) starts.push(0);
+    const total = starts.length;
+    const useSep = typeof opts.separator === 'function';
     const stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
     if (!useSep) { report.skipped.push('沒有分軌模型:整個混音當成一軌處理,只用單音音高追蹤,不拆鼓、貝斯、人聲'); }
     else report.used.push('分軌:' + stemNames.join('、'));
     const acc = {}; stemNames.forEach((s) => { acc[s] = []; });
     for (let c = 0; c < total; c++) {
       if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('已中斷'), { aborted: true, resumeId: id });
-      const t0 = c * chunk, t1 = Math.min(L.length / sr, t0 + chunk), a = Math.max(0, Math.floor((t0 - MARGIN) * sr)), b = Math.min(L.length, Math.floor((t1 + MARGIN) * sr)), winStart = a / sr;
+      const s0 = starts[c], e0 = Math.min(dur, s0 + chunkSec), own0 = c === 0 ? 0 : s0 + OVERLAP / 2, own1 = c === total - 1 ? dur : starts[c + 1] + OVERLAP / 2;
+      const a = Math.max(0, Math.floor(s0 * sr)), b = Math.min(L.length, Math.floor(e0 * sr)), winStart = a / sr;
       onP({ chapter: '轉譜', done: c, total, message: '第 ' + (c + 1) + '/' + total + ' 段' });
-      const key = id + ':' + c + ':' + (useSep ? 'sep' : 'mix') + (opts.transcriber ? '+tr' : '');
+      const key = id + ':' + c + ':' + (useSep ? 'sep' : 'mix') + (opts.transcriber ? '+tr' : '') + ':' + CACHE_VER + ':' + chunkSec + (tm ? ':cal' : '');
       let res = store ? await store.get(key) : null;
       if (res) report.resumed++;
       else {
@@ -61583,30 +62096,56 @@ const holder = {};
         }
         if (store) await store.set(key, res);
       }
-      for (const s of stemNames) { const r = res[s]; if (!r || r.skipped) continue; if (r.drums) acc[s].push.apply(acc[s], r.drums.filter((h) => h.t >= t0 && h.t < t1)); else acc[s].push.apply(acc[s], r.notes.filter((n) => n.t >= t0 && n.t < t1)); }
+      for (const s of stemNames) { const r = res[s]; if (!r || r.skipped) continue; const keep = (t) => t >= own0 && t < own1; if (r.drums) acc[s].push.apply(acc[s], r.drums.filter((h) => keep(h.t))); else acc[s].push.apply(acc[s], r.notes.filter((n) => keep(n.t))); }
       report.chunks++;
     }
-    // 樂器標籤:只對「其他」「吉他」「鋼琴」「整個混音」這種不知道是什麼的軌問分類器
-    const parts = { other: [] }; const wholeMono = () => toMono(L, R);
-    if (acc.drums && acc.drums.length) parts.drums = acc.drums;
-    if (acc.bass && acc.bass.length) parts.bass = mergeNotes(acc.bass);
-    if (acc.vocals && acc.vocals.length) parts.vocals = mergeNotes(acc.vocals);
-    for (const s of stemNames) {
-      if (['drums', 'bass', 'vocals'].includes(s) || !acc[s] || !acc[s].length) continue;
-      const notes = mergeNotes(acc[s]); let label = null, program = s === 'guitar' ? 25 : s === 'piano' ? 0 : null;
+    // 方法欄:轉譜器自己說明用了哪些處理(只在真的跑過時才有)
+    if (opts.transcriber && Array.isArray(opts.transcriber.methods)) report.methods.push(...opts.transcriber.methods);
+    // (3) 換回原始時間
+    if (tm) for (const s of Object.keys(acc)) acc[s] = acc[s].map((n) => mapNote(n, tm));
+    const wholeMono = () => toMono(L, R);
+    // (4) 音符後處理,再依模式決定哪些軌留下
+    const parts = { other: [] };
+    const others = []; // { s, notes }
+    for (const s of stemNames) { if (['drums', 'bass', 'vocals'].includes(s) || !acc[s] || !acc[s].length) continue; others.push({ s, notes: pp(acc[s], s === 'mix' || s === 'other' || s === 'guitar' || s === 'piano') }); }
+    if (pitchedMode) {
+      if (!NP) report.skipped.push('沒有音符後處理模組,無法做「' + (mode === 'melody' ? '只留旋律' : '旋律加和弦') + '」,改用完整結果');
+      else {
+        const pool = [].concat(acc.vocals && acc.vocals.length ? pp(acc.vocals, false) : [], acc.bass && acc.bass.length ? pp(acc.bass, false) : [], ...others.map((o) => o.notes));
+        report.methods.push(mode === 'melody' ? '＋只留旋律' : '＋旋律加和弦');
+        report.used.push('模式:' + (mode === 'melody' ? '簡化(只留旋律)' : '和弦(旋律加和弦)'));
+        others.length = 0; others.push({ s: 'mode', notes: NP.simplifyForMode(pool, mode) });
+      }
+    } else {
+      // 鼓軌:有分軌出來的鼓(Demucs)就用它;沒有就用頻譜法在整個混音上找(不下載模型,有存在檢查)
+      if (acc.drums && acc.drums.length) { parts.drums = acc.drums; report.methods.push('＋鼓軌（分軌）'); }
+      else if (DF) {
+        try {
+          const fd = DF.detect(resample(wholeMono(), sr, WORK_SR), WORK_SR);
+          if (fd.present) { parts.drums = fd.hits.map((h) => mapNote(h, tm)); report.methods.push('＋鼓軌（頻譜法）'); report.used.push('鼓軌:' + fd.reason); }
+          else report.skipped.push('頻譜法沒有找到鼓(' + fd.reason + ')');
+        } catch (e) { report.skipped.push('頻譜法鼓軌失敗(' + String((e && e.message) || e) + ')'); }
+      }
+      if (acc.bass && acc.bass.length) parts.bass = pp(acc.bass, false);
+      if (acc.vocals && acc.vocals.length) parts.vocals = pp(acc.vocals, false);
+    }
+    // (5) 樂器標籤:只對「其他」「吉他」「鋼琴」「整個混音」這種不知道是什麼的軌問分類器
+    for (const o of others) {
+      const s = o.s, notes = o.notes; let label = null, program = s === 'guitar' ? 25 : s === 'piano' ? 0 : null;
       if (program == null && typeof opts.classifier === 'function') { try { label = await opts.classifier(resample(loudest(wholeMono(), sr, 8), sr, 16000), 16000); } catch (e) { report.skipped.push('樂器分類失敗(' + (e && e.message || e) + '),改用音域規則'); } if (label && A.labelToProgram(label) == null) { report.skipped.push('分類標籤「' + label + '」對不到 GM 音色,改用音域規則'); label = null; } }
       else if (program == null) report.skipped.push('沒有樂器分類器:「' + (s === 'mix' ? '整個混音' : '其他') + '」軌用音域規則挑音色(低→貝斯、中→鋼琴、高→合成主奏)');
-      parts.other.push({ name: s === 'mix' ? '混音(單音追蹤)' : s === 'guitar' ? '吉他' : s === 'piano' ? '鋼琴' : '其他', program: program != null ? program : undefined, label, notes });
+      const name = s === 'mix' ? '混音(單音追蹤)' : s === 'guitar' ? '吉他' : s === 'piano' ? '鋼琴' : s === 'mode' ? (mode === 'melody' ? '旋律' : '旋律加和弦') : '其他';
+      parts.other.push({ name, program: program != null ? program : undefined, label, notes });
       report.stems.push({ stem: s, notes: notes.length, label, program });
     }
-    if (!parts.drums && useSep && stemNames.includes('drums')) report.skipped.push('沒有偵測到鼓的打擊');
+    if (!parts.drums && useSep && stemNames.includes('drums') && !pitchedMode) report.skipped.push('沒有偵測到鼓的打擊');
     if (!useSep) report.skipped.push('沒有鼓軌、貝斯軌與人聲軌');
     report.skipped.push('拆樂器只到分軌模型給的幾軌;其他軌內的多種樂器不會被再分開。結果不保證準確,請在編輯器裡檢查');
     const built = A.buildSong(parts, { bpm: opts.bpm, title: opts.title });
     onP({ chapter: '完成', done: total, total, message: '完成' });
     return { song: built.song, tempo: built.tempo, report };
   }
-  return { run, resample, toMono, fingerprint, mergeNotes, loudest, WORK_SR, CHUNK };
+  return { run, resample, toMono, fingerprint, mergeNotes, loudest, WORK_SR, CHUNK, OVERLAP, MODES };
 });
 
 }).call(null, undefined, holder);
@@ -61756,10 +62295,13 @@ const holder = {};
 // 音訊轉 MIDI 的模型執行層:用 onnxruntime-web 載入 Basic Pitch、YAMNet、Demucs 6 軌,包成流程要的三個可插拔函式。
 // 執行環境三條路:webgpu(有就用,失敗自動退)→ wasm(多執行緒需要跨來源隔離,沒有就單執行緒)→ 都失敗就回報,流程退回規則做法。
 // 張量形狀、輸出順序都是 2026-11-01 用 onnxruntime 實測(Basic Pitch、YAMNet)或依模型卡(Demucs)。
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_pipeline.js'), require('./basic_pitch.js'), require('./instrument_classify.js')); else root.FaAudioRuntime = factory(root.FaAudioPipeline || (typeof FaAudioPipeline !== 'undefined' ? FaAudioPipeline : undefined), root.FaBasicPitch || (typeof FaBasicPitch !== 'undefined' ? FaBasicPitch : undefined), root.FaInstrumentClassify || (typeof FaInstrumentClassify !== 'undefined' ? FaInstrumentClassify : undefined)); })(typeof self !== 'undefined' ? self : this, function (P, BP, IC) {
+// 階段三:Basic Pitch 高低音分開跑(MIDI 55 以上用 200 Hz 高通後的版本轉,其餘用原混音轉);Demucs 可接任意長度的一段(內部切成模型長度的小段,各留 0.5 秒邊界)。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_pipeline.js'), require('./basic_pitch.js'), require('./instrument_classify.js'), require('./note_postprocess.js'), require('./audio_dsp.js')); else root.FaAudioRuntime = factory(root.FaAudioPipeline || (typeof FaAudioPipeline !== 'undefined' ? FaAudioPipeline : undefined), root.FaBasicPitch || (typeof FaBasicPitch !== 'undefined' ? FaBasicPitch : undefined), root.FaInstrumentClassify || (typeof FaInstrumentClassify !== 'undefined' ? FaInstrumentClassify : undefined), root.FaNotePost || (typeof FaNotePost !== 'undefined' ? FaNotePost : undefined), root.FaAudioDsp || (typeof FaAudioDsp !== 'undefined' ? FaAudioDsp : undefined)); })(typeof self !== 'undefined' ? self : this, function (P, BP, IC, NP, DSP) {
   'use strict';
   const ORT_VERSION = '1.22.0', ORT_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@' + ORT_VERSION + '/dist/ort.webgpu.min.mjs', ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@' + ORT_VERSION + '/dist/';
   const SEG = 343980, DSR = 44100, STEMS = ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano'];
+  const SPLIT_MIDI = 55;     // 高低音分界:MIDI 55(G3)以上由高通版本轉出;54 以下是低音。邊界 55 歸高音
+  const DEMUCS_MARGIN = 0.5; // Demucs 每一小段兩側各多給的秒數,核心段才取用
   // 同一個網址 import 只會得到同一個 ort 實例,env.wasm.proxy 是實例全域的:proxy 開著(音訊模型)和關著(midigenai GPU 版要 preferredOutputLocation)互相切換會讓已初始化的 wasm 後端壞掉(worker not ready)。
   // 所以兩種模式用不同網址查詢字串各拿一個獨立實例,各自設定一次後快取,不再互相改。
   const _ortCache = {};
@@ -61776,25 +62318,61 @@ const holder = {};
   async function loadOrt(opts) { opts = opts || {}; const proxy = opts.proxy !== false; const ort = opts.ort || await importOrt(opts.ortUrl || ORT_URL, proxy, opts.importFn); ort.env.wasm.wasmPaths = opts.wasmBase || ORT_BASE; ort.env.wasm.proxy = proxy; ort.env.wasm.numThreads = ortThreadCount(); return ort; }
   // 建立工作階段:依序試 eps(預設 webgpu、wasm),回傳 { session, ep, tried }
   async function createSession(ort, bytes, eps, opts) { const tried = []; const list = eps || ['webgpu', 'wasm']; /* 多種執行方式時每次給一份副本:proxy 模式建 session 會把傳入的緩衝轉移掉(detached),失敗後換下一種就沒資料了 */ for (const ep of list) { try { if (ep === 'webgpu' && !(typeof navigator !== 'undefined' && navigator.gpu)) throw new Error('沒有 WebGPU'); const session = await ort.InferenceSession.create(list.length > 1 && bytes && bytes.slice ? bytes.slice(0) : bytes, { executionProviders: [ep], graphOptimizationLevel: (opts && opts.opt) || 'all' }); return { session, ep, tried }; } catch (e) { tried.push(ep + ':' + (e && e.message || e)); } } throw new Error('所有執行方式都失敗:' + tried.join(';')); }
+
+  // Basic Pitch 轉譜:一次整段跑(視窗切好、解碼、併回假切、最短音);高低音分開跑時 runOne 會被呼叫兩次
   function makeTranscriber(ort, session, onFrame) {
     const name = session.inputNames[0];
-    return async function (mono, sr) { const x = P.resample(mono, sr, BP.SR), ws = BP.windows(x), res = []; for (let i = 0; i < ws.length; i++) { const out = await session.run({ [name]: new ort.Tensor('float32', ws[i], [1, BP.WIN, 1]) }); const o = session.outputNames; res.push({ onset: out[o[0]].data, note: out[o[1]].data }); if (onFrame) onFrame(i + 1, ws.length); } return BP.decode(BP.stitch(res, x.length)).map((n) => ({ t: n.t, d: n.d, n: n.n, v: n.v })); };
+    async function runOne(mono, sr) {
+      const x = P.resample(mono, sr, BP.SR), ws = BP.windows(x), res = [];
+      for (let i = 0; i < ws.length; i++) { const out = await session.run({ [name]: new ort.Tensor('float32', ws[i], [1, BP.WIN, 1]) }); const o = session.outputNames; res.push({ onset: out[o[0]].data, note: out[o[1]].data }); if (onFrame) onFrame(i + 1, ws.length); }
+      const st = BP.stitch(res, x.length); let notes = BP.decode(st, { minFrames: 4 });
+      if (NP) { const evAt = NP.evidenceFromActivations(st); notes = NP.enforceMinLength(NP.joinSplitNotes(notes, evAt), evAt); }
+      return notes;
+    }
+    let splitOn = !!DSP, splitFailed = false;
+    const fn = async function (mono, sr) {
+      const low = await runOne(mono, sr);
+      let notes = low;
+      if (splitOn) {
+        try { const high = await runOne(DSP.highpass(mono, sr, DSP.HP_FC), sr); notes = low.filter((n) => n.n < SPLIT_MIDI).concat(high.filter((n) => n.n >= SPLIT_MIDI)).sort((a, b) => a.t - b.t || a.n - b.n); }
+        catch (_) { splitOn = false; splitFailed = true; } // 高通這一路出錯:這段起之後都只用原混音(與舊流程相同),方法欄也不再標示
+      }
+      return notes.map((n) => ({ t: n.t, d: n.d, n: n.n, v: n.v }));
+    };
+    // 方法欄只在高低音分開跑「全部段落都成功」時才標示
+    Object.defineProperty(fn, 'methods', { get() { return (DSP && !splitFailed) ? ['＋高低音分跑'] : []; } });
+    return fn;
   }
   function makeClassifier(ort, session) {
     return async function (mono16k) { const out = await session.run({ waveform: new ort.Tensor('float32', mono16k, [mono16k.length]) }); const sc = out[session.outputNames[0]]; const r = IC.pick(sc.data, sc.dims[0]); return r && r.confident ? r.label : null; };
   }
+  // Demucs 分軌:模型一次只吃 SEG 長(約 7.8 秒)。這裡把任意長度切成核心段(SEG 扣掉兩側邊界),每段多給 DEMUCS_MARGIN 秒當邊界,只取核心部分接起來。
   function makeSeparator(ort, session) {
+    const CORE_SEC = SEG / DSR - 2 * DEMUCS_MARGIN;
+    async function runWindow(Lw, Rw) {
+      const buf = new Float32Array(2 * SEG);
+      buf.set(Lw.subarray(0, Math.min(SEG, Lw.length)), 0); buf.set(Rw.subarray(0, Math.min(SEG, Rw.length)), SEG);
+      const out = await session.run({ mix: new ort.Tensor('float32', buf, [1, 2, SEG]) }); return out[session.outputNames[0]].data;
+    }
     const f = async function (c) {
-      const n = c.left.length, L = P.resample(c.left, c.sr, DSR), R = c.right ? P.resample(c.right, c.sr, DSR) : L, buf = new Float32Array(2 * SEG);
-      buf.set(L.subarray(0, Math.min(SEG, L.length)), 0); buf.set(R.subarray(0, Math.min(SEG, R.length)), SEG);
-      const out = await session.run({ mix: new ort.Tensor('float32', buf, [1, 2, SEG]) }), d = out[session.outputNames[0]].data, res = {};
-      STEMS.forEach((s, k) => { const m = new Float32Array(Math.min(SEG, L.length)); for (let i = 0; i < m.length; i++) m[i] = 0.5 * (d[(k * 2) * SEG + i] + d[(k * 2 + 1) * SEG + i]); const back = P.resample(m, DSR, c.sr); const o = new Float32Array(n); o.set(back.subarray(0, Math.min(n, back.length))); res[s] = o; });
+      const n = c.left.length, sr = c.sr, R0 = c.right || c.left, res = {}; STEMS.forEach((s) => { res[s] = new Float32Array(n); });
+      const core = Math.max(1, Math.round(CORE_SEC * sr)), m = Math.round(DEMUCS_MARGIN * sr);
+      for (let p0 = 0; p0 < n; p0 += core) {
+        const p1 = Math.min(n, p0 + core), w0 = Math.max(0, p0 - m), w1 = Math.min(n, p1 + m);
+        const Lw = P.resample(c.left.subarray(w0, w1), sr, DSR), Rw = P.resample(R0.subarray(w0, w1), sr, DSR);
+        const d = await runWindow(Lw, Rw), len = Math.min(SEG, Lw.length);
+        STEMS.forEach((s, k) => {
+          const mm = new Float32Array(len); for (let i = 0; i < len; i++) mm[i] = 0.5 * (d[(k * 2) * SEG + i] + d[(k * 2 + 1) * SEG + i]);
+          const back = P.resample(mm, DSR, sr), off = p0 - w0;
+          for (let i = 0; i < p1 - p0; i++) { const src = Math.min(back.length - 1, off + i); res[s][p0 + i] = src >= 0 ? back[src] : 0; }
+        });
+      }
       return res;
     };
-    f.segmentSec = SEG / DSR; return f;
+    f.segmentSec = CORE_SEC; return f;
   }
   const DEMUCS_OPT = 'disabled'; // 實測:Demucs 圖形最佳化會讓 wasm 與 webgpu 建立工作階段失敗,關掉最佳化 wasm 才載得起來
-  return { DEMUCS_OPT, ORT_VERSION, ORT_URL, SEG, STEMS, loadOrt, createSession, makeTranscriber, makeClassifier, makeSeparator };
+  return { DEMUCS_OPT, ORT_VERSION, ORT_URL, SEG, STEMS, SPLIT_MIDI, loadOrt, createSession, makeTranscriber, makeClassifier, makeSeparator };
 });
 
 }).call(null, undefined, holder);
