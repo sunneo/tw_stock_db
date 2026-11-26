@@ -5,10 +5,12 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 const src = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/floating-assistant.js'), 'utf8').split('\r\n').join('\n');
 const pagerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/jsonl_pager.js'), 'utf8');
 const P = require('../renderer/src/agent/jsonl_pager.js');
-const a = src.indexOf('    _bigStash(text, label) {'), b = src.indexOf('    _formatToolResult(result, toolName) {');
+const a = src.indexOf('    _bigDiskMod() {'), b = src.indexOf('    _formatToolResult(result, toolName) {');
 assert.ok(a > 0 && b > a, '找不到要切的原始碼');
 const webSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/web_blocks.js'), 'utf8');
-const Cls = new Function('FA_JSONL_PAGER_SRC', 'FA_WEB_BLOCKS_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(src.indexOf('    _bigStashRecords('), src.indexOf('    // 線上視覺模型看圖：每個候選')) + src.slice(a, b) + '\n})')(pagerSrc, webSrc, 3);
+const chunkSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/chunk_store.js'), 'utf8');
+const bigStashSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/big_stash.js'), 'utf8');
+const Cls = new Function('FA_JSONL_PAGER_SRC', 'FA_WEB_BLOCKS_SRC', 'FA_CHUNK_STORE_SRC', 'FA_BIG_STASH_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(src.indexOf('    _bigStashRecords('), src.indexOf('    // 線上視覺模型看圖：每個候選')) + src.slice(a, b) + '\n})')(pagerSrc, webSrc, chunkSrc, bigStashSrc, 3);
 const mk = (ctx, auto) => Object.assign(new Cls(), {
   _log: (m) => console.log('LOG', m),
   _getGenerationSettings: () => ({ contextWindowTokens: ctx }),
@@ -110,7 +112,7 @@ const mkVlm = (total, capChars) => {
     }
     return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: out + '{"_end":true}\n' }, finish_reason: 'stop' }], model: 'fake' }) };
   } };
-  const C = new Function('FaLlm', 'FA_JSONL_PAGER_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(v0, v1) + '\n})')(FaLlm, pagerSrc, 3);
+  const C = new Function('FaLlm', 'FA_JSONL_PAGER_SRC', 'FA_CHUNK_STORE_SRC', 'FA_BIG_STASH_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(v0, v1) + '\n})')(FaLlm, pagerSrc, chunkSrc, bigStashSrc, 3);
   const fa = Object.assign(new C(), {
     _getGenerationSettings: () => ({ contextWindowTokens: 8192 }), _isAutoAgentMode: () => false, _toolResultBudgetChars: () => 8000,
     _createAbortController: () => new AbortController(), _isOpenRouter: () => false,
@@ -141,7 +143,7 @@ const mkVlm = (total, capChars) => {
   const l0 = src.indexOf('    _faReadLedgerMod() {'), l1 = src.indexOf('    // 每個終端機 session 一個視窗主機');
   assert.ok(l0 > 0 && l1 > l0);
   const ledgerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer/src/agent/read_ledger.js'), 'utf8');
-  const Cl = new Function('FA_READ_LEDGER_SRC', 'FA_JSONL_PAGER_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(l0, l1) + '\n})')(ledgerSrc, pagerSrc, 3);
+  const Cl = new Function('FA_READ_LEDGER_SRC', 'FA_JSONL_PAGER_SRC', 'FA_CHUNK_STORE_SRC', 'FA_BIG_STASH_SRC', 'REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE', 'return (class {\n' + src.slice(a, b) + '\n' + src.slice(l0, l1) + '\n})')(ledgerSrc, pagerSrc, chunkSrc, bigStashSrc, 3);
   const mkG = () => Object.assign(new Cl(), { _getGenerationSettings: () => ({ contextWindowTokens: 4096 }), _isAutoAgentMode: () => false, _toolResultBudgetChars() { return 8000; } });
   const g1 = mkG(); const big = JSON.stringify(objs(3000));
   const first = g1._truncateToolResultForContext(big, 'some_tool');   // 工具原始結果在截斷之前記帳本時看不到 has_more；現在截斷時一併記
