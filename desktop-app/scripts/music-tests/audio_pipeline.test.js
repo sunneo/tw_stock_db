@@ -12,7 +12,7 @@ const seq = [60, 64, 67, 72]; for (let i = 0; i < LEN * 2 - 2; i++) { const n = 
   const prog = []; const r1 = await P.run(input, { bpm: 120, onProgress: (p) => prog.push(p) });
   check('no separator: one mono track with the melody, many notes across chunks', r1.song.tracks.length === 1 && r1.song.tracks[0].notes.length >= 36, r1.song.tracks.map((t) => t.notes.length));
   check('no separator: report says what was skipped', r1.report.skipped.some((s) => /沒有分軌模型/.test(s)) && r1.report.skipped.some((s) => /不保證準確/.test(s)), r1.report.skipped);
-  check('chunks: 20 s in 7.8 s segments = 3 chunks, progress reported', r1.report.chunks === 3 && prog.filter((p) => p.chapter === '轉譜').length === 3, r1.report);
+  check('chunks: 20 s clip = 2 chunks of 20 s with 2 s overlap (starts 0 and 18), progress reported', r1.report.chunks === 2 && prog.filter((p) => p.chapter === '轉譜').length === 2, r1.report);
   const ts = r1.song.tracks[0].notes.map((n) => n.t); check('chunks: no duplicated or lost notes at the segment seams', new Set(ts).size === ts.length, ts.length);
   // 2. 假分軌器:吉他軌給旋律,貝斯軌給旋律降八度的複本,鼓軌靜音
   const sepCalls = []; const separator = async (c) => { sepCalls.push(c.left.length); const z = new Float32Array(c.left.length); return { drums: z, bass: z, other: c.left, vocals: z }; };
@@ -22,7 +22,7 @@ const seq = [60, 64, 67, 72]; for (let i = 0; i < LEN * 2 - 2; i++) { const n = 
   check('separator: silent drum/bass/vocal stems give no tracks', r2.song.tracks.every((t) => !t.drum));
   // 3. 續跑:同一首再跑,分軌器不再被呼叫
   const n0 = sepCalls.length; const r3 = await P.run(input, { bpm: 120, separator, store: st, classifier: async () => 'Acoustic guitar' });
-  check('resume: second run uses stored chunk results and never calls the separator', sepCalls.length === n0 && r3.report.resumed === 3 && r3.song.tracks[0].notes.length === r2.song.tracks[0].notes.length, [sepCalls.length, n0, r3.report.resumed]);
+  check('resume: second run uses stored chunk results and never calls the separator', sepCalls.length === n0 && r3.report.resumed === 2 && r3.song.tracks[0].notes.length === r2.song.tracks[0].notes.length, [sepCalls.length, n0, r3.report.resumed]);
   // 4. 中斷
   const sig = { aborted: false }; let err = null; try { await P.run(input, { signal: sig, separator: async (c) => { sig.aborted = true; return { other: c.left }; } }); } catch (e) { err = e; }
   check('abort: stops after the current chunk and tells the resume id', err && err.aborted && /^a2m:/.test(err.resumeId), err && err.message);
@@ -33,7 +33,7 @@ const seq = [60, 64, 67, 72]; for (let i = 0; i < LEN * 2 - 2; i++) { const n = 
   check('classifier error: falls back and reports the error text', r6.report.skipped.some((s) => /boom/.test(s)));
   // 6. 假轉譜器:多音轉譜結果有被收進去
   const r7 = await P.run(input, { bpm: 120, separator: async (c) => ({ guitar: c.left, piano: c.left }), stems: ['guitar', 'piano'], transcriber: async (m, sr, s) => [{ t: 1, d: 0.5, n: s === 'guitar' ? 52 : 60, v: 80 }] });
-  check('transcriber: guitar and piano tracks with fixed programs, one note per chunk', r7.song.tracks.length === 2 && r7.song.tracks[0].program === 25 && r7.song.tracks[1].program === 0 && r7.song.tracks[0].notes.length === 3, r7.song.tracks.map((t) => [t.program, t.notes.length]));
+  check('transcriber: guitar and piano tracks with fixed programs, one note per chunk', r7.song.tracks.length === 2 && r7.song.tracks[0].program === 25 && r7.song.tracks[1].program === 0 && r7.song.tracks[0].notes.length === 2, r7.song.tracks.map((t) => [t.program, t.notes.length]));
   check('helpers: resample length and fingerprint stability', P.resample(x, SR, 11025).length === Math.floor(x.length / 2) && P.fingerprint(x, SR) === P.fingerprint(x.slice(), SR));
   console.log(bad.length ? 'FAIL\n' + bad.join('\n') : 'ok'); console.log(ok + ' passed, ' + bad.length + ' failed'); process.exit(bad.length ? 1 : 0);
 })();

@@ -450,6 +450,8 @@ const suites = [
     ['音樂：音符後處理（假切併回、最短音、和弦對齊、旋律線、只留旋律／旋律加和弦、立體聲反相、起音證據）', 'scripts/music-tests/note_postprocess.test.js'],
     ['音樂：簡化／和弦模式與方法清單（假轉譜器、不重跑模型、完整模式不變）', 'scripts/music-tests/audio_modes.test.js'],
     ['音樂：頻譜法鼓軌（挑峰、存在檢查：合成鼓／鋼琴／靜音／噪音、GM 音高、44.1 kHz 降取樣）', 'scripts/music-tests/drum_flux.test.js'],
+    ['音樂：音訊前處理（高通零相位與不放大殘值、音高校準估計、漂移與突跳的計畫、時間對應）', 'scripts/music-tests/audio_dsp.test.js'],
+    ['音樂：高低音分開跑的接線（假模型：低音來自原混音、高音來自高通）與 Demucs 長段切分', 'scripts/music-tests/audio_split.test.js'],
     ['音樂：MIDI 編輯器匯出選單（只有 MIDI、MP3；檔名去掉不合法字元）', 'scripts/music-tests/midi_editor_export.test.js'],
     ['斜線指令檔案來源：對話中的 MIDI 與附件候選、卡片回答對應', 'scripts/filesource-tests/file_source_core.test.js'],
     ['media-transcribe 解碼退路：檔頭判斷、原生可解不轉、m4a 走 ffmpeg 退路、重試、大檔超限、同意', 'scripts/transcode-tests/transcode_fallback_core.test.js'],
