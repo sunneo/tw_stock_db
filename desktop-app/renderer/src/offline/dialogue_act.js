@@ -9,11 +9,17 @@
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
 
+    // 長度門檻是輔助：句首有標記時長度放寬到 MAX_LEAD_LEN（實測「不是，我說的是前面的review error不影響bitbake build」約 30 字，原本 25 字門檻會漏掉）。
     const MAX_LEN = 25;
+    const MAX_LEAD_LEN = 60;
     const URL_RE = /https?:\/\/|www\.|\.(?:com|tw|org|net|io)\b/i;
     const ATTACH_RE = /\[附件：/;
+    // 句首標記：一句話一開頭就是反駁或糾正，後面出現的動詞（review、build、search…）只是在談論內容，不是新指令。
+    const LEAD_RE = /^\s*(?:不是|不對|不，|不要|不用|錯了|我是說|我說的是|我指的是|我要的是|應該是|no[,，. ]|actually|i meant|i mean|not that)/i;
     // 保守特徵：只當「要不要去問」的觸發，不直接決定動作。
     const TRIGGER_RE = /不是|不對|錯了|錯誤|不行|換|重來|再試|另一個|我是說|我指的是|第\s*[0-9一二三四五六七八九十兩]+\s*(?:則|條|篇|個|項)|上一個|前面那個|no[,. ]|that'?s wrong|wrong|try another|i meant|instead/i;
+    // 常被誤當成指令的動詞（英文夾雜）：只是提到，沒有網址或對象時不可直接執行。
+    const COMMAND_WORD_RE = /\b(?:review|build|search|scan|deploy|test|summari[sz]e|translate)\b|搜尋|審查|編譯|部署/i;
     const PICK_RE = /第\s*([0-9一二三四五六七八九十兩]+)\s*(?:則|條|篇|個|項)/;
     const CN_NUM = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 
@@ -33,11 +39,25 @@
         const t = String(text || '').trim();
         if (!lastAction) return { triggered: false, reason: '沒有上一步動作' };
         if (!t) return { triggered: false, reason: '空白句' };
-        if (t.length > MAX_LEN) return { triggered: false, reason: '句子超過 ' + MAX_LEN + ' 字' };
         if (URL_RE.test(t)) return { triggered: false, reason: '句子含網址' };
         if (ATTACH_RE.test(t)) return { triggered: false, reason: '句子含附件' };
+        if (LEAD_RE.test(t) && t.length <= MAX_LEAD_LEN) return { triggered: true, reason: '句首有反駁或糾正標記', by: 'lead' };
+        if (t.length > MAX_LEN) return { triggered: false, reason: '句子超過 ' + MAX_LEN + ' 字且句首沒有標記' };
         if (!TRIGGER_RE.test(t)) return { triggered: false, reason: '沒有反駁或引導的特徵詞' };
-        return { triggered: true, reason: '短句且有上一步，含反駁或引導特徵' };
+        return { triggered: true, reason: '短句且有上一步，含反駁或引導特徵', by: 'keyword' };
+    }
+
+    // 守門：句中有指令詞（review、build…）但上一步不是那個動作、又沒有網址或附件時，不准直接執行（不可要求使用者輸入網址），先走對話判斷。
+    function guardCommandWord(text, lastAction) {
+        const t = String(text || '').trim();
+        if (!lastAction || !t) return { hold: false, reason: '沒有上一步或空白' };
+        if (URL_RE.test(t) || ATTACH_RE.test(t)) return { hold: false, reason: '有網址或附件，照現行路由' };
+        const m = COMMAND_WORD_RE.exec(t);
+        if (!m) return { hold: false, reason: '沒有指令詞' };
+        const word = m[0].toLowerCase();
+        const same = String(lastAction.tool || '').toLowerCase().indexOf(word) >= 0 || String(lastAction.kind || '').toLowerCase().indexOf(word) >= 0;
+        if (same) return { hold: false, reason: '上一步本來就是這個動作' };
+        return { hold: true, reason: '句中只提到「' + m[0] + '」，沒有網址或對象，先判斷是否為反駁' };
     }
 
     // 上一步摘要：約 120 字內，只留工具、種類、候選標題。
@@ -152,5 +172,5 @@
         return { text: String(text || '').slice(0, 60), kind: (lastAction && lastAction.kind) || null, mode: decision.mode, verified: true };
     }
 
-    return { MAX_LEN, TRIGGER_RE, PICK_RE, CHOICES, precheck, summarizeAction, buildChoiceMessages, validateChoice, choiceId, parsePick, validatePick, pickAlternative, decide, askOptions, decideFromAsk, memKeyFor, remember, recall, learnRecord };
+    return { MAX_LEN, MAX_LEAD_LEN, LEAD_RE, TRIGGER_RE, PICK_RE, CHOICES, precheck, guardCommandWord, summarizeAction, buildChoiceMessages, validateChoice, choiceId, parsePick, validatePick, pickAlternative, decide, askOptions, decideFromAsk, memKeyFor, remember, recall, learnRecord };
 });

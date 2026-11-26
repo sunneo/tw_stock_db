@@ -8,7 +8,22 @@ const LA = { tool: 'browser_create_tab', kind: 'url', candidates: ['美國選舉
 ok(!D.precheck('不對，換個方法', null).triggered, '沒有上一步時不觸發');
 ok(D.precheck('不對，換個方法', LA).triggered, '短句＋反駁特徵＋有上一步會觸發');
 ok(!D.precheck('今天天氣怎麼樣', LA).triggered, '一般句子不觸發（維持現行路由）');
-ok(!D.precheck('我是說第二個，然後幫我把這個報告整理成很長很長很長很長的摘要謝謝你', LA).triggered, '超過 25 字不觸發');
+ok(!D.precheck('幫我把這個報告整理成很長很長很長很長的摘要謝謝你', LA).triggered, '超過 25 字且句首沒有標記不觸發');
+ok(D.precheck('我是說第二個，然後幫我把這個報告整理成很長很長很長很長的摘要謝謝你', LA).triggered, '句首有「我是說」，長度 60 字內仍觸發（句首標記為主）');
+ok(!D.precheck('不是'.repeat(40), LA).triggered, '句首標記但超過 60 字不觸發（長度上限仍存在）');
+
+// 真實失敗案例（Redmine 頁面）：句首「不是，我說的是」，句中有 review／build，約 30 字、英文夾雜
+const CASE = '不是，我說的是前面的review error不影響bitbake build';
+const RM = { tool: 'redmine_issue_open', kind: 'url', candidates: ['issue #101', 'issue #102'], alternatives: ['web_search'], primary: 'redmine_issue_open' };
+ok(CASE.length >= 25 && CASE.length <= 40, '案例約 30 字（驗證長度門檻不是唯一閘門）');
+ok(D.precheck(CASE, RM).triggered && D.precheck(CASE, RM).by === 'lead', '真實案例：句首「不是」→ 觸發對話判斷（原 25 字門檻會漏掉）');
+ok(D.guardCommandWord(CASE, RM).hold === true, '真實案例：句中有 review／build、上一步不是 review、沒網址 → 不准直接執行');
+ok(/review/.test(D.guardCommandWord(CASE, RM).reason), '守門理由點名觸發的詞（review）');
+ok(D.guardCommandWord('幫我 review https://github.com/a/b/pull/1', RM).hold === false, '有網址的 review 不守門（照現行路由）');
+ok(D.guardCommandWord('review 這段程式', { tool: 'code_review', kind: 'code', candidates: [] }).hold === false, '上一步本來就是 review 不守門');
+ok(D.guardCommandWord('今天天氣怎麼樣', RM).hold === false, '沒有指令詞不守門');
+ok(D.guardCommandWord('review 這段', null).hold === false, '沒有上一步不守門');
+ok(D.precheck(CASE, RM).by === 'lead' && D.decide(2, CASE, RM).mode === 'retry_alt', '真實案例的選擇題後續：否定 → 換備選');
 ok(!D.precheck('不對 https://a.com', LA).triggered, '句子含網址不觸發');
 ok(!D.precheck('不對 [附件：a.pdf（file_id=1）]', LA).triggered, '句子含附件不觸發');
 ok(D.precheck('no, that\'s wrong', LA).triggered, '英文 no that\'s wrong 會觸發');
