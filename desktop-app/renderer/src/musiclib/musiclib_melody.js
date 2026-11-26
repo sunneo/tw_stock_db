@@ -331,7 +331,7 @@
   // ───── n-gram 投票（局部比對）：容許部分音錯、漏音、多音，不要求整段一致 ─────
   // 音程（相鄰半音差，夾在 ±12）連續 NGRAM_N 個為一組；查詢的每一組若出現在某條線的音程組裡就算一票。
   // 分數＝命中的查詢組數 ÷ 查詢組數。只看音程，所以調與速度都不影響（速度變了音程組不變）。
-  var NGRAM_N = 3, NGRAM_CLIP = 12, NGRAM_Q = 2;
+  var NGRAM_N = 3, NGRAM_CLIP = 12, NGRAM_Q = 1;
   function ngramKeys(sem) {
     var g = {}, i, k, parts;
     for (i = 0; i + NGRAM_N <= sem.length; i++) {
