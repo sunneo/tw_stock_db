@@ -76,7 +76,7 @@
   // 2) Viterbi 在「半音格＋沒有旋律」之間選路徑：代價＝(1−能量正規化)·W_SAL ＋ 音域外懲罰（偏好人聲 55–84）
   //    ＋ 跳動代價（格差越大越貴）＋ 換音固定費 ＋ 有音↔無音切換費。能量很低的幀沒有旋律的代價為 0。
   // 權重是依合成真值評測（scratchpad\melody_truth_eval.js）校準的常數，數字見 commit 訊息。
-  var VIT = { LO: 40, HI: 84, VLO: 55, VHI: 84, W_SAL: 1.0, W_RANGE: 0.25, W_JUMP: 0.15, W_CHANGE: 0.8, W_ONOFF: 1.5, W_SIL: 0.5, JUMP_CAP: 12, HARM: [1, 0.8, 0.6, 0.5, 0.4], SILENT_REL: 0.03, MIN_FRAMES: 5 };
+  var VIT = { LO: 40, HI: 84, VLO: 55, VHI: 84, W_SAL: 1.0, W_RANGE: 0.25, W_JUMP: 0.15, W_CHANGE: 0.8, W_ONOFF: 1.5, W_SIL: 0.5, JUMP_CAP: 12, HARM: [1, 0.5, 0.3, 0.2, 0.1], SILENT_REL: 0.03, MIN_FRAMES: 5 };
   var fftTab = {};
   function fftPlan(N) {
     if (fftTab[N]) return fftTab[N];
