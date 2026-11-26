@@ -204,7 +204,7 @@
     // 後處理：人哼的旋律不會跨很大的音域。以中位音高為準：離中位 13 半音以上多半是低頻底噪／誤判，丟掉；
     // 9～12 半音多半是掉了／多了一個八度，折回來；孤立（兩側音高都差 3 半音以上）又很短（< 0.15 秒）的碎音丟掉。
     var dropped = { far: 0, folded: 0, blip: 0 };
-    if (notes.length >= 4) {
+    if (notes.length >= 4 && opts.viterbi === false) {   // 八度折回與遠音丟棄是舊的逐幀追蹤專用；主旋律 Viterbi 不需要（會把正確的高音折到低八度）
       var ps0 = notes.map(function (x) { return x.n; }).sort(function (x, y) { return x - y; }), md = ps0[ps0.length >> 1];
       notes = notes.filter(function (x) { return Math.abs(x.n - md) < 13 || (dropped.far++, false); }).map(function (x) {
         var df = x.n - md; if (Math.abs(df) >= 9) { dropped.folded++; return Object.assign({}, x, { n: x.n - 12 * Math.sign(df) }); } return x;
