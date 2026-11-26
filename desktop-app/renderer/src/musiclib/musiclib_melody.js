@@ -20,7 +20,8 @@
   var MIN_TRACK_NOTES = 8;     // 每軌（合併重複音後）至少要這麼多個音才建線
   var MAX_LINES = 12;          // 每首最多保留幾條線（合併線＋各軌線）
   var SIMILAR_TRACK = 0.9;     // 兩軌的音程序列相似度超過這個，只留一條
-  var INDEX_VERSION = 3;       // 索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
+  var INDEX_VERSION = 3;       // 快速旋律線的索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
+  var OLD_ROUTE_VERSION = 4;   // 舊路線（逐音符轉譜，見 songFromAudio）的索引版本：4＝轉譜改用 Viterbi 主旋律；只讓舊路線重建，快速旋律線（版本 3）不受影響
   var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
   var INT_CAP = 5;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
@@ -334,7 +335,9 @@
   // 回傳 summary：done、skipped、failed、cancelled、rebuilt（舊索引格式版本，這次要重建的首數）
   function sigOf(rec) { return String(rec.size || 0) + ':' + String(rec.mtimeMs || 0); }
   var TRANSIENT_RE = /network|timeout|timed out|逾時|連線|fetch/i;
-  function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < INDEX_VERSION); }
+  // 每條路線各自的版本：快速旋律線（feat＝FEAT_FAST）看 INDEX_VERSION；其餘（舊路線、沒有 feat 的舊紀錄）看 OLD_ROUTE_VERSION
+  function versionFor(feat) { return feat === FEAT_FAST ? INDEX_VERSION : OLD_ROUTE_VERSION; }
+  function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < versionFor(rec.melody.feat || 0)); }
   async function runMelodyIndex(recs, opts) {
     opts = opts || {};
     var emit0 = opts.onEvent || function () {}, emit = function (ev) { ev.index = curIndex; ev.total = recs.length; ev.name = curName; ev.summary = { done: summary.done, skipped: summary.skipped, failed: summary.failed }; emit0(ev); }, cancelled = opts.isCancelled || function () { return false; };
@@ -360,7 +363,7 @@
           if (mel.length < MIN_NOTES && !got.fp) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
           if (got.fp) rec.fp = Object.assign({ sig: sigOf(rec) }, got.fp); else if (rec.fp) rec.fp = null;
           // feat：特徵版本（階段二的快速旋律線＝FEAT_FAST）；沒有或較舊＝逐音符轉譜的舊格式，查詢結果會標示「沒有新特徵」
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [], feat: got.feat || 0 };
+          rec.melody = { sig: sigOf(rec), version: versionFor(got.feat || 0), status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [], feat: got.feat || 0 };
           done = true; break;
         } catch (err) {
           var msg = String((err && err.message) || err);
@@ -467,6 +470,6 @@
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
     align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
-    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION, OLD_ROUTE_VERSION: OLD_ROUTE_VERSION, versionFor: versionFor
   };
 }));
