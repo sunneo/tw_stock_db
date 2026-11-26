@@ -25,6 +25,7 @@
   var CH_CELL = Math.round(0.25 * SR / HOP);   // 色度每格的頻譜格數（約 0.23 秒）
   var MIN_VOTES = 20;                 // 命中的票數下限（校準：負面對照（不在索引的歌）最高 18 票；真命中最低約 200 票）
   var RATIO = 2.5;                    // 最高票的偏移，要比「其他偏移」最高票高這麼多倍，才算集中（不亂給）
+  var SEP_Z = 3;                      // 自適應：比例不夠時，差距若大過次高票的 SEP_Z 倍平方根（泊松隨機波動）也算集中；背景票越多，需要的差距越大（喇叭→麥克風的殘響與噪音會把次高票墊高）
   var NEAR = 2;                       // 偏移差在這（格）內，視為同一個偏移（量化造成的抖動）
   var OFF_BIAS = 8388608, OFF_SPAN = 16777216;   // 票的鍵：歌序 × 2^24 + (偏移 + 2^23)
 
@@ -433,7 +434,7 @@
       return { key: index.songs[r.si].key, name: index.songs[r.si].name, path: index.songs[r.si].path, offsetSec: round3(r.off * HOP / SR), votes: r.votes };
     });
     if (top.votes < minVotes) { result.reason = '最高票只有 ' + top.votes + '（需要 ' + minVotes + '）'; return result; }
-    if (top.votes < ratio * Math.max(1, second)) { result.reason = '票數不集中（最高 ' + top.votes + '，次高偏移 ' + second + '）'; return result; }
+    if (top.votes < ratio * Math.max(1, second) && top.votes - second < SEP_Z * Math.sqrt(second + 1)) { result.reason = '票數不集中（最高 ' + top.votes + '，次高偏移 ' + second + '）'; return result; }
     result.ok = true;
     return result;
   }
@@ -530,19 +531,36 @@
   // 哼歌的判定（純函式）：融合名次＋有沒有把握。melody／chroma 都已依分數排序（每筆有 key、score、名稱等）。
   // 有把握＝旋律第一名分數 ≥ opts.melodyConfident，或和聲第一名 ≥ CHROMA_OK 且比第二名高 CHROMA_MARGIN 以上；
   // 而且融合後的第一名就是那一首。沒把握時 confident 為 false，畫面不假裝找到。
+  // opts.fpTop：原曲指紋已通過判定的那一首（{ key, name, path }）→ 最有把握，直接算有把握
+  // opts.polyphonic：查詢是多聲部（有伴奏）→ 旋律權重降為 0.25，且旋律第一名不能單獨成為有把握的依據
   function humVerdict(melody, chroma, opts) {
     var mc = opts && opts.melodyConfident != null ? opts.melodyConfident : 0.5;
+    var fpTop = opts && opts.fpTop ? opts.fpTop : null, poly = !!(opts && opts.polyphonic);
     melody = melody || []; chroma = chroma || [];
-    var fused = fuseRanks({ 旋律: melody, 和聲: chroma }, { 旋律: 1, 和聲: 1 }).slice(0, 10);
+    var layers = { 指紋: fpTop ? [{ key: fpTop.key, name: fpTop.name, path: fpTop.path, score: 1 }] : [], 旋律: melody, 和聲: chroma };
+    var fused = fuseRanks(layers, { 指紋: 2, 旋律: poly ? 0.25 : 1, 和聲: 1 }).slice(0, 10);
     var sureKey = null, mTop = melody[0], cTop = chroma[0], cSec = chroma[1];
-    if (mTop && mTop.score >= mc) sureKey = mTop.key;
+    if (fpTop) sureKey = fpTop.key;
+    else if (!poly && mTop && mTop.score >= mc) sureKey = mTop.key;
     else if (cTop && cTop.score >= CHROMA_OK && (!cSec || cTop.score - cSec.score >= CHROMA_MARGIN)) sureKey = cTop.key;
     var top = fused[0] || null;
     return { fused: fused, top: top, confident: !!(top && sureKey != null && top.key === sureKey) };
   }
+  // 多聲部程度（純函式）：每格（色度）同時活躍的音高類別數（≥ 該格最大值的一半）取平均；沒有和聲的格不算。
+  // 實測（喇叭→麥克風合成）：哼唱約 1.3–1.6，播放原曲約 2.1–4.2；門檻由呼叫端依索引內歌曲的中位數自適應。
+  function polyphony(c) {
+    var sum = 0, n = 0, g, p, mx, k;
+    for (g = 0; g < c.cells; g++) {
+      mx = 0; for (p = 0; p < 12; p++) if (c.chroma[g * 12 + p] > mx) mx = c.chroma[g * 12 + p];
+      if (mx <= 0) continue;
+      k = 0; for (p = 0; p < 12; p++) if (c.chroma[g * 12 + p] >= 0.5 * mx) k++;
+      sum += k; n++;
+    }
+    return n ? Math.round(sum / n * 100) / 100 : 0;
+  }
 
   return {
-    humVerdict: humVerdict,
+    humVerdict: humVerdict, polyphony: polyphony,
     FP_VERSION: FP_VERSION, SR: SR, HOP: HOP, WIN: WIN,
     fingerprint: fingerprint, fingerprintQuery: fingerprintQuery, chromaOf: chromaOf, pack: pack, unpack: unpack,
     buildIndex: buildIndex, search: search, chromaSearch: chromaSearch, fuseRanks: fuseRanks, melodyLines: melodyLines,
