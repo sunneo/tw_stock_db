@@ -12,7 +12,7 @@
   var RAW = 'https://raw.githubusercontent.com/sunneo/tw_stock_db';
   var VENDOR = RAW + '/vendor-assets/vendor';
   var WORKER_BASE = 'https://dawn-disk-778c.sunneo529.workers.dev';
-  var FA_SHA = '85e5548dbb17c7c3764e379295304e073de04879';
+  var FA_SHA = 'a3018b46bab9e399a7dead9d177c7f63eb321d8a';
   var FA_JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + FA_SHA + '/desktop-app/web-lazy/';
   var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
   var FA_ROOTS = [FA_JSD, FA_RAWB];
@@ -251,6 +251,10 @@
     }
     function openFile(file) {
       setStatus('開啟 ' + CMD + ' …');
+      if (typeof sl.openFile === 'function') {   // 編輯器自己會開檔（例如 MIDI 直接讀進來），不走編輯器的 📂 按鈕
+        Promise.resolve(sl.openFile(fa, file)).then(function () { setStatus('就緒'); }, function (e) { setStatus('開啟失敗：' + String((e && e.message) || e).slice(0, 80)); });
+        return;
+      }
       Promise.resolve(entry.handler(sl.openId, fa)).then(function () { return waitOpenButton(6000); }).then(function (btn) {
         if (!btn) { setStatus('這個編輯器還不能開檔'); return; }
         if (file) {
@@ -359,8 +363,9 @@
     if (!entry || typeof entry.handler !== 'function') throw new Error('這個版本沒有「' + CMD + '」指令');
     document.body.classList.add('fa-gui-mode');
     startFocus(); // 一直觀察：聊天區會重新渲染節點，標記要跟著新節點走
-    // 編輯器沒帶參數：起手式面板（不推說明文字進對話）。-blank 與沒有起手式的指令照舊（handler('')）。
-    var sl = !/-blank$/.test(CMD) && typeof fa._edStarterList === 'function' ? fa._edStarterList(CMD) : null;
+    // 編輯器沒帶參數：起手式面板（不推說明文字進對話）。沒有起手式的指令照舊（handler('')）。
+    var sl = typeof fa._edStarterList === 'function' ? fa._edStarterList(CMD) : null;
+    if (!sl && typeof fa._midiStarterList === 'function') sl = fa._midiStarterList(CMD);   // MIDI 不是簡報／遊戲那種編輯器，自己給清單與開檔
     if (sl) { showStarterPanel(fa, entry, sl); setStatus('就緒'); return; }
     setStatus('開啟 ' + CMD + ' …');
     return Promise.resolve(entry.handler('', fa)).then(function () { setStatus('就緒'); });
