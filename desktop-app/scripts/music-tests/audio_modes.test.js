@@ -32,6 +32,15 @@ async function fakeTranscriber(mono, sr) {
   check('chords: contains chord-tone pitches below the melody', ch.song.tracks.some((t) => t.notes.some((n) => n.n < 72)));
   check('chords: keeps the melody line', ch.song.tracks.some((t) => t.notes.some((n) => n.n >= 72)));
   check('unknown mode falls back to full', (await P.run(input, { bpm: 120, transcriber: fakeTranscriber, mode: 'bogus' })).report.methods.length === 0);
+  // 鼓:沒有分軌時用頻譜法在混音上找;簡化模式不留鼓
+  const kick = (tt) => 0.9 * Math.exp(-tt * 22) * Math.sin(2 * Math.PI * (55 + 60 * Math.exp(-tt * 40)) * tt);
+  const dx = new Float32Array(SR * 8);
+  for (let b = 0; b < 16; b += 2) { const o = Math.floor((0.1 + b * 0.5) * SR); for (let i = 0; i < SR * 0.3 && o + i < dx.length; i++) dx[o + i] += kick(i / SR); }
+  const dIn = { left: dx, right: dx, sampleRate: SR };
+  const dFull = await P.run(dIn, { bpm: 120, transcriber: async () => [] });
+  check('drums: no separator, frequency-method drum track added with method label', dFull.report.methods.indexOf('＋鼓軌（頻譜法）') >= 0 && dFull.song.tracks.some((t) => t.drum), dFull.report.methods);
+  const dMel = await P.run(dIn, { bpm: 120, transcriber: async () => [], mode: 'melody' });
+  check('drums: melody mode keeps no drum track', dMel.song.tracks.every((t) => !t.drum));
   console.log('audio_modes.test: ' + ok + ' ok, ' + bad.length + ' failed');
   if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
 })().catch((e) => { console.error(e); process.exit(1); });

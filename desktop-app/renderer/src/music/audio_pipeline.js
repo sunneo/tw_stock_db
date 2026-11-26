@@ -6,7 +6,7 @@
 //   store { get(key), set(key, value) }  可中斷續跑:每段每軌的結果存起來,同一首再跑就跳過
 //   mode 'full'(預設)| 'melody'(只留旋律)| 'chords'(旋律加和弦):從已轉出的音符分類,不重跑模型
 // report.methods 列出用了哪些處理(給結果訊息與方法欄用)。
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_to_midi.js'), require('./note_postprocess.js')); else root.FaAudioPipeline = factory(root.FaAudioToMidi || (typeof FaAudioToMidi !== 'undefined' ? FaAudioToMidi : undefined), root.FaNotePost || (typeof FaNotePost !== 'undefined' ? FaNotePost : undefined)); })(typeof self !== 'undefined' ? self : this, function (A, NP) {
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./audio_to_midi.js'), require('./note_postprocess.js'), require('./drum_flux.js')); else root.FaAudioPipeline = factory(root.FaAudioToMidi || (typeof FaAudioToMidi !== 'undefined' ? FaAudioToMidi : undefined), root.FaNotePost || (typeof FaNotePost !== 'undefined' ? FaNotePost : undefined), root.FaDrumFlux || (typeof FaDrumFlux !== 'undefined' ? FaDrumFlux : undefined)); })(typeof self !== 'undefined' ? self : this, function (A, NP, DF) {
   'use strict';
   const WORK_SR = 22050, CHUNK = 7.8, MARGIN = 0.5;
   const MODES = ['full', 'melody', 'chords'];
@@ -71,7 +71,13 @@
         others.length = 0; others.push({ s: 'mode', notes: NP.simplifyForMode(pool, mode) });
       }
     } else {
-      if (acc.drums && acc.drums.length) parts.drums = acc.drums;
+      // 鼓軌:有分軌出來的鼓(Demucs)就用它;沒有就用頻譜法在整個混音上找(不下載模型,有存在檢查)
+      if (acc.drums && acc.drums.length) { parts.drums = acc.drums; report.methods.push('＋鼓軌（分軌）'); }
+      else if (DF) {
+        const fd = DF.detect(resample(wholeMono(), sr, WORK_SR), WORK_SR);
+        if (fd.present) { parts.drums = fd.hits; report.methods.push('＋鼓軌（頻譜法）'); report.used.push('鼓軌:' + fd.reason); }
+        else report.skipped.push('頻譜法沒有找到鼓(' + fd.reason + ')');
+      }
       if (acc.bass && acc.bass.length) parts.bass = pp(acc.bass, false);
       if (acc.vocals && acc.vocals.length) parts.vocals = pp(acc.vocals, false);
     }
