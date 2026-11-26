@@ -189,6 +189,7 @@ const suites = [
     ['離線理解閘：理解不了先思考、問使用者並記憶、最後核對', 'scripts/offline-gate-think.test.js'],
     ['離線理解閘：打開的種類表（MIME 對應）、覆蓋測試、終端機、語意推導命中率', 'scripts/offline-gate-open.test.js'],
     ['離線理解閘：探索迴圈（目錄→知識庫→小模型→問使用者）與反思換路線', 'scripts/offline-gate-explore.test.js'],
+    ['對話動作判斷：反駁預檢、第N個選擇、程式驗證、記憶（dialogue_act）', 'scripts/dialogue-act.test.js'],
     ['單元目錄核心（已登記工具 → 單元：型別、副作用、可用性、信任等級；型別字串與相容判斷；格式驗證；評量統計）', 'renderer/src/catalog/catalog_core.test.js'],
     ['萬物皆矩陣相乘的驗證（半環矩陣、DFA 連乘與掃描、min-plus／布林圖、Berlekamp–Massey 遞推、LALR 表矩陣＋有界堆疊、CYK 布林矩陣、Hankel 秩與從範例學矩陣）', 'renderer/src/algo/matrix_forms.test.js'],
     ['矩陣＋狀態機＋ReLU 電路＋矩陣 VM 的驗證（暫存器機：費氏／DFA 計數／括號堆疊／gcd／質數／固定 n 排序與二分；直和 vs 乘積；ReLU 閘數；VM 指令集、驗證器、JSONL、編譯對照）', 'renderer/src/algo/matrix_machine.test.js'],
