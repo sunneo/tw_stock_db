@@ -265,5 +265,11 @@
     return { notes: notes, gate: gate, ref: ref, frames: tot, voicedRaw: vOrig, voicedKept: vKept, lo: ps.length ? Math.min.apply(null, ps) : null, hi: ps.length ? Math.max.apply(null, ps) : null, dropped: dropped };
   }
 
-  return { humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, cleanNotesForMelody: cleanNotesForMelody, agreeNotes: agreeNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+  // 查詢轉譜路線（純函式）：多聲部（有伴奏）且有 Basic Pitch 模型 → basicPitch（Basic Pitch＋主旋律 Viterbi）；其餘 → viterbi（非模型）。
+  // 沒有模型或模型載入失敗時一律退回非模型路線，不會失敗。polyphonic 由呼叫端用 FaMusicLibFP.polyphony 與索引中位數門檻判定。
+  function queryPathFor(info) {
+    var poly = !!(info && info.polyphonic), model = !!(info && info.hasModel);
+    return poly && model ? "basicPitch" : "viterbi";
+  }
+  return { queryPathFor: queryPathFor, humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, cleanNotesForMelody: cleanNotesForMelody, agreeNotes: agreeNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
 }));
