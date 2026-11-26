@@ -12,6 +12,21 @@
 - 架構問題：現行是「處理器為主、逐運算把資料送去顯卡再拿回來」，讀回上千 MB（輸出只有幾個值）。應改成「顯卡常駐、只讀回輸出」，像我們自己的 `qwen_gpu.js`。
 - 已發布 v586 修了分批卷積輸出全零。後續全部在分支 `claude/great-swirles-84aab9`（未併入，約 43 個提交），**不可整支併入**，理由：正確性未對 ORT 驗過。
 
+### 使用者決定的下一步（2026-11-27，優先於下面的順序）
+- 拆軌**預設走 WASM**（v588 已發布）；顯卡路徑在新設計驗證完之前不碰。要試的人把 localStorage 的 `fa.audio.demucsGpu` 設成 `1`。
+- 由其他人研究「整套演算法在顯卡內完成」的設計，使用既有的 Python 模擬器、OpenCL、cudaweb 當實驗場：
+  1. **先寫純 Python 加 numba 的 Demucs**，確立演算法。真值是 ORT 的 WASM 輸出，不是我們自己的 JavaScript 參考；載入同一份權重（`E:\Temp\demucs\htdemucs_6s_fp16weights.onnx`），每個節點邊界與 ORT 的中間輸出逐一比對（截短圖工具：子工作階段分支的 `scripts/demucs_truncate.py`／`.js`）。
+  2. 在 Python 版一開始就統計每個運算的乘加次數與資料量（屋頂線紙上估算），並從 numba 階段起逐核心計時（核心執行、上傳、讀回分開）。
+  3. 再改寫成全程在顯卡內的版本；全有或全無（有任何運算沒覆蓋就整張圖走 WASM）。
+- 運算缺口清單（2026-11-27 核對程式碼）：
+  - 卷積：常駐版已寫（`conv_ops.js` 的 `convResidentN`，群數 1、三或四維），但**對 ORT 在第 659 個節點誤差 0.525，不可用**。
+  - 反卷積（ConvTranspose）：核心有（`convT2d`、`WGSL_CONVT2D`），**沒有接進常駐路徑**。
+  - Split：切片範本（`ix_kernel.js`）可組出，但**常駐路徑沒有 Split 分支，未寫**。
+  - InstanceNormalization、組正規化、Gather：常駐路徑沒有。Softmax 分支在未提交的修改裡，未驗證。
+  - 已有常駐分支且有測試：Reshape、Squeeze、Unsqueeze、Identity、Add／Sub／Mul／Div、Erf、Sigmoid、MatMul、Transpose、Concat、Expand、Pad、Slice、ReduceSum／ReduceMean。
+- 踩過的坑（直接當測試案例）：著色器保留字（雙底線開頭識別字）造成輸出全零；工作群數量超過 65535 被拒絕；單次提交超過約 2 秒被系統重置顯卡；fp16 權重解碼；卷積對 ORT 的誤差。
+- 第一個交付物應該是**量測拆解與運算覆蓋表的書面設計**，不是任何優化。
+
 ### 順序（前一步沒過就不做下一步）
 1. 找第 659 個節點對 ORT 誤差 0.525 的根因：同一個輸入，ORT 單節點、JavaScript 參考、顯卡三方比對。之後所有驗證真值一律是 ORT 的 WASM 輸出。
 2. 讀回歸因：每次讀回記位元組、產生節點、迫使讀回的下游運算，前十名；區分必要讀回（圖輸出、抽樣）與回退讀回；估算全部常駐後的讀回量。
