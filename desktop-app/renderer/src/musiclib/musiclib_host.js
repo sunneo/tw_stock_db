@@ -587,16 +587,24 @@ const FaMusicLibHost = (function () {
   async function humChromaRanks(blob, L) {
     var buf = await window.fa._decodeAudioBuffer(blob);
     var q = FaMusicLibFP.chromaOf(chansOf(buf), buf.sampleRate);
-    return FaMusicLibFP.chromaSearch(q, chromaEntriesOf(L), { limit: 10 });
+    var ranks = FaMusicLibFP.chromaSearch(q, chromaEntriesOf(L), { limit: 10 }); ranks.poly = FaMusicLibFP.polyphony(q); return ranks;
+  }
+  // 自適應多聲部判定：查詢的多聲部程度（每格同時活躍的音高類別數）對索引內歌曲的中位數取中點當門檻。
+  // 哼唱約 1.3–1.6；播放原曲（有伴奏）約 2–4。門檻隨索引內容變，不寫死。
+  function polyInfoOf(ranks, L) {
+    var q = ranks && ranks.poly != null ? ranks.poly : null;
+    var vals = chromaEntriesOf(L).map(function (e) { return FaMusicLibFP.polyphony({ cells: e.cells, chroma: e.chroma }); }).filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
+    var med = vals.length ? vals[vals.length >> 1] : null, thr = med == null ? null : (1 + med) / 2;
+    return { poly: q, libMedian: med, threshold: thr, polyphonic: q != null && thr != null && q >= thr };
   }
   // 名次融合：旋律（音符比對的結果）與和聲（色度）各一份名次，RRF 合併；每首保留在哪一層、名次、分數、歌內時間點
   // 「有把握」：旋律第一名的分數達到 CONFIDENT_SCORE，或和聲第一名的分數達到 CHROMA_OK 且比第二名高 CHROMA_MARGIN 以上；
   // 而且融合後的第一名就是那一首。不符合就不假裝找到（畫面標「沒有把握」）
-  function fuseHum(melodyResults, chromaRanks) {
+  function fuseHum(melodyResults, chromaRanks, extra) {
     var melody = (melodyResults || []).map(function (r) {
       return { key: r.key, name: r.name, score: r.score, startSec: r.startSec, endSec: r.endSec, label: r.hitLine, noteFrom: r.hit && r.hit.noteFrom, noteTo: r.hit && r.hit.noteTo };
     });
-    return FaMusicLibFP.humVerdict(melody, chromaRanks, { melodyConfident: FaMusicLibMelody.CONFIDENT_SCORE });
+    return FaMusicLibFP.humVerdict(melody, chromaRanks, Object.assign({ melodyConfident: FaMusicLibMelody.CONFIDENT_SCORE }, extra || {}));
   }
   // 沒有新特徵（快速旋律線）的音訊紀錄：仍照常用舊的旋律線比對，但結果要提示請重建
   function noFeatNamesOf(L) {
@@ -615,7 +623,9 @@ const FaMusicLibHost = (function () {
     if (opts.blob) { try { chromaRanks = await humChromaRanks(opts.blob, L); } catch (e) { chromaError = '和聲比對失敗：' + String((e && e.message) || e); } }
     var base = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: null, textWeight: 0.15 });
     base.fp = fpRes; base.lineless = lineless; base.noFeat = noFeatNamesOf(L);
-    base.hum = Object.assign(fuseHum(base.results, chromaRanks), { chromaRanks: chromaRanks, chromaError: chromaError });
+    var polyInfo = polyInfoOf(chromaRanks, L);
+    var extra = { fpTop: fpRes && fpRes.ok && fpRes.top ? { key: fpRes.top.key, name: fpRes.top.name } : null, polyphonic: polyInfo.polyphonic };
+    base.hum = Object.assign(fuseHum(base.results, chromaRanks, extra), { chromaRanks: chromaRanks, chromaError: chromaError, poly: polyInfo });
     base.textUsed = ''; base.matchMs = Date.now() - t0; base.entryCount = entries.length; base.partial = !!opts.useText;
     var manual = opts.useText ? String(opts.textQuery || '').trim() : '';
     if (!opts.useText || !base.ok) { base.partial = false; return base; }
@@ -627,7 +637,7 @@ const FaMusicLibHost = (function () {
     if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
     var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
     res.fp = fpRes; res.lineless = lineless; res.noFeat = base.noFeat; res.textUsed = text; res.matchMs = base.matchMs; res.transcribeMs = Date.now() - t1; res.entryCount = entries.length; res.partial = false;
-    res.hum = Object.assign(fuseHum(res.results, chromaRanks), { chromaRanks: chromaRanks, chromaError: chromaError });
+    res.hum = Object.assign(fuseHum(res.results, chromaRanks, extra), { chromaRanks: chromaRanks, chromaError: chromaError, poly: polyInfo });
     return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）

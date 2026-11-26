@@ -263,7 +263,8 @@ t('多線命中：每首取所有線中最高分那條，回報命中的線（�
 
 t('索引格式版本：沒有版本或版本較舊的索引，下次建立時自動重建，並計入 rebuilt；版本相同的沿用', async function () {
   var recs = [
-    { key: 'new', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', version: MM.INDEX_VERSION, contour: null, tracks: [] } },
+    { key: 'new', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', version: MM.INDEX_VERSION, feat: MM.FEAT_FAST, contour: null, tracks: [] } },
+    { key: 'oldroute', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', version: MM.INDEX_VERSION, contour: null, tracks: [] } },
     { key: 'old', size: 1, mtimeMs: 1, melody: { sig: '1:1', status: 'ok', method: 'mid', contour: null } }
   ];
   var calls = [];
@@ -271,10 +272,10 @@ t('索引格式版本：沒有版本或版本較舊的索引，下次建立時�
     extract: async function (rec) { calls.push(rec.key); return { notes: makeMelody(3, 12), method: 'mid', tracks: [] }; },
     sleep: function () { return Promise.resolve(); }
   });
-  assert.deepEqual(calls, ['old'], '只有舊格式的那首重建');
-  assert.equal(sum.rebuilt, 1);
+  assert.deepEqual(calls, ['oldroute', 'old'], '快速旋律線（版本 3）不重建；舊路線（版本 3 < 舊路線版本 4）與沒版本的紀錄重建');
+  assert.equal(sum.rebuilt, 2);
   assert.equal(sum.skipped, 1);
-  assert.equal(recs[1].melody.version, MM.INDEX_VERSION, '重建後寫入新版本');
+  assert.equal(recs[2].melody.version, MM.OLD_ROUTE_VERSION, '舊路線重建後寫入舊路線版本');
 });
 
 t('合成資料校準：6 首目標曲各 4 種哼歌變形（錯音、漏音、離群音、重複音拆分）＋ 20 首隨機對照，第一名命中目標的主旋律軌；印出分數分布', function () {
@@ -474,8 +475,30 @@ t('對照聽：舊版索引（沒有 semis）不能對照，回傳「請重建�
   assert.throws(function () { MM.compareHit({ n: 2, times: [0, 1], durs: [1, 1], intervals: [2] }, { noteFrom: 0, noteTo: 1 }, hum); }, /請重建旋律索引/);
 });
 
-t('索引格式版本升為 3（舊版 2 的索引下次建立會自動重建）', function () {
+t('n-gram 投票：移調＋漏音＋多音的片段，仍把正確的歌排第一（速度變慢也不影響）', function () {
+  var songs = [];
+  for (var k = 0; k < 6; k++) songs.push({ key: 'song' + k, name: 'song' + k, mel: makeMelody(100 + k * 7, 80) });
+  var entries = songs.map(function (x) { return { key: x.key, name: x.name, lines: [{ label: '主', contour: MM.contourOf(MM.melodyNotes(x.mel)), mode: 'merged' }] }; });
+  var target = songs[3].mel;
+  var q = target.slice(10, 50).map(function (x, i) { return { t: x.t * 1.3, d: x.d * 1.3, n: x.n + 5 + (i % 4 === 0 ? 1 : 0) }; }).filter(function (x, i) { return i % 6 !== 2; });
+  q.splice(4, 0, { t: q[3].t + 0.05, d: 0.1, n: q[3].n + 2 });
+  var r = MM.searchNgram(q, entries, { limit: 6 });
+  assert.ok(r.ok, r.reason);
+  assert.equal(r.results[0].key, 'song3', '第一名應為 song3：' + JSON.stringify(r.results.slice(0, 3)));
+  assert.ok(r.results[0].score > r.results[1].score, '目標分數要高於第二名');
+});
+t('n-gram 投票：完全不相關的旋律，最高分仍遠低於正確的命中（不假裝找到）', function () {
+  var mel = makeMelody(555, 40), other = makeMelody(777, 40);
+  var entries = [{ key: 'other', name: 'other', lines: [{ label: '主', contour: MM.contourOf(MM.melodyNotes(other)), mode: 'merged' }] }];
+  var r = MM.searchNgram(mel, entries, { limit: 3 });
+  assert.ok(!r.results.length || r.results[0].score < 0.5, '不相關的分數應低：' + JSON.stringify(r.results));
+});
+
+t('索引版本分路線：快速旋律線仍是 3；舊路線升為 4（只有舊路線的紀錄會重建）', function () {
   assert.equal(MM.INDEX_VERSION, 3);
+  assert.equal(MM.OLD_ROUTE_VERSION, 4);
+  assert.equal(MM.versionFor(MM.FEAT_FAST), 3);
+  assert.equal(MM.versionFor(0), 4);
 });
 
 

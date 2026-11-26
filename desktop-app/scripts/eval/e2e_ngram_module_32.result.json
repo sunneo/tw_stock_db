@@ -1,0 +1,189 @@
+{
+ "songs": [
+  {
+   "file": "CAMMY.mid",
+   "sec": 54,
+   "melNotes": 316
+  },
+  {
+   "file": "FF9-Normal_Battle.mid",
+   "sec": 78.7,
+   "melNotes": 481
+  },
+  {
+   "file": "Final Fantasy X - Other World.mid",
+   "sec": 43.6,
+   "melNotes": 152
+  },
+  {
+   "file": "Midi Final Fantasy X - To Zanarkand ~ Music Box Remix.mid",
+   "sec": 70.7,
+   "melNotes": 236
+  },
+  {
+   "file": "Grandfathers-Clock.mid",
+   "sec": 49.7,
+   "melNotes": 161
+  },
+  {
+   "file": "1000AD.MID",
+   "sec": 77.5,
+   "melNotes": 224
+  },
+  {
+   "file": "AYLA.MID",
+   "sec": 79.6,
+   "melNotes": 300
+  },
+  {
+   "file": "BCT-01.MID",
+   "sec": 59.2,
+   "melNotes": 136
+  },
+  {
+   "file": "CHR02.MID",
+   "sec": 42.3,
+   "melNotes": 272
+  },
+  {
+   "file": "CHRBAT2.MID",
+   "sec": 85.4,
+   "melNotes": 681
+  },
+  {
+   "file": "CRN_1-01.MID",
+   "sec": 36.7,
+   "melNotes": 143
+  },
+  {
+   "file": "CTASA.MID",
+   "sec": 38.2,
+   "melNotes": 145
+  },
+  {
+   "file": "CTGATO.MID",
+   "sec": 39.6,
+   "melNotes": 140
+  },
+  {
+   "file": "CTLEGEND.MID",
+   "sec": 81.3,
+   "melNotes": 509
+  },
+  {
+   "file": "CTROBO8P.MID",
+   "sec": 85.8,
+   "melNotes": 341
+  },
+  {
+   "file": "LUCCA.MID",
+   "sec": 60.2,
+   "melNotes": 409
+  },
+  {
+   "file": "ROBO.MID",
+   "sec": 74.1,
+   "melNotes": 224
+  },
+  {
+   "file": "SCHALA.MID",
+   "sec": 79.6,
+   "melNotes": 465
+  },
+  {
+   "file": "SCHALA3.MID",
+   "sec": 79.6,
+   "melNotes": 465
+  },
+  {
+   "file": "SEWER.MID",
+   "sec": 63.1,
+   "melNotes": 179
+  },
+  {
+   "file": "SPEKKIO.MID",
+   "sec": 82,
+   "melNotes": 402
+  },
+  {
+   "file": "SyvAyla.mid",
+   "sec": 79.6,
+   "melNotes": 300
+  },
+  {
+   "file": "UNDERSEA.MID",
+   "sec": 87.7,
+   "melNotes": 374
+  },
+  {
+   "file": "DQ3DARKW.MID",
+   "sec": 40.3,
+   "melNotes": 136
+  },
+  {
+   "file": "DQ3_Battle.mid",
+   "sec": 71.3,
+   "melNotes": 732
+  },
+  {
+   "file": "DQ5BATTL.MID",
+   "sec": 80.2,
+   "melNotes": 606
+  },
+  {
+   "file": "DQ5BOBA2.MID",
+   "sec": 64.3,
+   "melNotes": 384
+  },
+  {
+   "file": "DQ5CAST2.MID",
+   "sec": 71,
+   "melNotes": 222
+  },
+  {
+   "file": "DQ5CONTI.MID",
+   "sec": 35,
+   "melNotes": 155
+  },
+  {
+   "file": "DQ5DEMOW.MID",
+   "sec": 44.1,
+   "melNotes": 118
+  },
+  {
+   "file": "DQ5DEMW2.MID",
+   "sec": 52.8,
+   "melNotes": 142
+  },
+  {
+   "file": "DQ5DUNGE.MID",
+   "sec": 89.1,
+   "melNotes": 469
+  }
+ ],
+ "results": {
+  "viterbi": {
+   "clean": {
+    "queries": 64,
+    "top1": 0.875,
+    "top5": 0.984,
+    "ngramTop1": 0.875,
+    "ngramTop5": 0.984
+   },
+   "room": {
+    "queries": 64,
+    "top1": 0.625,
+    "top5": 0.844,
+    "ngramTop1": 0.641,
+    "ngramTop5": 0.844
+   },
+   "harsh": {
+    "queries": 64,
+    "top1": 0.531,
+    "top5": 0.781,
+    "ngramTop1": 0.688,
+    "ngramTop5": 0.797
+   }
+  }
+ }
+}

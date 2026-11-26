@@ -70,6 +70,147 @@
   // 不然衰減中的聲音會被音高追蹤抓成下一個（多半是錯的）音符。
   // 作法：降到約 11 kHz 後追蹤音高；以整段音量的高百分位為基準，低於基準的一定比例（約 -17 dB）就當沒聲音；
   // 音符內音量掉到該音起頭很小（衰減尾）的幀也截掉；轉成音符後再丟掉太短、太輕（遠低於整段中位）的音。
+  // ───── 主旋律（階段四）：每幀的音高能量（諧波和）＋ Viterbi 連續性 ─────
+  // 1) 每幀（10 ms）做一次 1024 點 FFT（11025 Hz 時視窗約 93 ms），對每個半音格算諧波和：Σ 諧波 h=1..5 的權重 × 該諧波頻率的振幅。
+  //    不取單一音高（pitchTrack 只給一個），所以伴奏低音與和弦都會出現在候選裡，再由連續性與音域代價挑出主旋律。
+  // 2) Viterbi 在「半音格＋沒有旋律」之間選路徑：代價＝(1−能量正規化)·W_SAL ＋ 音域外懲罰（偏好人聲 55–84）
+  //    ＋ 跳動代價（格差越大越貴）＋ 換音固定費 ＋ 有音↔無音切換費。能量很低的幀沒有旋律的代價為 0。
+  // 權重是依合成真值評測（scratchpad\melody_truth_eval.js）校準的常數，數字見 commit 訊息。
+  var VIT = { LO: 40, HI: 84, VLO: 55, VHI: 84, W_SAL: 1.0, W_RANGE: 0.25, W_JUMP: 0.15, W_CHANGE: 0.8, W_ONOFF: 1.5, W_SIL: 0.5, JUMP_CAP: 12, HARM: [1, 0.5, 0.3, 0.2, 0.1], SILENT_REL: 0.03, MIN_FRAMES: 5 };
+  var fftTab = {};
+  function fftPlan(N) {
+    if (fftTab[N]) return fftTab[N];
+    var rev = new Uint32Array(N), bits = Math.log2(N), i, c = new Float64Array(N / 2), s = new Float64Array(N / 2);
+    for (i = 0; i < N; i++) { var r = 0; for (var b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b); rev[i] = r; }
+    for (i = 0; i < N / 2; i++) { c[i] = Math.cos(-2 * Math.PI * i / N); s[i] = Math.sin(-2 * Math.PI * i / N); }
+    var win = new Float64Array(N); for (i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+    return (fftTab[N] = { rev: rev, c: c, s: s, win: win });
+  }
+  function fftInPlace(re, im, plan) {
+    var N = re.length, i, j, k, len, half, step, tr, ti, a, b;
+    for (i = 0; i < N; i++) { j = plan.rev[i]; if (j > i) { tr = re[i]; re[i] = re[j]; re[j] = tr; ti = im[i]; im[i] = im[j]; im[j] = ti; } }
+    for (len = 2; len <= N; len <<= 1) {
+      half = len >> 1; step = N / len;
+      for (i = 0; i < N; i += len) for (k = 0; k < half; k++) {
+        a = i + k; b = a + half; var wr = plan.c[k * step], wi = plan.s[k * step];
+        tr = re[b] * wr - im[b] * wi; ti = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+      }
+    }
+  }
+  // 每幀每個半音格的諧波和（T 幀、格 lo..hi），幀的起點與 pitchTrack 相同（每 floor(wsr*0.01) 個取樣一幀）
+  function salienceFrames(w, wsr, T, lo, hi) {
+    var N = 1024, hop = Math.floor(wsr * 0.01), K = hi - lo + 1, plan = fftPlan(N), sal = new Float32Array(T * K);
+    var re = new Float64Array(N), im = new Float64Array(N), mag = new Float64Array(N / 2), f, i, k, s, h;
+    var F = []; for (s = 0; s < K; s++) F.push(440 * Math.pow(2, (lo + s - 69) / 12));
+    for (f = 0; f < T; f++) {
+      var o = f * hop;
+      for (i = 0; i < N; i++) { re[i] = (o + i < w.length ? w[o + i] : 0) * plan.win[i]; im[i] = 0; }
+      fftInPlace(re, im, plan);
+      for (k = 0; k < N / 2; k++) mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      for (s = 0; s < K; s++) {
+        var acc = 0;
+        for (h = 0; h < VIT.HARM.length; h++) {
+          var bin = F[s] * (h + 1) * N / wsr; if (bin >= N / 2 - 1) break;
+          var b0 = Math.floor(bin), fr = bin - b0; acc += VIT.HARM[h] * ((1 - fr) * mag[b0] + fr * mag[b0 + 1]);
+        }
+        sal[f * K + s] = acc;
+      }
+    }
+    return sal;
+  }
+  // Viterbi：sal（salienceFrames）、rel（每幀相對能量 0..1）→ 音符 [{t, d, n, v}]；t 與 framesToNotes 相同（加 delay）
+  function melodyViterbi(sal, T, lo, hi, rel, opts) {
+    opts = opts || {};
+    var K = hi - lo + 1, S = K + 1, SIL = K, hop = opts.hopSec || 0.01, delay = opts.delay || 0, minF = opts.minFrames || VIT.MIN_FRAMES;
+    var sorted = Array.prototype.slice.call(sal).filter(function (x) { return x > 0; }).sort(function (a, b) { return a - b; });
+    var ref = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 1;
+    var emit = new Float64Array(T * S), f, s, p, sn, silCost;
+    for (f = 0; f < T; f++) {
+      silCost = rel[f] < VIT.SILENT_REL ? 0 : VIT.W_SIL;
+      for (s = 0; s < K; s++) {
+        p = lo + s; sn = Math.min(1, sal[f * K + s] / ref);
+        emit[f * S + s] = VIT.W_SAL * (1 - sn) + VIT.W_RANGE * (Math.max(0, VIT.VLO - p) + Math.max(0, p - VIT.VHI));
+      }
+      emit[f * S + SIL] = silCost;
+    }
+    var acc = new Float64Array(S), nxt = new Float64Array(S), back = new Int16Array(T * S), q, c, best, arg, dj;
+    for (s = 0; s < S; s++) acc[s] = emit[s];
+    for (f = 1; f < T; f++) {
+      for (s = 0; s < S; s++) {
+        best = Infinity; arg = 0;
+        for (q = 0; q < S; q++) {
+          c = acc[q];
+          if (s === SIL || q === SIL) { if (s !== q) c += VIT.W_ONOFF; }
+          else if (s !== q) { dj = Math.min(Math.abs(s - q), VIT.JUMP_CAP); c += VIT.W_JUMP * dj + VIT.W_CHANGE; }
+          if (c < best) { best = c; arg = q; }
+        }
+        nxt[s] = best + emit[f * S + s]; back[f * S + s] = arg;
+      }
+      var tmp = acc; acc = nxt; nxt = tmp;
+    }
+    var st = 0; for (s = 1; s < S; s++) if (acc[s] < acc[st]) st = s;
+    var path = new Int16Array(T); for (f = T - 1; f >= 0; f--) { path[f] = st; st = back[f * S + st]; }
+    var notes = [], run = -1, rs = 0, rmSum = 0;
+    var close = function (end) {
+      if (run >= 0 && end - rs >= minF) notes.push({ t: rs * hop + delay, d: (end - rs) * hop, n: lo + run, v: Math.max(30, Math.min(120, Math.round(35 + 400 * (rmSum / (end - rs))))) });
+    };
+    for (f = 0; f < T; f++) {
+      var cur = path[f] === SIL ? -1 : path[f];
+      if (cur !== run) { close(f); run = cur; rs = f; rmSum = 0; }
+      rmSum += rel[f];
+    }
+    close(T);
+    return notes;
+  }
+  // 多音轉譜音符的清理（進 Viterbi 前）：(a) 同音高、間隔 < 0.06 秒的相鄰音合併（顫音、斷音碎片）；
+  // (b) 殘響假音：同音高的音在前一個同音高的音還在響時才出現、而且力度不超過前音的 80% → 丟掉（殘響拖尾）；
+  // (c) 很短（< 0.06 秒）而且力度低於中位數一半的音丟掉。
+  function cleanNotesForMelody(notes, o) {
+    o = o || {}; var doMerge = o.merge === true, doEcho = o.echo !== false, doShort = o.short !== false;
+    var ns = (notes || []).filter(function (x) { return x && x.d > 0 && isFinite(x.t) && isFinite(x.n); }).map(function (x) { return { t: x.t, d: x.d, n: Math.round(x.n), v: x.v || 80 }; });
+    ns.sort(function (a, b) { return a.t - b.t || a.n - b.n; });
+    var byP = {}; ns.forEach(function (x) { (byP[x.n] = byP[x.n] || []).push(x); });
+    var out = [];
+    Object.keys(byP).forEach(function (k) {
+      var merged = [];
+      byP[k].forEach(function (x) {
+        var last = merged[merged.length - 1];
+        if (doMerge && last && x.t - (last.t + last.d) < 0.06 && x.v >= last.v * 0.8) { last.d = Math.max(last.t + last.d, x.t + x.d) - last.t; last.v = Math.max(last.v, x.v); return; }   // 力度差太多的不併（那是殘響，留給下面的規則）
+        merged.push({ t: x.t, d: x.d, n: x.n, v: x.v });
+      });
+      merged.forEach(function (x) {
+        var echo = merged.some(function (y) { return y !== x && y.t < x.t - 0.08 && y.t + y.d > x.t && x.v <= y.v * 0.8; });
+        if (!doEcho || !echo) out.push(x);
+      });
+    });
+    var vs = out.map(function (x) { return x.v; }).sort(function (a, b) { return a - b; }), med = vs.length ? vs[vs.length >> 1] : 0;
+    return out.filter(function (x) { return !(doShort && x.d < 0.06 && x.v < med * 0.5); });
+  }
+  // 兩路音符融合（Basic Pitch＋非模型）：同音高且時間重疊的音＝兩路一致，力度加權到 1.5 倍；只有一路有的音力度減半。
+  function agreeNotes(a, b) {
+    var out = [], used = {};
+    (a || []).forEach(function (x) {
+      var hit = (b || []).some(function (y, j) { return Math.abs(Math.round(y.n) - Math.round(x.n)) === 0 && y.t < x.t + x.d && x.t < y.t + y.d && (used[j] = true); });
+      out.push(Object.assign({}, x, { v: Math.min(127, Math.round((x.v || 80) * (hit ? 1.5 : 0.5))) }));
+    });
+    (b || []).forEach(function (y, j) { if (used[j]) return; out.push(Object.assign({}, y, { v: Math.round((y.v || 80) * 0.25) })); });
+    return out;
+  }
+  // 多音音符（例如 Basic Pitch 的輸出）→ 主旋律：每個音符在它持續的幀上給該音高能量（依力度），再交給同一套 Viterbi。
+  // 多音轉譜的音符本身不是旋律；連續性與音域先驗會在伴奏與和弦之間挑出連續的人聲線。
+  function melodyFromNotes(notes, opts) {
+    opts = opts || {}; if (opts.clean !== false) notes = cleanNotesForMelody(notes, opts.clean);
+    var hop = opts.hopSec || 0.01, lo = VIT.LO, hi = VIT.HI, K = hi - lo + 1, end = 0, i;
+    (notes || []).forEach(function (x) { end = Math.max(end, x.t + x.d); });
+    var T = Math.max(1, Math.ceil(end / hop) + 1), sal = new Float32Array(T * K), rel = new Float32Array(T);
+    (notes || []).forEach(function (x) {
+      var p = Math.round(x.n); if (p < lo || p > hi) return;
+      var w = Math.max(0.2, Math.min(1, (x.v || 80) / 127)), f0 = Math.floor(x.t / hop), f1 = Math.min(T, Math.ceil((x.t + x.d) / hop));
+      for (var f = f0; f < f1; f++) { sal[f * K + (p - lo)] += w; rel[f] = 1; }
+    });
+    return melodyViterbi(sal, T, lo, hi, rel, { hopSec: hop, delay: 0, minFrames: VIT.MIN_FRAMES });
+  }
   function humNotes(input, opts) {
     opts = opts || {};
     var AM = opts.AudioToMidi; if (!AM || !AM.pitchTrack) throw new Error('缺少 FaAudioToMidi（音高追蹤）');
@@ -87,7 +228,9 @@
       if (tr.rms[f] > runPeak) runPeak = tr.rms[f];
       if (tr.rms[f] < runPeak * decay) tr.voiced[f] = 0;   // 衰減尾：不是新音；尾巴後面冒出的小聲音也一併濾掉
     }
-    var notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.05 });
+    var notes;
+    if (opts.viterbi === false) notes = AM.framesToNotes(tr, { minDur: opts.minDur || 0.05 });
+    else { var Tn = tr.f0.length, relF = new Float32Array(Tn); for (var rf = 0; rf < Tn; rf++) relF[rf] = Math.min(1, (tr.rms[rf] || 0) / ref); var sal = salienceFrames(w, wsr, Tn, VIT.LO, VIT.HI); notes = melodyViterbi(sal, Tn, VIT.LO, VIT.HI, relF, { hopSec: Math.floor(wsr * 0.01) / wsr, delay: tr.delay || 0, minFrames: VIT.MIN_FRAMES }); }
     if (notes.length) {
       var vs = notes.map(function (x) { return x.v; }).sort(function (x, y) { return x - y; }), med = vs[vs.length >> 1];
       notes = notes.filter(function (x) { return x.v >= med * 0.5; });
@@ -95,7 +238,7 @@
     // 後處理：人哼的旋律不會跨很大的音域。以中位音高為準：離中位 13 半音以上多半是低頻底噪／誤判，丟掉；
     // 9～12 半音多半是掉了／多了一個八度，折回來；孤立（兩側音高都差 3 半音以上）又很短（< 0.15 秒）的碎音丟掉。
     var dropped = { far: 0, folded: 0, blip: 0 };
-    if (notes.length >= 4) {
+    if (notes.length >= 4 && opts.viterbi === false) {   // 八度折回與遠音丟棄是舊的逐幀追蹤專用；主旋律 Viterbi 不需要（會把正確的高音折到低八度）
       var ps0 = notes.map(function (x) { return x.n; }).sort(function (x, y) { return x - y; }), md = ps0[ps0.length >> 1];
       notes = notes.filter(function (x) { return Math.abs(x.n - md) < 13 || (dropped.far++, false); }).map(function (x) {
         var df = x.n - md; if (Math.abs(df) >= 9) { dropped.folded++; return Object.assign({}, x, { n: x.n - 12 * Math.sign(df) }); } return x;
@@ -122,5 +265,11 @@
     return { notes: notes, gate: gate, ref: ref, frames: tot, voicedRaw: vOrig, voicedKept: vKept, lo: ps.length ? Math.min.apply(null, ps) : null, hi: ps.length ? Math.max.apply(null, ps) : null, dropped: dropped };
   }
 
-  return { humNotes: humNotes, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+  // 查詢轉譜路線（純函式）：多聲部（有伴奏）且有 Basic Pitch 模型 → basicPitch（Basic Pitch＋主旋律 Viterbi）；其餘 → viterbi（非模型）。
+  // 沒有模型或模型載入失敗時一律退回非模型路線，不會失敗。polyphonic 由呼叫端用 FaMusicLibFP.polyphony 與索引中位數門檻判定。
+  function queryPathFor(info) {
+    var poly = !!(info && info.polyphonic), model = !!(info && info.hasModel);
+    return poly && model ? "basicPitch" : "viterbi";
+  }
+  return { queryPathFor: queryPathFor, humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, cleanNotesForMelody: cleanNotesForMelody, agreeNotes: agreeNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
 }));

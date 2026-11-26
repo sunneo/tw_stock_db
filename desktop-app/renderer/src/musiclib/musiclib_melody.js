@@ -20,7 +20,8 @@
   var MIN_TRACK_NOTES = 8;     // 每軌（合併重複音後）至少要這麼多個音才建線
   var MAX_LINES = 12;          // 每首最多保留幾條線（合併線＋各軌線）
   var SIMILAR_TRACK = 0.9;     // 兩軌的音程序列相似度超過這個，只留一條
-  var INDEX_VERSION = 3;       // 索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
+  var INDEX_VERSION = 3;       // 快速旋律線的索引格式版本：3＝每條線存 base（起始音）＋semis（相鄰差，未截斷），對照聽由索引還原音高；較舊的版本下次建立索引會自動重建
+  var OLD_ROUTE_VERSION = 4;   // 舊路線（逐音符轉譜，見 songFromAudio）的索引版本：4＝轉譜改用 Viterbi 主旋律；只讓舊路線重建，快速旋律線（版本 3）不受影響
   var W_EXACT = 0.5, W_COARSE = 0.5;   // 音高代價＝W_EXACT×精確半音差＋W_COARSE×粗輪廓級差（權重見單元測試的實驗註解）
   var MIN_NOTES = 4;           // 查詢至少要幾個音，太短沒有辨識意義
   var INT_CAP = 5;             // 音程差距超過幾個半音就當成完全不同（單位：半音）；取小一點，無關旋律才分得開
@@ -327,6 +328,41 @@
     return { ok: true, results: all.slice(0, opts.limit || 10), queryNotes: qn };
   }
 
+  // ───── n-gram 投票（局部比對）：容許部分音錯、漏音、多音，不要求整段一致 ─────
+  // 音程（相鄰半音差，夾在 ±12）連續 NGRAM_N 個為一組；查詢的每一組若出現在某條線的音程組裡就算一票。
+  // 分數＝命中的查詢組數 ÷ 查詢組數。只看音程，所以調與速度都不影響（速度變了音程組不變）。
+  var NGRAM_N = 3, NGRAM_CLIP = 12, NGRAM_Q = 1;
+  function ngramKeys(sem) {
+    var g = {}, i, k, parts;
+    for (i = 0; i + NGRAM_N <= sem.length; i++) {
+      parts = []; for (k = 0; k < NGRAM_N; k++) parts.push(Math.max(-NGRAM_CLIP, Math.min(NGRAM_CLIP, Math.round(sem[i + k] / NGRAM_Q) * NGRAM_Q)));   // 音程量化到 NGRAM_Q 半音：±1 的音高抖動不會讓整組對不上
+      g[parts.join(',')] = true;
+    }
+    return g;
+  }
+  // query：音符（秒）；entries：同 searchMelody。回傳 { ok, results }，每筆 { key, name, score, hitLine }，依分數排序
+  function searchNgram(query, entries, opts) {
+    opts = opts || {};
+    var mel = dropOutliers(melodyNotes(query));
+    if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
+    var qSem = contourOf(mel).semis || [], qg = ngramKeys(qSem), qn = Object.keys(qg).length;
+    if (!qn) return { ok: false, reason: '音程太少，無法做 n-gram 比對', results: [] };
+    var results = [];
+    (entries || []).forEach(function (e) {
+      var lines = e.lines && e.lines.length ? e.lines : (e.contour ? [{ label: '', contour: e.contour }] : []);
+      var best = 0, bestLabel = '';
+      lines.forEach(function (ln) {
+        var c = ln.contour; if (!c || !c.semis) return;
+        var lg = ngramKeys(c.semis), hit = 0, k;
+        for (k in qg) if (lg[k]) hit++;
+        var sc = hit / qn;
+        if (sc > best) { best = sc; bestLabel = ln.label || ''; }
+      });
+      if (best > 0) results.push({ key: e.key, name: e.name, score: Math.round(best * 1000) / 1000, hitLine: bestLabel });
+    });
+    results.sort(function (a, b) { return b.score - a.score || String(a.name).localeCompare(String(b.name)); });
+    return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length, queryGrams: qn };
+  }
   // ───── 5. 索引（逐首，可暫停續跑、取消；已建、沒變、版本相同就跳過）─────
   // rec: { key, path, size, mtimeMs, melody? }；melody = { sig, version, method, contour, tracks, status:'ok'|'failed', reason? }
   // opts: { extract(rec, ctx) → Promise<{ notes, method, tracks? }>（失敗丟錯，錯誤訊息附階段）, save(rec)（寫回儲存層）,
@@ -334,7 +370,9 @@
   // 回傳 summary：done、skipped、failed、cancelled、rebuilt（舊索引格式版本，這次要重建的首數）
   function sigOf(rec) { return String(rec.size || 0) + ':' + String(rec.mtimeMs || 0); }
   var TRANSIENT_RE = /network|timeout|timed out|逾時|連線|fetch/i;
-  function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < INDEX_VERSION); }
+  // 每條路線各自的版本：快速旋律線（feat＝FEAT_FAST）看 INDEX_VERSION；其餘（舊路線、沒有 feat 的舊紀錄）看 OLD_ROUTE_VERSION
+  function versionFor(feat) { return feat === FEAT_FAST ? INDEX_VERSION : OLD_ROUTE_VERSION; }
+  function isStaleFormat(rec) { return !!(rec.melody && rec.melody.status === 'ok' && (rec.melody.version || 1) < versionFor(rec.melody.feat || 0)); }
   async function runMelodyIndex(recs, opts) {
     opts = opts || {};
     var emit0 = opts.onEvent || function () {}, emit = function (ev) { ev.index = curIndex; ev.total = recs.length; ev.name = curName; ev.summary = { done: summary.done, skipped: summary.skipped, failed: summary.failed }; emit0(ev); }, cancelled = opts.isCancelled || function () { return false; };
@@ -360,7 +398,7 @@
           if (mel.length < MIN_NOTES && !got.fp) throw new Error('抽不出足夠的音符（只有 ' + mel.length + ' 個，階段：' + (got.method || '轉譜') + '）');
           if (got.fp) rec.fp = Object.assign({ sig: sigOf(rec) }, got.fp); else if (rec.fp) rec.fp = null;
           // feat：特徵版本（階段二的快速旋律線＝FEAT_FAST）；沒有或較舊＝逐音符轉譜的舊格式，查詢結果會標示「沒有新特徵」
-          rec.melody = { sig: sigOf(rec), version: INDEX_VERSION, status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [], feat: got.feat || 0 };
+          rec.melody = { sig: sigOf(rec), version: versionFor(got.feat || 0), status: 'ok', method: got.method, contour: mel.length >= MIN_NOTES ? contourOf(mel) : null, tracks: got.tracks || [], feat: got.feat || 0 };
           done = true; break;
         } catch (err) {
           var msg = String((err && err.message) || err);
@@ -465,8 +503,8 @@
     audioExtractResult: audioExtractResult, entriesOf: entriesOf, fastLinesResult: fastLinesResult, FEAT_FAST: FEAT_FAST,
     melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, restoreNotes: restoreNotes, compareNotes: compareNotes, compareHit: compareHit, median: median,
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
-    align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
+    align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, searchNgram: searchNgram, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
-    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION
+    MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION, OLD_ROUTE_VERSION: OLD_ROUTE_VERSION, versionFor: versionFor
   };
 }));

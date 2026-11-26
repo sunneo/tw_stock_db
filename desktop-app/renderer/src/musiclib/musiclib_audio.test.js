@@ -125,6 +125,12 @@ t('humNotes：衰減尾與雜音不產生多餘音符', function () {
 
 
 // 哼歌：遠低於旋律的底噪音（像 110 Hz 的嗡聲）要丟掉，不能混進旋律
+t('查詢轉譜路線：多聲部且有模型 → basicPitch；其餘（單人哼唱、沒有模型）→ viterbi', function () {
+  assert.equal(A.queryPathFor({ polyphonic: true, hasModel: true }), 'basicPitch');
+  assert.equal(A.queryPathFor({ polyphonic: true, hasModel: false }), 'viterbi');
+  assert.equal(A.queryPathFor({ polyphonic: false, hasModel: true }), 'viterbi');
+  assert.equal(A.queryPathFor(), 'viterbi');
+});
 t('humNotes：離旋律太遠的低頻底噪音被丟掉', function () {
   var AM = require('../music/audio_to_midi.js'), seq = [62, 64, 65, 67, 65, 64, 62, 64], list = [];
   seq.forEach(function (n, i) { list.push({ n: n, d: 0.4 }); if (i === 3 || i === 6) list.push({ n: 45, d: 0.3 }); });
