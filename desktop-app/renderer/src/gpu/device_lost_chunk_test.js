@@ -117,7 +117,7 @@ function newLog() { return { modules: [], chunks: [], events: [] }; }
     assert.ok(g.dev, '假裝置應可取得：' + g.reason);
     const outs = await nn.runWgsl(g.dev, code, [{ data: new Float32Array(10), out: true }], new Uint8Array(16), 5000);
     assert.strictEqual(outs.length, 1);
-    assert.ok(log.modules.every((c) => c.indexOf('__fa_chunk') < 0), '不能切的核心不該被注入批次參數');
+    assert.ok(log.modules.every((c) => c.indexOf('fa_chunk') < 0), '不能切的核心不該被注入批次參數');
     const subs = log.events.filter((e) => e.type === 'submit' && e.dispatches.length > 0);
     assert.strictEqual(subs.length, 1, '不能切的核心應只提交一次');
     assert.deepStrictEqual(subs[0].dispatches, [[5000, 1]]);
@@ -130,7 +130,12 @@ function newLog() { return { modules: [], chunks: [], events: [] }; }
     const x = new Float32Array(C * H * W), w = new Float32Array(M * C * KH * KW);
     const ops = { navigator: nav };
     await CONV.conv2d(x, 1, C, H, W, w, M, C, KH, KW, null, { pads: [0, 0, 0, 0], strides: [1, 1] }, ops);
-    assert.ok(log.modules.some((c) => c.indexOf('__fa_chunk') >= 0), '應改走分批的直接卷積（layer ' + ops.lastInfo.layer + '）');
+    assert.ok(log.modules.some((c) => c.indexOf('fa_chunk') >= 0), '應改走分批的直接卷積（layer ' + ops.lastInfo.layer + '）');
+    // 回歸鎖：WGSL 保留以 __ 開頭的識別字；注入的名稱若用了 __，著色器編譯失敗、派發變成空操作，輸出全 0（2026-11-26 查明）
+    for (const c of log.modules) {
+      const bad = c.match(/\b__\w*/g) || [];
+      assert.deepStrictEqual(bad, [], '分批注入的 WGSL 含 __ 開頭的保留字：' + bad.join(','));
+    }
   });
 
   // ---------- 2. 裝置遺失的全域紀錄（純函式）----------

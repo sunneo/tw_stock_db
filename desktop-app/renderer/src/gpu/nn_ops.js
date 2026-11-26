@@ -206,11 +206,12 @@ function flatChunkable(code) {
   return FLAT_IDX_RE.test(code) && /@workgroup_size\(64\)/.test(code);
 }
 // 注入批次參數：新增一個 uniform 綁定 __fa_chunk（x＝批次起點、y＝本批格數）；超出本批的格直接返回
+// 注意：WGSL 保留以 __ 開頭的識別字；這裡的名稱不能用 __ 開頭（否則著色器編譯失敗，派發變成無聲的空操作，輸出全 0）
 function chunkedCode(code, bindIdx) {
   const at = code.indexOf('@compute');
-  const decl = '@group(0) @binding(' + bindIdx + ') var<uniform> __fa_chunk: vec2<u32>;\n';
+  const decl = '@group(0) @binding(' + bindIdx + ') var<uniform> fa_chunk: vec2<u32>;\n';
   return code.slice(0, at) + decl + code.slice(at).replace(FLAT_IDX_RE,
-    'let __fa_loc = gid.x + gid.y * 4194240u; if (__fa_loc >= __fa_chunk.y) { return; } let idx = __fa_loc + __fa_chunk.x;');
+    'let fa_loc = gid.x + gid.y * 4194240u; if (fa_loc >= fa_chunk.y) { return; } let idx = fa_loc + fa_chunk.x;');
 }
 // 逐批提交：每批 writeBuffer 批次參數 → 派發 → 提交 → 等完成 → 依耗時調整下一批的大小
 async function dispatchChunks(dev, pipe, entries, cb, cbBind, code, totalInv) {

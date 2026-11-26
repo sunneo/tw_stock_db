@@ -472,7 +472,10 @@ async function runNodes(nodes, env, ctx, freeAfter) {
   for (let ni = 0; ni < nodes.length; ni++) {
     const node = nodes[ni];
     const ins = node.inputs.map((nm) => (nm === '' ? null : lookup(env, nm, ctx)));
+    // 量測鉤子（預設關）：globalThis.__FA_OP_TIMING 有值時，依運算類型累計次數與毫秒；沒設就不碰計時，正常路徑不變
+    const tm = (typeof globalThis !== 'undefined') ? globalThis.__FA_OP_TIMING : undefined, t0 = tm ? Date.now() : 0;
     const outs = await execNode(node, ins, ctx);
+    if (tm) { const k = node.op; const r = tm[k] || (tm[k] = { n: 0, ms: 0 }); r.n++; r.ms += Date.now() - t0; }
     for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i] !== '') env[node.outputs[i]] = outs[i];
     if (ctx.capture) ctx.capture(node, outs);
     if (freeAfter && freeAfter[ni]) for (const nm of freeAfter[ni]) delete env[nm];   // 最後一次用過的中間張量立刻釋放（大圖不然會把每個節點的輸出都留在記憶體裡）
