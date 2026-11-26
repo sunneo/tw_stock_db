@@ -75,7 +75,7 @@ return (async () => {
   humFn = (input) => FaMusicLibAudio.humNotes(input, { AudioToMidi: FaAudioToMidi, thr: 0.3, glideMax: 0.12 }).notes;
   const t0 = Date.now();
   for (const [cn, cond] of Object.entries(CONDS)) {
-    const rows = { basicPitch: [], bpViterbi: [], viterbi: [] };
+    const rows = { basicPitch: [], bpViterbi: [], fusedViterbi: [], viterbi: [] };
     for (let k = 0; k < TRIALS; k++) {
       if (overTime()) { out.truncated = true; await plog('逾時，停在 ' + cn + ' #' + k); break; }
       const r = rng(777 + k * 13 + cn.length), mel = makeMelody(r, DUR), ac = accomp(r, DUR);
@@ -85,6 +85,8 @@ return (async () => {
         rows.basicPitch.push({ f1: f1(bp, mel), fa: frameAcc(bp, mel, DUR), ...stats(bp, DUR) });
         const bpv = FaMusicLibAudio.melodyFromNotes(bp, { hopSec: 0.01 });
         rows.bpViterbi.push({ f1: f1(bpv, mel), fa: frameAcc(bpv, mel, DUR), ...stats(bpv, DUR) });
+        const fusedV = FaMusicLibAudio.melodyFromNotes(FaMusicLibAudio.agreeNotes(bp, humFn(input)), { hopSec: 0.01 });
+        rows.fusedViterbi.push({ f1: f1(fusedV, mel), fa: frameAcc(fusedV, mel, DUR), ...stats(fusedV, DUR) });
       }
       const vit = humFn(input);
       rows.viterbi.push({ f1: f1(vit, mel), fa: frameAcc(vit, mel, DUR), ...stats(vit, DUR) });
@@ -92,7 +94,7 @@ return (async () => {
     }
     const avg = (arr, key) => arr.length ? +(arr.reduce((s, x) => s + x[key], 0) / arr.length).toFixed(3) : null;
     out.conditions[cn] = {};
-    for (const v of ['basicPitch', 'bpViterbi', 'viterbi']) out.conditions[cn][v] = { trials: rows[v].length, f1: avg(rows[v], 'f1'), melFrameAcc: avg(rows[v], 'fa'), shortShare: avg(rows[v], 'shortShare'), jumpsPerSec: avg(rows[v], 'jumpsPerSec'), notesPerSec: avg(rows[v], 'notesPerSec') };
+    for (const v of ['basicPitch', 'bpViterbi', 'fusedViterbi', 'viterbi']) out.conditions[cn][v] = { trials: rows[v].length, f1: avg(rows[v], 'f1'), melFrameAcc: avg(rows[v], 'fa'), shortShare: avg(rows[v], 'shortShare'), jumpsPerSec: avg(rows[v], 'jumpsPerSec'), notesPerSec: avg(rows[v], 'notesPerSec') };
   }
   out.timing.totalSec = Math.round((Date.now() - t0) / 1000);
   try { await window.desktopAPI.rawfs.writeFile('E:/Temp/a2m_eval_out.json', { text: JSON.stringify(out, null, 1) }); } catch (_) { /* 寫不成功時結果仍回傳 */ }

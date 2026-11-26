@@ -163,10 +163,44 @@
     close(T);
     return notes;
   }
+  // 多音轉譜音符的清理（進 Viterbi 前）：(a) 同音高、間隔 < 0.06 秒的相鄰音合併（顫音、斷音碎片）；
+  // (b) 殘響假音：同音高的音在前一個同音高的音還在響時才出現、而且力度不超過前音的 80% → 丟掉（殘響拖尾）；
+  // (c) 很短（< 0.06 秒）而且力度低於中位數一半的音丟掉。
+  function cleanNotesForMelody(notes, o) {
+    o = o || {}; var doMerge = o.merge === true, doEcho = o.echo !== false, doShort = o.short !== false;
+    var ns = (notes || []).filter(function (x) { return x && x.d > 0 && isFinite(x.t) && isFinite(x.n); }).map(function (x) { return { t: x.t, d: x.d, n: Math.round(x.n), v: x.v || 80 }; });
+    ns.sort(function (a, b) { return a.t - b.t || a.n - b.n; });
+    var byP = {}; ns.forEach(function (x) { (byP[x.n] = byP[x.n] || []).push(x); });
+    var out = [];
+    Object.keys(byP).forEach(function (k) {
+      var merged = [];
+      byP[k].forEach(function (x) {
+        var last = merged[merged.length - 1];
+        if (doMerge && last && x.t - (last.t + last.d) < 0.06 && x.v >= last.v * 0.8) { last.d = Math.max(last.t + last.d, x.t + x.d) - last.t; last.v = Math.max(last.v, x.v); return; }   // 力度差太多的不併（那是殘響，留給下面的規則）
+        merged.push({ t: x.t, d: x.d, n: x.n, v: x.v });
+      });
+      merged.forEach(function (x) {
+        var echo = merged.some(function (y) { return y !== x && y.t < x.t - 0.08 && y.t + y.d > x.t && x.v <= y.v * 0.8; });
+        if (!doEcho || !echo) out.push(x);
+      });
+    });
+    var vs = out.map(function (x) { return x.v; }).sort(function (a, b) { return a - b; }), med = vs.length ? vs[vs.length >> 1] : 0;
+    return out.filter(function (x) { return !(doShort && x.d < 0.06 && x.v < med * 0.5); });
+  }
+  // 兩路音符融合（Basic Pitch＋非模型）：同音高且時間重疊的音＝兩路一致，力度加權到 1.5 倍；只有一路有的音力度減半。
+  function agreeNotes(a, b) {
+    var out = [], used = {};
+    (a || []).forEach(function (x) {
+      var hit = (b || []).some(function (y, j) { return Math.abs(Math.round(y.n) - Math.round(x.n)) === 0 && y.t < x.t + x.d && x.t < y.t + y.d && (used[j] = true); });
+      out.push(Object.assign({}, x, { v: Math.min(127, Math.round((x.v || 80) * (hit ? 1.5 : 0.5))) }));
+    });
+    (b || []).forEach(function (y, j) { if (used[j]) return; out.push(Object.assign({}, y, { v: Math.round((y.v || 80) * 0.25) })); });
+    return out;
+  }
   // 多音音符（例如 Basic Pitch 的輸出）→ 主旋律：每個音符在它持續的幀上給該音高能量（依力度），再交給同一套 Viterbi。
   // 多音轉譜的音符本身不是旋律；連續性與音域先驗會在伴奏與和弦之間挑出連續的人聲線。
   function melodyFromNotes(notes, opts) {
-    opts = opts || {};
+    opts = opts || {}; if (opts.clean !== false) notes = cleanNotesForMelody(notes, opts.clean);
     var hop = opts.hopSec || 0.01, lo = VIT.LO, hi = VIT.HI, K = hi - lo + 1, end = 0, i;
     (notes || []).forEach(function (x) { end = Math.max(end, x.t + x.d); });
     var T = Math.max(1, Math.ceil(end / hop) + 1), sal = new Float32Array(T * K), rel = new Float32Array(T);
@@ -231,5 +265,5 @@
     return { notes: notes, gate: gate, ref: ref, frames: tot, voicedRaw: vOrig, voicedKept: vKept, lo: ps.length ? Math.min.apply(null, ps) : null, hi: ps.length ? Math.max.apply(null, ps) : null, dropped: dropped };
   }
 
-  return { humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+  return { humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, cleanNotesForMelody: cleanNotesForMelody, agreeNotes: agreeNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
 }));
