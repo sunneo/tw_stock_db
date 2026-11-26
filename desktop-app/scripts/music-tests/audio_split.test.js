@@ -21,6 +21,11 @@ function fakeSession(pitches) {
   check('split: high pitch 70 comes from the high-passed copy', notes.some((n) => n.n === 70), notes.map((n) => n.n));
   check('split: nothing outside the two pitches', notes.every((n) => n.n === 40 || n.n === 70), notes.map((n) => n.n));
   check('split: boundary constant is 55 (G3, goes to the high pass)', RT.SPLIT_MIDI === 55);
+  // 退路:高通那一路出錯時,仍回傳原混音的結果,而且方法欄不再標示高低音分跑
+  const good = fakeSession([40, 70]); let runs = 0; const flaky = { inputNames: good.inputNames, outputNames: good.outputNames, run: async function (feeds) { runs++; if (runs > 2) throw new Error('boom'); return good.run(feeds); } }; // 2 秒音訊有 2 個視窗:前 2 次是原混音那一路,之後是高通那一路
+  const trF = RT.makeTranscriber(fakeOrt, flaky, null); const nF = await trF(mono, sr);
+  check('fallback: high pass failure still returns the original-mix notes', nF.some((n) => n.n === 40), nF.map((n) => n.n));
+  check('fallback: method label is dropped when the split did not run', trF.methods.length === 0, trF.methods);
   // 沒有高通模組(DSP 不在)時只跑一次原混音
   // 這裡用同一支模組,直接檢查 split 旗標:methods 在有 DSP 時有值
   // Demucs 長段:20 秒輸入切成多段呼叫模型,輸出長度與輸入相同

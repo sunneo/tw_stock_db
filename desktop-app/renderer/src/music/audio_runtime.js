@@ -35,14 +35,18 @@
       if (NP) { const evAt = NP.evidenceFromActivations(st); notes = NP.enforceMinLength(NP.joinSplitNotes(notes, evAt), evAt); }
       return notes;
     }
-    const split = !!DSP;
+    let splitOn = !!DSP, splitFailed = false;
     const fn = async function (mono, sr) {
       const low = await runOne(mono, sr);
       let notes = low;
-      if (split) { const high = await runOne(DSP.highpass(mono, sr, DSP.HP_FC), sr); notes = low.filter((n) => n.n < SPLIT_MIDI).concat(high.filter((n) => n.n >= SPLIT_MIDI)).sort((a, b) => a.t - b.t || a.n - b.n); }
+      if (splitOn) {
+        try { const high = await runOne(DSP.highpass(mono, sr, DSP.HP_FC), sr); notes = low.filter((n) => n.n < SPLIT_MIDI).concat(high.filter((n) => n.n >= SPLIT_MIDI)).sort((a, b) => a.t - b.t || a.n - b.n); }
+        catch (_) { splitOn = false; splitFailed = true; } // 高通這一路出錯:這段起之後都只用原混音(與舊流程相同),方法欄也不再標示
+      }
       return notes.map((n) => ({ t: n.t, d: n.d, n: n.n, v: n.v }));
     };
-    fn.methods = split ? ['＋高低音分跑'] : [];
+    // 方法欄只在高低音分開跑「全部段落都成功」時才標示
+    Object.defineProperty(fn, 'methods', { get() { return (DSP && !splitFailed) ? ['＋高低音分跑'] : []; } });
     return fn;
   }
   function makeClassifier(ort, session) {

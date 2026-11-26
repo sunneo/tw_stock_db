@@ -35,13 +35,17 @@
     const onP = opts.onProgress || (() => {}), store = opts.store, id = opts.id || fingerprint(L0, sr);
     // (1) 音高校準:錄音偏離 A440 就先整段重新取樣;錄音逐漸變調就逐秒校準。之後所有處理都在校準後的時間軸上做,最後換回原始時間
     let L = L0, R = R0, tm = null;
-    const plan = (DSP && opts.calibrate !== false) ? DSP.planWarp(toMono(L0, R0), sr) : null;
-    if (plan && plan.mode !== 'none') {
-      L = DSP.applyWarp(L0, sr, plan); R = R0 ? DSP.applyWarp(R0, sr, plan) : null; tm = DSP.makeTimeMap(plan, sr);
-      if (plan.mode === 'global') report.methods.push('＋音高校準 ' + (-Math.round(plan.offset)) + ' 音分');
-      else report.methods.push('＋音高漂移修正');
-      report.used.push('音高:' + plan.reason);
-    }
+    // 校準任何一步出錯都退回原始音高(與舊流程相同),並寫明跳過
+    try {
+      const plan = (DSP && opts.calibrate !== false) ? DSP.planWarp(toMono(L0, R0), sr) : null;
+      if (plan && plan.mode !== 'none') {
+        const L1 = DSP.applyWarp(L0, sr, plan), R1 = R0 ? DSP.applyWarp(R0, sr, plan) : null, tm1 = DSP.makeTimeMap(plan, sr);
+        L = L1; R = R1; tm = tm1;
+        if (plan.mode === 'global') report.methods.push('＋音高校準 ' + (-Math.round(plan.offset)) + ' 音分');
+        else report.methods.push('＋音高漂移修正');
+        report.used.push('音高:' + plan.reason);
+      }
+    } catch (e) { L = L0; R = R0; tm = null; report.skipped.push('音高校準失敗(' + String((e && e.message) || e) + '),沿用原始音高'); }
     const dur = L.length / sr;
     // (2) 分段:每段 chunk 秒,相鄰段重疊 OVERLAP 秒;每段負責 [起點 + OVERLAP/2, 下一段起點 + OVERLAP/2),中點切開
     const chunkSec = opts.chunkSec || CHUNK, step = Math.max(0.5, chunkSec - OVERLAP), starts = [];
@@ -51,14 +55,13 @@
     const stemNames = useSep ? (opts.stems || ['drums', 'bass', 'other', 'vocals']) : ['mix'];
     if (!useSep) { report.skipped.push('沒有分軌模型:整個混音當成一軌處理,只用單音音高追蹤,不拆鼓、貝斯、人聲'); }
     else report.used.push('分軌:' + stemNames.join('、'));
-    if (opts.transcriber && Array.isArray(opts.transcriber.methods)) report.methods.push(...opts.transcriber.methods);
     const acc = {}; stemNames.forEach((s) => { acc[s] = []; });
     for (let c = 0; c < total; c++) {
       if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('已中斷'), { aborted: true, resumeId: id });
       const s0 = starts[c], e0 = Math.min(dur, s0 + chunkSec), own0 = c === 0 ? 0 : s0 + OVERLAP / 2, own1 = c === total - 1 ? dur : starts[c + 1] + OVERLAP / 2;
       const a = Math.max(0, Math.floor(s0 * sr)), b = Math.min(L.length, Math.floor(e0 * sr)), winStart = a / sr;
       onP({ chapter: '轉譜', done: c, total, message: '第 ' + (c + 1) + '/' + total + ' 段' });
-      const key = id + ':' + c + ':' + (useSep ? 'sep' : 'mix') + (opts.transcriber ? '+tr' : '') + ':' + CACHE_VER + ':' + chunkSec + (plan && plan.mode !== 'none' ? ':' + plan.mode + Math.round(plan.offset) : '');
+      const key = id + ':' + c + ':' + (useSep ? 'sep' : 'mix') + (opts.transcriber ? '+tr' : '') + ':' + CACHE_VER + ':' + chunkSec + (tm ? ':cal' : '');
       let res = store ? await store.get(key) : null;
       if (res) report.resumed++;
       else {
@@ -78,6 +81,8 @@
       for (const s of stemNames) { const r = res[s]; if (!r || r.skipped) continue; const keep = (t) => t >= own0 && t < own1; if (r.drums) acc[s].push.apply(acc[s], r.drums.filter((h) => keep(h.t))); else acc[s].push.apply(acc[s], r.notes.filter((n) => keep(n.t))); }
       report.chunks++;
     }
+    // 方法欄:轉譜器自己說明用了哪些處理(只在真的跑過時才有)
+    if (opts.transcriber && Array.isArray(opts.transcriber.methods)) report.methods.push(...opts.transcriber.methods);
     // (3) 換回原始時間
     if (tm) for (const s of Object.keys(acc)) acc[s] = acc[s].map((n) => mapNote(n, tm));
     const wholeMono = () => toMono(L, R);
@@ -97,9 +102,11 @@
       // 鼓軌:有分軌出來的鼓(Demucs)就用它;沒有就用頻譜法在整個混音上找(不下載模型,有存在檢查)
       if (acc.drums && acc.drums.length) { parts.drums = acc.drums; report.methods.push('＋鼓軌（分軌）'); }
       else if (DF) {
-        const fd = DF.detect(resample(wholeMono(), sr, WORK_SR), WORK_SR);
-        if (fd.present) { parts.drums = fd.hits.map((h) => mapNote(h, tm)); report.methods.push('＋鼓軌（頻譜法）'); report.used.push('鼓軌:' + fd.reason); }
-        else report.skipped.push('頻譜法沒有找到鼓(' + fd.reason + ')');
+        try {
+          const fd = DF.detect(resample(wholeMono(), sr, WORK_SR), WORK_SR);
+          if (fd.present) { parts.drums = fd.hits.map((h) => mapNote(h, tm)); report.methods.push('＋鼓軌（頻譜法）'); report.used.push('鼓軌:' + fd.reason); }
+          else report.skipped.push('頻譜法沒有找到鼓(' + fd.reason + ')');
+        } catch (e) { report.skipped.push('頻譜法鼓軌失敗(' + String((e && e.message) || e) + ')'); }
       }
       if (acc.bass && acc.bass.length) parts.bass = pp(acc.bass, false);
       if (acc.vocals && acc.vocals.length) parts.vocals = pp(acc.vocals, false);
