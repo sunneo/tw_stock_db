@@ -108,17 +108,23 @@
   // 欄位名稱兩種都認：真的 Chrome 擴充功能（background.js 的 pageTextExtractor）回 total_length，舊的／其他實作回 total_chars——
   // 以前只認 total_chars，長頁面永遠不會走分層（用真 Chrome 實測才發現）。
   function totalOf(r) { var t = Number(r && (r.total_chars != null ? r.total_chars : r.total_length)); return isFinite(t) && t >= 0 ? t : (r && typeof r.text === 'string' ? r.text.length : 0); }
+  // 逐段讀完整頁。o.onChunk(text, r)：有給就每段直接交出去（呼叫端寫進暫存），不再相加成一個大字串；沒給才把全文接起來放在 out.text。
+  // 上限：o.maxChars 預設 0＝不限字數（超大網頁要能讀完，改由暫存落盤）；o.maxCalls 預設 400 只是防止無限迴圈。
+  // 被截斷時 out.truncated＝true，out.reason 說明原因（'max_calls'｜'call_failed'），out.chars＝實際拿到的字數。
   function readAll(call, args, o) {
-    o = o || {}; var chunk = o.chunk || 150000, maxChars = o.maxChars || 3000000, maxCalls = o.maxCalls || 40;
+    o = o || {}; var chunk = o.chunk || 150000, maxChars = Number(o.maxChars) > 0 ? Number(o.maxChars) : 0, maxCalls = o.maxCalls || 400;
+    var sink = typeof o.onChunk === 'function' ? o.onChunk : null;
     return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk }))).then(function (first) {
       if (!first || !first.ok || typeof first.text !== 'string') return { ok: false, first: first };
-      var out = { ok: true, first: first, text: first.text, total: Math.max(totalOf(first), first.text.length), calls: 1, complete: !first.has_more, truncated: false };
+      var out = { ok: true, first: first, text: sink ? '' : first.text, chars: first.text.length, total: Math.max(totalOf(first), first.text.length), calls: 1, complete: !first.has_more, truncated: false, reason: null };
+      if (sink) sink(first.text, first);
       function next(r) {
         if (!(r.has_more && r.next_offset != null)) { out.complete = !r.has_more; return out; }
-        if (out.text.length >= maxChars || out.calls >= maxCalls) { out.complete = false; out.truncated = true; return out; }
+        if ((maxChars > 0 && out.chars >= maxChars) || out.calls >= maxCalls) { out.complete = false; out.truncated = true; out.reason = 'max_calls'; if (maxChars > 0 && out.chars >= maxChars) out.reason = 'max_chars'; return out; }
         return Promise.resolve(call(Object.assign({}, args, { max_chars: chunk, offset: r.next_offset }))).then(function (r2) {
-          out.calls++; if (!r2 || !r2.ok || typeof r2.text !== 'string') { out.complete = false; out.truncated = true; return out; }
-          out.text += r2.text; return next(r2);
+          out.calls++; if (!r2 || !r2.ok || typeof r2.text !== 'string') { out.complete = false; out.truncated = true; out.reason = 'call_failed'; return out; }
+          out.chars += r2.text.length; if (sink) sink(r2.text, r2); else out.text += r2.text;
+          return next(r2);
         });
       }
       return next(first);

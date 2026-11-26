@@ -111887,12 +111887,12 @@ ${fnData.code}
                     }
                     // 頁面文字很長（或要求 output:'jsonl'）：讀完整頁，回三層結構的第 0 層（章節索引 JSONL），不是只回第一段
                     if (cmd === 'get_page_text' && parsed.output !== 'text' && parsed.offset == null && parsed.start_line == null) {
-                        const W0 = this._webBlocksMod(); const rr = await W0.readAll((a) => this._bcCall(cmd, a, timeoutMs || 30000), parsed, { chunk: 150000 }); const first = rr.first;
+                        const W0 = this._webBlocksMod(); const rr = await W0.readAll((a) => this._bcCall(cmd, a, timeoutMs || 30000), parsed, { chunk: 150000 }); const first = rr.first; const trunc = rr.ok && rr.truncated ? { truncated: true, truncated_reason: rr.reason, read_chars: rr.chars, total_chars: rr.total } : null;
                         if (rr.ok && (parsed.output === 'jsonl' || rr.total > this._pagerBudgetChars() || rr.text.length > this._pagerBudgetChars())) {
-                            const layered = this._webPageLayers(rr.text, { title: first.title || first.url || '', url: first.url, tab_id: parsed.tab_id }, { chunkChars: Math.max(1000, Math.floor(this._pagerBudgetChars() * 0.8)) });
+                            const layered = this._webPageLayers(rr.text, { title: first.title || first.url || '', url: first.url, tab_id: parsed.tab_id, truncation: trunc }, { chunkChars: Math.max(1000, Math.floor(this._pagerBudgetChars() * 0.8)) });
                             if (layered) return layered;
                         }
-                        return JSON.stringify(this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, first && first.ok ? await this._bcCall(cmd, parsed, timeoutMs || 30000) : first))); // 不夠長：照舊一段一段讀
+                        const fbRes = this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, first && first.ok ? await this._bcCall(cmd, parsed, timeoutMs || 30000) : first)); if (trunc && fbRes && typeof fbRes === 'object') Object.assign(fbRes, trunc); return JSON.stringify(fbRes); // 不夠長：照舊一段一段讀；被截斷時旗標仍要帶給模型
                     }
                     return JSON.stringify(this._bcShapeResult(cmd, await this._bcPostprocess(cmd, parsed, await this._bcCall(cmd, parsed, timeoutMs || 30000))));
                 }
@@ -112971,7 +112971,8 @@ ${fnData.code}
                     if (contentType && !/text\/html|application\/xhtml/i.test(contentType)) {
                         return JSON.stringify({ ok: false, error: `這個網址回傳的不是HTML網頁（content-type: ${contentType}），這個工具只處理網頁內容` });
                     }
-                    const html = await resp.text();
+                    const cap = await this._readBodyCapped(resp, this._fetchCapBytes()); const html = cap.text;
+                    const htmlTruncated = cap.truncated ? { truncated: true, truncated_reason: 'max_bytes', read_bytes: cap.bytes, total_bytes: cap.totalBytes, note: '網頁本體超過讀取上限，只讀了前 ' + cap.bytes + ' 位元組' + (cap.totalBytes ? '（全文 ' + cap.totalBytes + ' 位元組，未讀 ' + (cap.totalBytes - cap.bytes) + ' 位元組）' : '') + '，內容不完整，不要據此下完整結論。' } : null;
                     const { title, markdown } = this._extractReadableContentFromHtml(html);
                     if (!markdown.trim()) {
                         return JSON.stringify({ ok: false, error: '這個網頁沒有擷取到任何可讀文字內容——可能是完全靠JavaScript動態渲染的頁面（例如SPA），伺服器端回傳的原始HTML本身沒有實際內容' });
@@ -112981,13 +112982,14 @@ ${fnData.code}
                     const fileId = await this.fileCache.put(`${safeTitle}.md`, 'text/markdown', blob, 'uploaded');
                     // 內文超過一頁：改回三層結構的第 0 層（章節索引 JSONL），原文仍存在 file_id（參照文件，一般分頁）
                     if (parsed.output !== 'text' && (parsed.output === 'jsonl' || markdown.length > this._pagerBudgetChars())) {
-                        const layered = this._webPageLayers(markdown, { title: title || url, url, file_id: fileId }); if (layered) return layered;
+                        const layered = this._webPageLayers(markdown, { title: title || url, url, file_id: fileId, truncation: htmlTruncated }); if (layered) return layered;
                     }
                     return JSON.stringify({
                         ok: true,
                         file_id: fileId,
                         title: title || url,
                         url,
+                        ...(htmlTruncated || {}),
                         sizeChars: markdown.length,
                         preview: markdown.slice(0, 500) + (markdown.length > 500 ? '…（完整內容請用parse_uploaded_file或summarize_large_text搭配這個file_id查看）' : ''),
                     });
@@ -131739,11 +131741,27 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const idx = W.sectionIndex(built, markdown.length, lo).map((s) => Object.assign({}, s, { blocks_cursor: P.encodeCursor({ source: bid, index: s.blocks[0], part: 0, page: 0 }), read_blocks: 'big_content({"id":"' + bid + '","action":"page","cursor":"' + P.encodeCursor({ source: bid, index: s.blocks[0], part: 0, page: 0 }) + '"})' }));
             const head = { ok: true, layer: 'sections', title: meta.title, url: meta.url, file_id: meta.file_id, tab_id: meta.tab_id, total_chars: markdown.length, sections: idx.length, blocks: built.blocks, blocks_source: bid,
                 how_to_read: '三層：①這份是章節索引（一章一行）；②要讀某章的區塊，用該行的 read_blocks（big_content page，帶 cursor，一頁頁讀到沒有 has_more）；③要讀原文（參照文件）' + (meta.file_id ? '用 parse_uploaded_file 或 article_section，file_id 加上該行 doc.offset／doc.chars 當 offset／max_chars' : '用 browser_get_page_text，tab_id 加上該行 doc.offset／doc.chars 當 offset／max_chars（頁面沒變動時偏移才對得上）') + '。沒讀完的章節不要下結論。' };
+            if (meta.truncation) Object.assign(head, meta.truncation, { note_truncated: '讀取被截斷：只讀到原文的一部分（' + meta.truncation.read_chars + ' 字，全文約 ' + meta.truncation.total_chars + ' 字，原因 ' + meta.truncation.truncated_reason + '），下面的章節與區塊只涵蓋讀到的部分。' });
             const sid = this._bigStashRecords(idx.map((x) => JSON.stringify(x)), head, 'web_sections');
             const pg = this._bigPage(sid, null); return pg && pg.ok ? pg.text : null;
         } catch (e) { try { this._log('網頁分層失敗：' + String((e && e.message) || e)); } catch (_) { /* */ } return null; }
     }
     // 一頁可以放多少字元：跟 contextWindowTokens 按比例（沒有字元下限）；不知道窗口大小才退回工具結果預算。乘 0.9 留給 meta 與提示。
+    // 網頁本體讀取上限（位元組）：跟內容窗口按比例（每 token 約 1000 位元組的 15%～25%，沒有窗口大小時退回工具結果預算），不寫死常數。
+    _fetchCapBytes() { return Math.max(1, Math.floor(this._pagerBudgetChars() * 1000)); }
+    // 串流讀取網頁本體：超過上限就停止讀取（不先整份載入再檢查大小），回傳已讀的文字、讀了幾位元組、全文多大（有 content-length 才知道）。
+    async _readBodyCapped(resp, cap) {
+        const declared = Number(resp.headers && resp.headers.get ? resp.headers.get('content-length') : 0) || 0;
+        if (!resp.body || typeof resp.body.getReader !== 'function') { const t = await resp.text(); const over = t.length > cap; return { text: over ? t.slice(0, cap) : t, truncated: over, bytes: over ? cap : t.length, totalBytes: declared || t.length }; }
+        const reader = resp.body.getReader(); const dec = new TextDecoder('utf-8'); const parts = []; let got = 0, truncated = false;
+        for (;;) {
+            const { done, value } = await reader.read(); if (done) break;
+            if (got + value.byteLength > cap) { const keep = Math.max(0, cap - got); parts.push(dec.decode(value.subarray(0, keep), { stream: false })); got = cap; truncated = true; try { await reader.cancel(); } catch (_) { /* 已關閉 */ } break; }
+            got += value.byteLength; parts.push(dec.decode(value, { stream: true }));
+        }
+        if (!truncated) parts.push(dec.decode());
+        return { text: parts.join(''), truncated, bytes: got, totalBytes: declared || (truncated ? null : got) };
+    }
     _pagerBudgetChars() {
         const ctx = Number(this._getGenerationSettings().contextWindowTokens) || 0;
         if (!ctx) return Math.floor(this._toolResultBudgetChars() * 0.9);

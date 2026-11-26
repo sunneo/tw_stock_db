@@ -91,6 +91,13 @@ contextBridge.exposeInMainWorld("desktopAPI", {
     listDrives: () => ipcRenderer.invoke("fa:rawfs:listDrives"),
     readHead: (path, bytes) => ipcRenderer.invoke("fa:rawfs:readHead", { path, bytes }), // 音樂庫掃描用：只讀檔頭
   },
+  // 大段文字暫存（userData/stage，chunk_store.js 的磁碟後端）：只收 stage-*.jsonl 檔名，實作在 main-ext.js 的 fa:stage:*。
+  stage: {
+    append: (name, text) => ipcRenderer.invoke("fa:stage:append", { name, text }),
+    readRange: (name, start, bytes) => ipcRenderer.invoke("fa:stage:readRange", { name, start, bytes }),
+    remove: (name) => ipcRenderer.invoke("fa:stage:remove", { name }),
+    sweep: (maxAgeMs) => ipcRenderer.invoke("fa:stage:sweep", { maxAgeMs }),
+  },
   // SQLite（main.js的fa:sql:call，sqlite-engine.js）：op＝open／exec／query／schema／pragma／status／cancel／close…，協定見該檔案。
   sql: {
     call: (op, args) => ipcRenderer.invoke("fa:sql:call", { op, args }),

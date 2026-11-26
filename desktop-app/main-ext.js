@@ -202,6 +202,42 @@ ipcMain.handle("fa:judge:run", async (_evt, { lang, source, problem, timeoutMs }
     }
   });
 
+  // 大段文字暫存（renderer/src/agent/chunk_store.js 的磁碟後端）：放在 userData/stage 底下，檔名只收 stage-*.jsonl。
+  //   append：附加一段文字，回傳這段的位元組起點（renderer 自己記偏移，不整檔讀回）；readRange：依位元組位置讀一段；remove：刪一個檔。
+  //   啟動時清掉超過 1 小時的舊檔，結束時整個資料夾清空（重開後舊 id 本來就失效）。
+  const stageDir = () => { const u = ctx.userDataDir ? ctx.userDataDir() : ""; if (!u) throw new Error("沒有 userData 資料夾"); return path.join(u, "stage"); };
+  const stageFile = (name) => { const n = String(name || ""); if (!/^stage-[A-Za-z0-9_.-]+\.jsonl$/.test(n)) throw new Error("暫存檔名不合法"); return path.join(stageDir(), n); };
+  ipcMain.handle("fa:stage:append", async (_evt, { name, text } = {}) => {
+    try {
+      const f = stageFile(name); await fs.mkdir(path.dirname(f), { recursive: true });
+      const buf = Buffer.from(String(text ?? ""), "utf8");
+      const fh = await fs.open(f, "a");
+      try { const st = await fh.stat(); await fh.write(buf, 0, buf.length, st.size); return { ok: true, start: st.size, bytes: buf.length }; } finally { await fh.close(); }
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle("fa:stage:readRange", async (_evt, { name, start, bytes } = {}) => {
+    try {
+      const f = stageFile(name); const n = Math.max(0, Math.min(Number(bytes) || 0, 32 * 1024 * 1024));
+      const fh = await fs.open(f, "r");
+      try { const buf = Buffer.alloc(n); const { bytesRead } = await fh.read(buf, 0, n, Math.max(0, Number(start) || 0)); return { ok: true, text: buf.subarray(0, bytesRead).toString("utf8") }; } finally { await fh.close(); }
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
+  ipcMain.handle("fa:stage:remove", async (_evt, { name } = {}) => {
+    try { await fs.rm(stageFile(name), { force: true }); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
+  async function stageSweep(maxAgeMs) {
+    let names = []; try { names = await fs.readdir(stageDir()); } catch (_) { return 0; }
+    const now = Date.now(); let n = 0;
+    for (const nm of names) {
+      if (!/^stage-[A-Za-z0-9_.-]+\.jsonl$/.test(nm)) continue;
+      try { const st = await fs.stat(path.join(stageDir(), nm)); if (maxAgeMs == null || now - st.mtimeMs > maxAgeMs) { await fs.rm(path.join(stageDir(), nm), { force: true }); n++; } } catch (_) { /* 檔案已不在 */ }
+    }
+    return n;
+  }
+  try { if (ctx.userDataDir) stageSweep(60 * 60 * 1000).catch(() => {}); } catch (_) { /* */ }
+  try { if (ctx.electron && ctx.electron.app && ctx.userDataDir) ctx.electron.app.on("will-quit", () => { try { require("fs").rmSync(stageDir(), { recursive: true, force: true }); } catch (_) { /* */ } }); } catch (_) { /* */ }
+  ipcMain.handle("fa:stage:sweep", async (_evt, { maxAgeMs } = {}) => ({ ok: true, removed: await stageSweep(Number(maxAgeMs) > 0 ? Number(maxAgeMs) : null) }));
+
   ipcMain.handle("fa:rawfs:readFile", async (_evt, { path: p, encoding } = {}) => {
     const target = path.resolve(rawFsPath(p));
     const buf = await fs.readFile(target);
