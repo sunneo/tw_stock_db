@@ -328,6 +328,41 @@
     return { ok: true, results: all.slice(0, opts.limit || 10), queryNotes: qn };
   }
 
+  // ───── n-gram 投票（局部比對）：容許部分音錯、漏音、多音，不要求整段一致 ─────
+  // 音程（相鄰半音差，夾在 ±12）連續 NGRAM_N 個為一組；查詢的每一組若出現在某條線的音程組裡就算一票。
+  // 分數＝命中的查詢組數 ÷ 查詢組數。只看音程，所以調與速度都不影響（速度變了音程組不變）。
+  var NGRAM_N = 3, NGRAM_CLIP = 12, NGRAM_Q = 2;
+  function ngramKeys(sem) {
+    var g = {}, i, k, parts;
+    for (i = 0; i + NGRAM_N <= sem.length; i++) {
+      parts = []; for (k = 0; k < NGRAM_N; k++) parts.push(Math.max(-NGRAM_CLIP, Math.min(NGRAM_CLIP, Math.round(sem[i + k] / NGRAM_Q) * NGRAM_Q)));   // 音程量化到 NGRAM_Q 半音：±1 的音高抖動不會讓整組對不上
+      g[parts.join(',')] = true;
+    }
+    return g;
+  }
+  // query：音符（秒）；entries：同 searchMelody。回傳 { ok, results }，每筆 { key, name, score, hitLine }，依分數排序
+  function searchNgram(query, entries, opts) {
+    opts = opts || {};
+    var mel = dropOutliers(melodyNotes(query));
+    if (mel.length < MIN_NOTES) return { ok: false, reason: '哼得太短（至少要 ' + MIN_NOTES + ' 個音）', results: [] };
+    var qSem = contourOf(mel).semis || [], qg = ngramKeys(qSem), qn = Object.keys(qg).length;
+    if (!qn) return { ok: false, reason: '音程太少，無法做 n-gram 比對', results: [] };
+    var results = [];
+    (entries || []).forEach(function (e) {
+      var lines = e.lines && e.lines.length ? e.lines : (e.contour ? [{ label: '', contour: e.contour }] : []);
+      var best = 0, bestLabel = '';
+      lines.forEach(function (ln) {
+        var c = ln.contour; if (!c || !c.semis) return;
+        var lg = ngramKeys(c.semis), hit = 0, k;
+        for (k in qg) if (lg[k]) hit++;
+        var sc = hit / qn;
+        if (sc > best) { best = sc; bestLabel = ln.label || ''; }
+      });
+      if (best > 0) results.push({ key: e.key, name: e.name, score: Math.round(best * 1000) / 1000, hitLine: bestLabel });
+    });
+    results.sort(function (a, b) { return b.score - a.score || String(a.name).localeCompare(String(b.name)); });
+    return { ok: true, results: results.slice(0, opts.limit || 10), queryNotes: mel.length, queryGrams: qn };
+  }
   // ───── 5. 索引（逐首，可暫停續跑、取消；已建、沒變、版本相同就跳過）─────
   // rec: { key, path, size, mtimeMs, melody? }；melody = { sig, version, method, contour, tracks, status:'ok'|'failed', reason? }
   // opts: { extract(rec, ctx) → Promise<{ notes, method, tracks? }>（失敗丟錯，錯誤訊息附階段）, save(rec)（寫回儲存層）,
@@ -468,7 +503,7 @@
     audioExtractResult: audioExtractResult, entriesOf: entriesOf, fastLinesResult: fastLinesResult, FEAT_FAST: FEAT_FAST,
     melodyNotes: melodyNotes, melodyFromSong: melodyFromSong, songLines: songLines, restoreNotes: restoreNotes, compareNotes: compareNotes, compareHit: compareHit, median: median,
     COMPARE_GAP: COMPARE_GAP, COMPARE_RANGE: COMPARE_RANGE, contourOf: contourOf, onsetRatios: onsetRatios,
-    align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
+    align: align, rhythmScore: rhythmScore, searchMelody: searchMelody, searchNgram: searchNgram, runMelodyIndex: runMelodyIndex, sigOf: sigOf,
     dropOutliers: dropOutliers, globalSim: globalSim, levelOf: levelOf,
     MIN_NOTES: MIN_NOTES, DEFAULT_MIN_SCORE: DEFAULT_MIN_SCORE, CONFIDENT_SCORE: CONFIDENT_SCORE, INDEX_VERSION: INDEX_VERSION, OLD_ROUTE_VERSION: OLD_ROUTE_VERSION, versionFor: versionFor
   };
