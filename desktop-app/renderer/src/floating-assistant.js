@@ -158385,6 +158385,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const label = c.REG[id].label;
         try {
             if (id !== 'yamnet' && id !== 'demucs-6s' && id !== 'basic-pitch') return null;
+            // 拆軌（Demucs）預設一律用 WASM：這條 GPU 圖形路徑在實測機器上比 WASM 慢（前 659 個節點 16.4 秒對 4.6 秒），
+            // 輸出對 ORT 的 WASM 結果還有誤差（第 659 個節點 0.525），而且每次嘗試最多先白等 150 秒看門狗。
+            // 「顯卡內完成全部演算法」的設計做好、驗證過之前不碰；要試的人把 localStorage 的 fa.audio.demucsGpu 設成 '1'。
+            // 詳見 docs/REPORT.demucs-gpu-vs-wasm.md 與 docs/DESIGN.TODO.audio-gpu-and-hum-search.md。
+            if (id === 'demucs-6s') {
+                let optIn = false; try { optIn = localStorage.getItem('fa.audio.demucsGpu') === '1'; } catch (_) { /* 讀不到就當沒開 */ }
+                if (!optIn) { c.notes.push(label + ' 用 WASM：拆軌的 GPU 路徑還在重新設計（目前比 WASM 慢、輸出也未驗證）'); return null; }
+            }
             // 自動判斷（GPU 加速開著、audioGpu 沒手動開）要先等探測做完：_gpuAutoOn 第一次呼叫只是「啟動探測」並回傳 false，
             // 所以開機後第一次的音訊轉 MIDI／拆軌一律走 CPU（使用者回報：已經開了 CUDA 相容層，Demucs 還是用 CPU）。這裡等探測結果再決定。
             let audioOn = this._audioGpuOn();
