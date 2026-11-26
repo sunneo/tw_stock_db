@@ -163,6 +163,20 @@
     close(T);
     return notes;
   }
+  // 多音音符（例如 Basic Pitch 的輸出）→ 主旋律：每個音符在它持續的幀上給該音高能量（依力度），再交給同一套 Viterbi。
+  // 多音轉譜的音符本身不是旋律；連續性與音域先驗會在伴奏與和弦之間挑出連續的人聲線。
+  function melodyFromNotes(notes, opts) {
+    opts = opts || {};
+    var hop = opts.hopSec || 0.01, lo = VIT.LO, hi = VIT.HI, K = hi - lo + 1, end = 0, i;
+    (notes || []).forEach(function (x) { end = Math.max(end, x.t + x.d); });
+    var T = Math.max(1, Math.ceil(end / hop) + 1), sal = new Float32Array(T * K), rel = new Float32Array(T);
+    (notes || []).forEach(function (x) {
+      var p = Math.round(x.n); if (p < lo || p > hi) return;
+      var w = Math.max(0.2, Math.min(1, (x.v || 80) / 127)), f0 = Math.floor(x.t / hop), f1 = Math.min(T, Math.ceil((x.t + x.d) / hop));
+      for (var f = f0; f < f1; f++) { sal[f * K + (p - lo)] += w; rel[f] = 1; }
+    });
+    return melodyViterbi(sal, T, lo, hi, rel, { hopSec: hop, delay: 0, minFrames: VIT.MIN_FRAMES });
+  }
   function humNotes(input, opts) {
     opts = opts || {};
     var AM = opts.AudioToMidi; if (!AM || !AM.pitchTrack) throw new Error('缺少 FaAudioToMidi（音高追蹤）');
@@ -217,5 +231,5 @@
     return { notes: notes, gate: gate, ref: ref, frames: tot, voicedRaw: vOrig, voicedKept: vKept, lo: ps.length ? Math.min.apply(null, ps) : null, hi: ps.length ? Math.max.apply(null, ps) : null, dropped: dropped };
   }
 
-  return { humNotes: humNotes, melodyViterbi: melodyViterbi, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
+  return { humNotes: humNotes, melodyViterbi: melodyViterbi, melodyFromNotes: melodyFromNotes, salienceFrames: salienceFrames, monoOf: monoOf, sliceChannels: sliceChannels, songFromAudio: songFromAudio, METHOD_PITCH: METHOD_PITCH, METHOD_BASIC: METHOD_BASIC };
 }));

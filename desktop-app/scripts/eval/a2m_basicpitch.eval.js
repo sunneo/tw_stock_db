@@ -2,7 +2,7 @@
 // 做法：
 //   1. 在頁面內用 FaAudioRuntime（既有的 loadOrt／createSession）載入 E:/Temp/onnx-models/nmp.onnx（Basic Pitch 1.0 的 ONNX）。
 //   2. 合成「已知主旋律＋伴奏（低音＋和弦）」的真值，過三種喇叭→麥克風條件（乾淨／中等殘響／強殘響），每條件 4 段，8 秒。
-//   3. 同一份錄音跑兩條路：
+//   3. 同一份錄音跑三條路（第三條＝Basic Pitch 音符餵進同一套主旋律 Viterbi，FaMusicLibAudio.melodyFromNotes）：
 //        (A) Basic Pitch：FaAudioRuntime.makeTranscriber（高低音分跑＋Basic Pitch 後處理）
 //        (B) 非模型 Viterbi：FaMusicLibAudio.humNotes（諧波和能量＋連續性）
 //   4. 指標（對真值）：音符 F1（onset 50 ms、音高 ±0.5 半音）、主旋律幀準確度（真值有音的 10 ms 幀，估計音高在 ±0.5 半音內的比例）、
@@ -75,7 +75,7 @@ return (async () => {
   humFn = (input) => FaMusicLibAudio.humNotes(input, { AudioToMidi: FaAudioToMidi, thr: 0.3, glideMax: 0.12 }).notes;
   const t0 = Date.now();
   for (const [cn, cond] of Object.entries(CONDS)) {
-    const rows = { basicPitch: [], viterbi: [] };
+    const rows = { basicPitch: [], bpViterbi: [], viterbi: [] };
     for (let k = 0; k < TRIALS; k++) {
       if (overTime()) { out.truncated = true; await plog('逾時，停在 ' + cn + ' #' + k); break; }
       const r = rng(777 + k * 13 + cn.length), mel = makeMelody(r, DUR), ac = accomp(r, DUR);
@@ -83,6 +83,8 @@ return (async () => {
       if (transcriber) {
         const bp = await transcriber(rec, SR);
         rows.basicPitch.push({ f1: f1(bp, mel), fa: frameAcc(bp, mel, DUR), ...stats(bp, DUR) });
+        const bpv = FaMusicLibAudio.melodyFromNotes(bp, { hopSec: 0.01 });
+        rows.bpViterbi.push({ f1: f1(bpv, mel), fa: frameAcc(bpv, mel, DUR), ...stats(bpv, DUR) });
       }
       const vit = humFn(input);
       rows.viterbi.push({ f1: f1(vit, mel), fa: frameAcc(vit, mel, DUR), ...stats(vit, DUR) });
@@ -90,7 +92,7 @@ return (async () => {
     }
     const avg = (arr, key) => arr.length ? +(arr.reduce((s, x) => s + x[key], 0) / arr.length).toFixed(3) : null;
     out.conditions[cn] = {};
-    for (const v of ['basicPitch', 'viterbi']) out.conditions[cn][v] = { trials: rows[v].length, f1: avg(rows[v], 'f1'), melFrameAcc: avg(rows[v], 'fa'), shortShare: avg(rows[v], 'shortShare'), jumpsPerSec: avg(rows[v], 'jumpsPerSec'), notesPerSec: avg(rows[v], 'notesPerSec') };
+    for (const v of ['basicPitch', 'bpViterbi', 'viterbi']) out.conditions[cn][v] = { trials: rows[v].length, f1: avg(rows[v], 'f1'), melFrameAcc: avg(rows[v], 'fa'), shortShare: avg(rows[v], 'shortShare'), jumpsPerSec: avg(rows[v], 'jumpsPerSec'), notesPerSec: avg(rows[v], 'notesPerSec') };
   }
   out.timing.totalSec = Math.round((Date.now() - t0) / 1000);
   try { await window.desktopAPI.rawfs.writeFile('E:/Temp/a2m_eval_out.json', { text: JSON.stringify(out, null, 1) }); } catch (_) { /* 寫不成功時結果仍回傳 */ }
