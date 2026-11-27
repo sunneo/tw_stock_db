@@ -72,3 +72,10 @@
 - off 模式開啟時重新呼叫 `_registerBuiltinAiTools()` 會重設 `_domainGatedToolNames`（評估時要先存後還原）。
 - 路由請求主體的 `stream` 在送出時是 true（程式寫 false，呼叫層改的），不是本任務造成。
 - 領導者啟動的是這條線；使用者發布版本時會用到 `publish.sh`，不要動。
+
+## 8. 更新（2026-11-28，晚於上面各節；上面第 3 節的待辦 1 已完成）
+
+- 已提交：`2f7f89176`（網址／否定句／反思領域）、`d39ad007c`（字母固定、編造名給最接近真工具、網址預先讀——**其中網址部分已被下一筆移除**）、`174a0035e`（移除網址寫死規則；根層級意圖判斷改由路由子代理 `_compactRootRoute`；`docs/AUDIT.repeat-calls.md` 第 9 節）。
+- 路由子代理：`_compactRootRoutePrompt`（完整索引、常駐重用）、`_compactRootRoute`（每輪在 `executeChat` 開頭呼叫一次，12 秒逾時，輸出 `{"tools","domains","reason"}`，用索引驗證後把工具補進 `_compactExtra`、領域寫成建議；答不出來只有詞彙比對很有把握才補）、`_compactRouteNote`。評估 `scripts/eval/compact-route.eval.js`（模型是模擬的）。
+- **尚未做（使用者 2026-11-28 指定）**：批次大小上限定案——所有批次選項上限 0.4、預設 0.25（按 `contextWindowTokens` 比例，不寫死），避開推理死角 0.5 門檻（`floating-assistant.js` 約 110502 行）；先做三件最大的（藏書閣第 1 層、`summarize_large_text`、`big_content` 分段），各附測試；其餘（藏書閣整理、`article_section` 等）列清單與預估節省、別一次全改。這項要從頭查：先 Grep 各分段大小常數與現有按比例縮放的函式（`chunkSizing`、約 110460 行的比例函式）。
+- 還沒驗證：真模型的路由品質與延遲（評估是模擬）；每輪多一次路由呼叫的延遲代價。
