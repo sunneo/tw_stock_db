@@ -76197,14 +76197,6 @@ FA_TASK_TOOL_HINTS.push({
     tools: ['midi_compose', 'midi_compose_tree', 'midi_song_jsonl', 'midi_edit_open', 'midi_to_mp3', 'midi_play', 'music_topic'],
     note: '【這個需求有專用工具：midi_compose】使用者要你作曲或產生 MIDI：直接呼叫 midi_compose({description: 使用者的原話})——程式依風格範本產生並檢查音域與跳進，結果會變成對話裡的 MIDI 編輯器卡片（可試聽、改、下載 MIDI、轉 mp3、轉成配樂）。不要自己寫 Python／mido 腳本、不要把 .mid 寫到資料夾後只報路徑——成品一律用卡片交付。作曲家、樂派或沒有專屬範本的風格（例如貝多芬、重金屬）工具會自動挑最接近的範本並在結果裡寫 style_note，回覆時照實轉述這句話，不要說成真的是那位作曲家的作品。',
 });
-// 話裡有網址：任何模式都要直接拿得到 fetch_web_page（以前它只在好幾個領域裡，根層級看不到，模型就說「我沒有瀏覽網頁的工具」，2026-11-28 使用者回報）
-FA_TASK_TOOL_HINTS.push({
-    id: 'fetch_web_page',
-    re: /https?:\/\/[^\s"'<>）)」』]{4,}/i,
-    neg: /(youtube\.com|youtu\.be)\/|https?:\/\/[^\s]+\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|mp3|mp4|wav|mkv)(\?[^\s]*)?(\s|$)/i,
-    tools: ['fetch_web_page'],
-    note: '【這段話有網址：要知道網頁在說什麼，先呼叫 fetch_web_page({"url":"完整網址"})】它會把網頁抓下來轉成文字再讀（幾秒），不要只憑網址猜內容，也不要說你沒有瀏覽網頁的工具。只是「讀這個網址在說什麼」不要委派瀏覽器子agent（開真 Chrome 要二十秒以上）；只有需要操作、點擊、登入、截圖，或 fetch_web_page 回來是空白（頁面靠 JavaScript 渲染）才改用瀏覽器。抓不到（工具回傳錯誤）就把工具回的原因照實告訴使用者。',
-});
 // 被否定的句子不算需求：「不要翻譯成其他語言」不是要翻譯（只拿掉「不要／別／不用…」後面的一小段再比對 re；neg 仍看原文）
 const FA_NEGATED_CLAUSE = /(不要|不用|不必|無須|無需|別|勿|請勿|避免|don'?t|do not|never|without)[^。！？!?\n,，；;]{0,14}/gi;
 function _faTaskToolHints(task) { const t = String(task || ''); const pos = t.replace(FA_NEGATED_CLAUSE, ' '); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(pos) && !(h.neg && h.neg.test(t))); }
@@ -130605,15 +130597,6 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return '[其他可申請的工具領域（每行：領域、工具數，可能附代表工具；沒有完整參數）]\n' + r.text + '\n【你想說「我沒有某某工具」之前，先呼叫 request_additional_tools 查查：這份清單只是領域，不是全部工具。】需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
         } catch (_) { return ''; }
     }
-    // 「讀一個網址的內容」的任務嗎：有網址、是問在說什麼／摘要／讀，而且不是要操作、登入、截圖、捲動、下載。回網址或 null
-    _readUrlTask(text) {
-        const t = String(text || ''); const m = /https?:\/\/[^\s)）」』"'<>]{4,}/i.exec(t); if (!m) return null;
-        if (/(youtube\.com|youtu\.be)\//i.test(m[0]) || /\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|mp3|mp4|wav|mkv)(\?|$)/i.test(m[0])) return null;
-        const pos = t.replace(FA_NEGATED_CLAUSE, ' ');
-        if (/(點擊|點選|按下|登入|登錄|填寫|填表|截圖|截屏|螢幕|操作|滾動|捲動|下載|上傳|click|log\s*in|sign\s*in|screenshot|scroll|fill\s+in)/i.test(pos)) return null;
-        const rest = pos.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
-        return (!rest || rest.length <= 12 || /(在說什麼|說什麼|講什麼|內容|摘要|總結|重點|閱讀|讀|看看|看一下|解釋|介紹|抓取|擷取|summar|read|what(?:'s| is)|explain|tl;?dr)/i.test(rest)) ? m[0] : null;
-    }
     // 模型編出來的工具名（browser_control、code_execution…）：用名稱近似比對給最接近的真工具；名稱剛好是領域代號就列出那個領域的工具
     _compactNearest(names) {
         const out = {}; let ix = null; try { ix = this._compactIndex({ all: true }); } catch (_) { return out; }
@@ -130624,6 +130607,39 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             if (list.length) out[key] = list;
         }
         return out;
+    }
+    // ===== 根層級意圖判斷交給路由子代理（2026-11-28 使用者：不要「看到某種字串就做某件事」的寫死規則）=====
+    // 認識所有工具（完整索引當系統提示，內容雜湊沒變就重用同一份）、無記憶（每次只看這一句話）。輸入不設長度上限。
+    // 輸出是封閉格式 {"tools":[…],"domains":[…],"reason":"一行"}：名字只能是索引裡真的有的（驗證過才用）；程式只負責執行它的決定——
+    // 選到的工具補進這一輪的根層級清單、選到的領域寫成「建議委派」放進提示。路由答不出來（錯誤、逾時、格式不對）：只有詞彙比對很有把握時才補，否則什麼都不做（不猜）。
+    _compactRootRoutePrompt(index) {
+        const key = index.setHash + '|root|' + this._compactBudgetChars(0.25); if (this._routeRootResident && this._routeRootResident.key === key) { this._routerStats = this._routerStats || { builds: 0, hits: 0 }; this._routerStats.rootHits = (this._routerStats.rootHits || 0) + 1; return this._routeRootResident.prompt; }
+        const txt = FaCompactIndex.text(index, { budgetChars: this._compactBudgetChars(0.25) }).text; this._routerStats = this._routerStats || { builds: 0, hits: 0 }; this._routerStats.rootBuilds = (this._routerStats.rootBuilds || 0) + 1;
+        const prompt = ['你是工具路由器，認識下面所有領域與它們的工具（每個領域底下一行一個工具：名稱和一句話說明）。使用者的話會在下一則訊息給你。', '', txt, '',
+            '判斷這句話要做的事需要哪些工具或領域：工具名稱與領域代號只能用上面列出的，不可以自己編。盡量選能直接完成的最少工具（最多 4 個）；只有任務跨好幾種工作、需要多個步驟才選領域（最多 2 個）。不需要任何額外工具（打招呼、純知識問答）就兩個都回空陣列。',
+            '嚴格只回這個格式的 JSON，不要其他文字：{"tools":["工具名稱"],"domains":["領域代號"],"reason":"一行理由"}'].join('\n');
+        this._routeRootResident = { key, prompt }; return prompt;
+    }
+    async _compactRootRoute(text) {
+        this._compactRoute = null; const t = String(text || '').trim();
+        if (!this._compactIxOn() || !t || /^\//.test(t)) return;
+        const t0 = Date.now(); let index; try { index = this._compactIndex({ all: true }); } catch (_) { return; }
+        const names = new Set(this._getRootToolNames() || []); let tools = [], domains = [], reason = '', source = 'router', error = '';
+        try {
+            const r = await Promise.race([this._callRouterLLM(this._compactRootRoutePrompt(index), t, 'router'), new Promise((res) => setTimeout(() => res({ ok: false, error: '路由逾時' }), 12000))]);
+            if (r && r.ok && r.parsed && typeof r.parsed === 'object') {
+                const rs = FaCompactIndex.resolve(index, { names: Array.isArray(r.parsed.tools) ? r.parsed.tools.map(String) : [] });
+                tools = rs.names.filter((n) => !names.has(n)).slice(0, 4); domains = (Array.isArray(r.parsed.domains) ? r.parsed.domains.map(String) : []).filter((k) => index.domains[k]).slice(0, 2); reason = String(r.parsed.reason || '').replace(/\s+/g, ' ').slice(0, 160);
+            } else error = String((r && r.error) || '路由沒有結果');
+        } catch (e) { error = String((e && e.message) || e); }
+        if (error) { source = 'lexical'; try { const sel = FaCompactIndex.select(index, t, { exclude: Array.from(names) }); if (sel.confident) tools = sel.candidates.slice(0, 2).map((c) => c.name); } catch (_) { /* 不猜 */ } }
+        this._compactRoute = { turn: this._currentTurnUserText, tools, domains, reason, source, error, ms: Date.now() - t0 };
+        if (tools.length) { this._compactExtra = this._compactExtra || new Set(); tools.forEach((n) => this._compactExtra.add(n)); this._cixHiddenMemo = null; }
+        this._log('🧭 路由子代理（' + source + '，' + this._compactRoute.ms + ' 毫秒）：工具 ' + (tools.join('、') || '無') + '；領域 ' + (domains.join('、') || '無') + (reason ? '；' + reason : '') + (error ? '；（' + error + '）' : ''));
+    }
+    _compactRouteNote() {
+        const r = this._compactRoute; if (!r || r.turn !== this._currentTurnUserText || (!r.tools.length && !r.domains.length)) return '';
+        return '【路由建議（認識所有工具的路由子代理看過這句話）】' + (r.tools.length ? '已補進你的清單：' + r.tools.join('、') + '，直接呼叫。' : '') + (r.domains.length ? '任務比較複雜時可委派領域：' + r.domains.join('、') + '（delegate_to_subagent 的 domain 填它）。' : '') + (r.reason ? '理由：' + r.reason : '');
     }
     // 申請：names（精確名稱，照舊）與／或 description（自然語言）。回傳給模型的 JSON 字串。沒把握不悄悄猜：回字母選擇題讓模型選。
     _compactRequest(parsed, alreadyHave) {
@@ -131051,6 +131067,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         { const rh = this._rootTaskHints(); if (rh.length) sections.push(rh.map((h) => h.note).join('\n')); }
         { const rn = this._intentRosterNote(); if (rn) sections.push(rn); }
         { const cn = this._compactRootNote(); if (cn) sections.push(cn); }
+        { const rn2 = this._compactRouteNote(); if (rn2) sections.push(rn2); }
         { const ch = this._coluHint(); if (ch) sections.push(ch); } // 這個模型做過 CoLU 接線題、建議要輔助：告訴它先用 catalog_query 取得算好的接線 // 這則訊息有專用工具：直接給做法（見 FA_TASK_TOOL_HINTS）
 
         // tw_stock_db客製: 原生tool-call模式下，工具清單已經透過API的tools參數
@@ -162128,7 +162145,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 固定用這裡存的原始文字，不管壓縮幾次，重新接回去的內容永遠只有
         // 一層包裝。
         this._currentTurnUserText = userText;
-        this._compactWiden = false; this._compactExtra = new Set(); this._cixHiddenMemo = null; // 壓縮索引：每一輪重新開始（申請來的工具、放寬都只管這一輪）
+        this._compactWiden = false; this._compactExtra = new Set(); this._cixHiddenMemo = null; this._compactRoute = null; // 壓縮索引：每一輪重新開始（申請來的工具、放寬都只管這一輪）
+        try { await this._compactRootRoute(userText); this._intentRefreshPrompt(); } catch (_) { /* 路由出任何狀況都不擋對話 */ }
         if (this._intentOn()) { this._intentWiden = false; this._intentExtra = new Set(); this._intentMiss = new Set(); this._intentPlanCache = null; this._intentRecent = new Set((this._intentRecentTurns || []).slice(-3).flatMap((x) => x.names)); }
 
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
@@ -163709,18 +163727,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 + (imgs.length ? String.fromCharCode(10, 10) + '【文章自己的圖（已匯入，直接用這些代號當 visual 的 src；圖的優先順序：這些 → generate_image 生圖 → 最後才截圖）】' + String.fromCharCode(10) + imgs.map((x) => x.ref + ' ' + (x.alt || '')).join(String.fromCharCode(10)) : '');
                         } else lg('✗ 預先讀網址沒讀到內容（' + String((br && br.error) || '').slice(0, 60) + '），交給模型自己處理');
                     } catch (e) { lg('✗ 預先讀網址失敗（' + String((e && e.message) || e).slice(0, 60) + '），交給模型自己處理'); }
-                }
-            }
-            // 只是「讀一個網址在說什麼」：不靠模型挑領域、也不開瀏覽器——系統先讀（先 fetch_web_page 幾秒；抓不到才開瀏覽器，見 _deckUrlBrief），把全文寫進任務。需要操作、登入、截圖的不在此列（2026-11-28：委派到 browser_control 開真 Chrome 要二十秒以上）
-            if (!isDeck && !Array.isArray(extra.restrictTools) && !/\[網頁素材：|系統已讀好這個網址|client-file\//.test(task)) {
-                const ru = this._readUrlTask(task0 || task);
-                if (ru) {
-                    const lg = (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); };
-                    try {
-                        const br = await this._deckUrlBrief(ru, lg);
-                        if (br && br.text) { lg('🌐 這是「讀網址」的任務：系統先讀好了（' + String(br.title || '').slice(0, 40) + '，' + br.text.length + ' 字），子agent不必再自己開瀏覽器'); task += String.fromCharCode(10, 10) + '【系統已讀好這個網址（內容只能取自下面，不要編造；不必再用瀏覽器或 fetch_web_page 讀）：' + String(br.title || '') + '】' + String.fromCharCode(10) + br.text.slice(0, this._compactBudgetChars(0.2)); }
-                        else lg('✗ 預先讀網址沒讀到內容（' + String((br && br.error) || '').slice(0, 60) + '），交給子agent自己處理');
-                    } catch (e) { lg('✗ 預先讀網址失敗（' + String((e && e.message) || e).slice(0, 60) + '），交給子agent自己處理'); }
                 }
             }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';

@@ -352,3 +352,24 @@
 6. **`scripts/desktop-only-settings.test.js` 在 HEAD 也失敗**：錯誤是 `this._termBeginLoad is not a function`。已用 HEAD 版本的 `floating-assistant.js` 在暫存資料夾重跑，同樣失敗，與本次修改無關，未修。
 7. **預設行為的變動**：通用防護與結果提及補進預設開啟（桌面版連續 3 次成功攔）。新增的補進邏輯不再只限壓縮索引，所以在「壓縮索引關、委派模式」下，結果提到的隱藏工具現在會補進清單（以前不會）。這是為了修 1c 的缺口，預期行為改變；通用防護有開關 `fa.genericRepeatGuard`（設 0 即關）；結果提及補進目前沒有單獨開關。
 8. **未發布、未推送**：依任務，本次只提交到 `desktop-app` 分支，不發布、不推送、不合併。
+
+## 9. 「看到特定字串就做特定事」的寫死規則盤點（2026-11-28，網址案例後）
+
+起因：使用者說「我不是很喜歡那種程式化的看到網址就做什麼的」，決定改由路由子代理判斷。
+
+**本次新增、已移除**（2f7f89176、d39ad007c 裡的）：
+- 專用提示：訊息有網址就帶 `fetch_web_page` 的 `FA_TASK_TOOL_HINTS` 項目與它的 note。
+- `_readUrlTask`（判斷是不是「讀網址」任務的正則）。
+- 委派時「系統先讀網址、把全文寫進任務」的流程（`_deckUrlBrief` 本身是簡報功能原有的，沒動，只拿掉為讀網址加的呼叫點）。
+- 對應的測試（改成「網址不觸發任何專用提示」）與評估段落。
+
+**本次新增、保留（通用，不針對任何字串）**：選擇題字母固定；編造的工具名給最接近的真工具；否定句不觸發專用工具（`FA_NEGATED_CLAUSE`）；共用工具反思建議最專門的領域；結果提到的工具補進清單；壓縮索引區塊裡「想說沒有工具之前先申請」的一句話。
+
+**取代的做法**：根層級意圖判斷交給路由子代理（`_compactRootRoute`）：系統提示是完整索引（內容雜湊沒變就重用），每次只看這一句話；輸出是 `{"tools","domains","reason"}`，名字用索引驗證過才採用，程式只負責把選到的工具補進清單、把選到的領域寫成建議。答不出來時只有詞彙比對很有把握才補，否則不補。評估：`scripts/eval/compact-route.eval.js`（路由模型是模擬的）。
+
+**舊的、這次沒動的寫死規則（清單，供之後決定）**：
+- `FA_TASK_TOOL_HINTS` 的 12 項：worksheet_make、webedit_open、edit_svg_open、edit_video_open、edit_picture_open、edit_3d_open、image_to_3d、computer_use、translate_text、text_to_speech、merge_pdfs、midi_compose，另有 knowledge_ask、docgen、generate_image、images_to_pdf 四項（都是正則比對使用者的話）。
+- `_edCaseTaskHint`（編輯案例提示）。
+- 簡報任務的「預先讀網址」（`isDeck` 且任務有網址時呼叫 `_deckUrlBrief`）。
+- `FaCapReflect.claimsNoTool`（比對模型回覆裡「沒有…工具」的句型）與 `SEED_ALIASES`（口語別名表）。
+- `_unfulfilledIntentNudge`、重複呼叫防護的各個工具名單（本文件第 1 節）。

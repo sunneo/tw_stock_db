@@ -19,12 +19,8 @@ t('合併文件類：有 docx／xlsx／文字檔＋合併＋pdf 才命中 merge_
   for (const s of ['合併兩份PDF', '把 pdf 轉成 word', '拆分 pdf 的 docx 範例', 'extract pages from pdf', '寫一份 docx 報告']) assert.ok(!ids(s).includes('merge_pdfs'), s);
   assert.deepStrictEqual(ids('圖片合併成一個pdf'), ['images_to_pdf']);
 });
-t('話裡有網址：任何寫法都帶 fetch_web_page（使用者實際那句、委派任務、英文）', () => {
-  for (const s of ['https://www.aiposthub.com/nemotron-parse-open-datasets-document-adaptation-recipe/ 這篇在說什麼', '幫我看這個 https://example.com/a/b?x=1 講什麼', 'summarize http://example.org/post/12', '請抓取以下網頁的完整內容，並用繁體中文總結：https://www.aiposthub.com/x/\n請保留使用者原始語言（繁體中文），不要翻譯成其他語言，也不要改寫使用者的字句。']) assert.ok(ids(s).includes('fetch_web_page'), s);
-  const h = hints('https://example.com/a 在說什麼')[0]; assert.ok(h.tools.includes('fetch_web_page') && /fetch_web_page/.test(h.note));
-});
-t('網址是影片連結或檔案下載連結時不帶（有別的工具）；沒網址不帶', () => {
-  for (const s of ['https://www.youtube.com/watch?v=abc 這支在講什麼', 'https://youtu.be/abc', 'https://example.com/file.pdf', 'https://example.com/a.png 這張圖', '這篇文章在說什麼']) assert.ok(!ids(s).includes('fetch_web_page'), s);
+t('網址沒有任何寫死的專用提示：看到網址不補工具（交給路由子代理判斷，見 compact-route 評估）', () => {
+  for (const s of ['https://www.aiposthub.com/nemotron-parse-open-datasets-document-adaptation-recipe/ 這篇在說什麼', '幫我看這個 https://example.com/a/b?x=1 講什麼', 'summarize http://example.org/post/12']) assert.deepStrictEqual(ids(s), [], s);
 });
 t('被否定的句子不算需求：「不要翻譯成其他語言」不帶 translate_text；真的要翻譯還是帶', () => {
   assert.ok(!ids('請抓取網頁並總結。請保留原始語言，不要翻譯成其他語言，也不要改寫').includes('translate_text'));
