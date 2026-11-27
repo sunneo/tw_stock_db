@@ -79875,8 +79875,8 @@ function faVlmWorkerMain() {
 // 每次都產出一個30MB的影片，卻始終不給最終回覆）。這些昂貴/有副作用的工具，同一輪對話裡「內容幾乎相同」的
 // 第二次呼叫會被攔下、直接把上次結果交還給模型，要求它整理成最終回覆。
 // images_to_pdf／merge_pdfs：同一輪用「同樣的設定」再呼叫一次只會多產生一份一模一樣的 PDF（真實對話連續呼叫 4 次、4 份重複檔）——用正規化後的設定逐字比對，不用相似度（檔案清單很長，改一個參數相似度仍很高）
-const FA_DEDUP_EXACT_TOOLS = new Set(['images_to_pdf', 'merge_pdfs']);
-const FA_DEDUP_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
+const FA_DEDUP_EXACT_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'fetch_web_page']);
+const FA_DEDUP_TOOLS = new Set(['images_to_pdf', 'merge_pdfs', 'fetch_web_page','delegate_to_subagent', 'delegate_subtask', 'burn_subtitles', 'transcribe_media', 'extract_audio', 'text_to_speech', 'export_document', 'render_3d_scene', 'render_interactive_viewer', 'render_2d_animation', 'convert_media', 'compress_media']);
 const FA_WRITE_EVIDENCE_TOOLS = new Set(['fap_write_file', 'fap_apply_patch', 'attachment_apply_patch', 'fs_write_file', 'fs_mkdir', 'fs_remove', 'apply_git_patch', 'git_commit', 'git_push', 'coding_workspace', 'fap_copy_from_storage', 'fap_download_url', 'skill_create', 'export_document', 'bash_execute', 'python_execute', 'run_command', 'tmux_send_keys', 'browser_type_text', 'terminal_create', 'terminal_run', 'terminal_cp_to', 'terminal_cp_from', 'render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'render_3d_scene', 'render_drawing', 'render_interactive_viewer', 'render_2d_animation']);
 // 全語音Live：指令要求「唸／念／讀／講故事給我聽」時，AI 的回覆要用 TTS 唸出來
 const FA_LIVE_READ_RE = /(?:[唸念讀朗]|說|講)[\s\S]{0,8}(?:故事|給我聽|出來|一遍)|朗讀|故事[\s\S]{0,6}(?:唸|念|讀|說|講)/;
@@ -151650,6 +151650,10 @@ _result
         return new Set(String(text || '').toLowerCase().split(/[^\p{L}\p{N}_.]+/u).filter(Boolean));
     }
     _dedupText(name, rawArgs) {
+        if (name === 'fetch_web_page') {
+            // 同一網址、同一種輸出格式再抓一次不會有新東西（網址大小寫有意義，不轉小寫）：參數排序後原樣比
+            try { const a = JSON.parse(rawArgs); const o = {}; for (const k of Object.keys(a).sort()) { if (a[k] === '' || a[k] == null) continue; o[k] = typeof a[k] === 'string' ? a[k].trim() : a[k]; } return JSON.stringify(o); } catch (_) { return String(rawArgs || ''); }
+        }
         if (FA_DEDUP_EXACT_TOOLS.has(name)) {
             // 不影響內容的欄位（檔名）與等於預設值的欄位（margin 0）拿掉，key 排序後再比：只是少寫／多寫這些，不算新的做法
             try {
@@ -151703,7 +151707,7 @@ _result
             if (log.blocked >= (this._isAutoAgentMode() ? 8 : 2) && log === this._toolCallLog) this._forceNoTools = true;
             return JSON.stringify({
                 ok: true, duplicate_call_blocked: true,
-                message: dup.soft ? `你在這一輪已經用幾乎相同的內容呼叫過 ${name} 3次，每次都沒有得到有用的結果（最後一次如下）。不要再用同樣的做法：請換一個做法（例如自己直接用fs_list_files/fs_read_file確認路徑是否正確、把任務講得更具體、或拆成更小的步驟），做不到就如實告訴使用者卡在哪裡。` : `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
+                message: name === 'fetch_web_page' ? '這個網址、這種輸出格式在這一輪已經抓過了（結果如下），再抓一次不會有新內容。接下來要讀內容：用上一次結果裡提示的讀法往下讀（章節索引的 read_blocks、file_id 搭配 parse_uploaded_file／article_section／summarize_large_text、或 big_content 分段讀），不要再抓同一個網址；要換格式請明確換 output（text／jsonl）再抓。' : dup.soft ? `你在這一輪已經用幾乎相同的內容呼叫過 ${name} 3次，每次都沒有得到有用的結果（最後一次如下）。不要再用同樣的做法：請換一個做法（例如自己直接用fs_list_files/fs_read_file確認路徑是否正確、把任務講得更具體、或拆成更小的步驟），做不到就如實告訴使用者卡在哪裡。` : `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
                 previous_result: String(dup.resultText).slice(0, 1500),
             });
         }
