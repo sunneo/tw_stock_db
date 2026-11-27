@@ -1442,8 +1442,8 @@
    "names": [
     "FaCompactIndex"
    ],
-   "size": 6625,
-   "md5": "ebbb4fb25378ccf186b12ca040774bfa"
+   "size": 6708,
+   "md5": "11d13f6fc090ccb24aa0dec88f84ad8e"
   },
   "toolargs": {
    "file": "chunks/toolargs.js",
@@ -2207,7 +2207,7 @@
   }
  },
  "core": {
-  "size": 6964421,
-  "md5": "45b86522e333331e91a60d0340b99954"
+  "size": 6973212,
+  "md5": "407610a355c46797f90d659472feda9a"
  }
 }
