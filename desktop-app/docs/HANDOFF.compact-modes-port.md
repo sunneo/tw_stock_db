@@ -84,3 +84,9 @@
 
 - 已做：`_syncGeneralDomain`（壓縮索引開著時在 `this.domains` 最前面放虛擬領域 `general`，關閉時刪掉；`executeChat` 開頭同步）、`_clarifyWrap`（子代理回 `{need_clarification,question,options}` 原樣帶回申請者）、所有「退回第一個領域」改指 general（`_noToolClaimNudge`、`_capabilityReflectionText`、`_delegateToSubagentAutoOnce` 路由失敗／空領域）；「工具數最少領域」的啟發式已拿掉；路由提示與根層級路由都認得 general。評估 `scripts/eval/compact-general.eval.js`（模型是模擬的）。
 - 還沒做：批次大小上限 0.4／0.25（見第 8 節）；`delegate_to_subagent` 的說明文字沒有告訴 orchestrator 有 general（它只透過退回提醒、available_domains 與路由知道）。
+
+## 10. 批次大小（2026-11-28）
+- 所有批次選項上限 0.4、預設 0.25，依 contextWindowTokens 等比縮放（tool_budget_core 的 batchFraction／batchChars）。
+- 已改三處：藏書閣第 1 層視窗（_kiWindowChars）、summarize_large_text 分段（_summarizeChunkSize）、big_content 分頁（_pagerBudgetChars）。131072 視窗下 60 萬字元文件：第 1 層 250→7 窗、摘要 100→7 段（真實 Electron 量測，假模型）。
+- 待辦（未改）：_getAdaptiveContentBudgetChars 各呼叫點（0.1／0.15／0.25）、article_section、藏書閣更高層。每處估算節省與上面同量級，需逐一加測試。
+- 風險：窗變粗（128k 視窗約 96k 字元），摘要品質未用真模型比較。

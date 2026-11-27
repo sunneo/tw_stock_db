@@ -65,4 +65,13 @@ t('照預算收斂：太大的 schema 逐級收緊，欄位名／型別／必填
   assert.strictEqual(tight.properties.pages.type, 'array');
   assert.strictEqual(JSON.stringify(B.compactToBudget(schema, 1e9)), JSON.stringify(B.compactSchema(schema)));
 });
+t('批次大小：預設 0.25、上限 0.4、按視窗比例、不寫死；沒給視窗只回下限', () => {
+  assert.strictEqual(B.BATCH_FRACTION_MAX, 0.4); assert.strictEqual(B.BATCH_FRACTION_DEFAULT, 0.25);
+  assert.strictEqual(B.batchFraction(), 0.25); assert.strictEqual(B.batchFraction(null), 0.25); assert.strictEqual(B.batchFraction(0), 0.25); assert.strictEqual(B.batchFraction('x'), 0.25); assert.strictEqual(B.batchFraction(-1), 0.25);
+  assert.strictEqual(B.batchFraction(0.1), 0.1); assert.strictEqual(B.batchFraction(0.4), 0.4); assert.strictEqual(B.batchFraction(0.5), 0.4); assert.strictEqual(B.batchFraction(1), 0.4);
+  assert.strictEqual(B.batchChars(128000, undefined, 2400), 96000); assert.strictEqual(B.batchChars(4096, undefined, 2400), 3072); assert.strictEqual(B.batchChars(4096, undefined, 6000), 6000);
+  assert.strictEqual(B.batchChars(128000, 0.9, 0), 153600); assert.strictEqual(B.batchChars(0, undefined, 2400), 2400); assert.strictEqual(B.batchChars(undefined, 0.3, 500), 500);
+  for (const ctx of [4096, 8192, 32768, 131072, 1000000]) for (const req of [undefined, 0.1, 0.25, 0.4, 0.5, 0.9]) assert.ok(B.batchChars(ctx, req, 0) <= ctx * 0.4 * 3 + 1, ctx + '/' + req); // 任何要求都不超過 0.4
+  assert.strictEqual(B.batchChars(200000, undefined, 0), 2 * B.batchChars(100000, undefined, 0)); // 跟視窗成正比
+});
 console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);

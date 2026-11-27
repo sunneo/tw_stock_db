@@ -51510,7 +51510,15 @@ const holder = {};
         return { ok: !v.length, violations: v, totals: { tools: input.tools.length, domains: input.domains.length } };
     }
 
-    return { LIMITS, estimateTokens, shortOf, compactSchema, compactToBudget, tokens, buildIndex, rank, PHASE_GROUPS, PHASE_ORDER, planSplit, autoClusters, budgetReport };
+    // ───────────────────────── 批次大小（2026-11-28 使用者定案）─────────────────────────
+    // 「一次塞多少內容給模型」的比例：所有批次選項上限 0.4、預設 0.25（都是 contextWindowTokens 的比例，不寫死字元數），
+    // 避免一個批次加上提示與歷史碰到推理死角的 0.5 門檻（REASONING_DEADEND_CONTEXT_WINDOW_FRACTION）。
+    const BATCH_FRACTION_MAX = 0.4, BATCH_FRACTION_DEFAULT = 0.25;
+    function batchFraction(requested) { const f = Number(requested); return Math.min(BATCH_FRACTION_MAX, Number.isFinite(f) && f > 0 ? f : BATCH_FRACTION_DEFAULT); }
+    // ctxTokens：視窗大小（token）；沒給或 0 就只回 floorChars。charsPerToken 預設 3（跟推理死角判斷同一個估計）。
+    function batchChars(ctxTokens, requested, floorChars, charsPerToken) { const ctx = Number(ctxTokens) || 0; const scaled = ctx > 0 ? Math.round(ctx * batchFraction(requested) * (charsPerToken || 3)) : 0; return Math.max(Number(floorChars) || 0, scaled); }
+
+    return { BATCH_FRACTION_MAX, BATCH_FRACTION_DEFAULT, batchFraction, batchChars, LIMITS, estimateTokens, shortOf, compactSchema, compactToBudget, tokens, buildIndex, rank, PHASE_GROUPS, PHASE_ORDER, planSplit, autoClusters, budgetReport };
 });
 
 }).call(null, undefined, holder);
@@ -108089,7 +108097,7 @@ const FaKnowledgeHost = (function () {
                 return { text: kept.join('').trim(), terms: Array.from(new Set(terms.filter((x) => hay.indexOf(norm(x)) >= 0))).slice(0, 8), dropped };
             };
             // 第 1 層的視窗：依序切全文，一行都不漏
-            const WIN = 2400, secStarts = new Set((src.sections || []).filter((x) => x.level <= 2).map((x) => x.line_start)), windows = []; let cur = null;
+            const WIN = this._kiWindowChars(), secStarts = new Set((src.sections || []).filter((x) => x.level <= 2).map((x) => x.line_start)), windows = []; let cur = null;
             const flush = () => { if (cur) { windows.push({ a: cur.a, b: cur.b, text: cur.lines.join('\n') }); cur = null; } };
             for (let li = 0; li < src.lines.length; li++) {
                 const ln = src.lines[li], l1 = li + 1;
@@ -110486,6 +110494,12 @@ class FloatingAssistant {
         const scaled = contextWindowTokens * fraction * REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE;
         return Math.max(floorChars, Math.round(scaled));
     }
+
+    // 批次大小（2026-11-28 使用者定案）：所有「一次塞多少內容給模型」的批次，比例預設 0.25、上限 0.4（tools/tool_budget_core.js 的 batchFraction／batchChars，有測試），
+    // 避免批次加上提示與歷史碰到推理死角的 0.5 門檻。floorChars 是視窗很小時的下限（不比以前的固定值小）。已改成用它的：summarize_large_text 分段、藏書閣第 1 層視窗、big_content 分頁。
+    _batchChars(requested, floorChars) { let ctx = 0; try { ctx = Number(this._getGenerationSettings().contextWindowTokens) || 0; } catch (_) { /* */ } return FaToolBudget.batchChars(ctx, requested, floorChars, REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE); }
+    _summarizeChunkSize() { return this._batchChars(undefined, SUMMARIZE_CHUNK_SIZE); }
+    _kiWindowChars() { return this._batchChars(undefined, 2400); }
 
     // 見_getAdaptiveContentBudgetChars()的說明——這裡檢查的是「整個request
     // body」，本身已經包含system prompt/工具schema/完整對話歷史，用較大的
@@ -114335,7 +114349,7 @@ ${fnData.code}
                         ok: true,
                         filename: record.filename,
                         totalChars: fullText.length,
-                        chunkCount: Math.max(1, Math.ceil(fullText.length / SUMMARIZE_CHUNK_SIZE)),
+                        chunkCount: Math.max(1, Math.ceil(fullText.length / this._summarizeChunkSize())),
                         summary,
                     });
                 } catch (err) {
@@ -133104,13 +133118,13 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _pagerBudgetChars() {
         const ctx = Number(this._getGenerationSettings().contextWindowTokens) || 0;
         if (!ctx) return Math.floor(this._toolResultBudgetChars() * 0.9);
-        return this._jsonlPagerMod().budgetChars({ ctxTokens: ctx, fraction: this._isAutoAgentMode() ? 0.25 : 0.15, charsPerToken: REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE }) * 0.9 | 0;
+        return this._jsonlPagerMod().budgetChars({ ctxTokens: ctx, fraction: FaToolBudget.batchFraction(), charsPerToken: REASONING_DEADEND_CHARS_PER_TOKEN_ESTIMATE }) * 0.9 | 0;
     }
     // 分頁預算：知道窗口大小就用 token 算（中文 JSON 大約 1 字 1 token，用字元估會低估 3 倍，4096 的小窗口一頁會吃掉四成）；不知道才退回字元
     _pagerBudgetOpts() {
         const ctx = Number(this._getGenerationSettings().contextWindowTokens) || 0;
         if (!ctx || typeof FaVlm === 'undefined' || !FaVlm.estimateTokens) return { chars: this._pagerBudgetChars() };
-        return { maxTokens: Math.floor(ctx * (this._isAutoAgentMode() ? 0.25 : 0.15) * 0.9), tokensOf: FaVlm.estimateTokens };
+        return { maxTokens: Math.floor(ctx * FaToolBudget.batchFraction() * 0.9), tokensOf: FaVlm.estimateTokens };
     }
     // 暫存內容的記錄清單（第一次用到才解析，之後快取在暫存項目上）；不是記錄清單回 null
     // 同步版：只給「剛暫存、文字還在記憶體」的內容用；文字已釋放的回 null，要用 _bigRecordsAsync（會從盤上取回）
@@ -163944,7 +163958,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 處理其餘區塊，reduce階段仍然會嘗試把「成功的部分」整合出一份有意義
     // 的結果，而不是因為一個區塊的暫時性錯誤就整份放棄。
     async _summarizeLargeTextChunks(fullText, focus) {
-        const chunks = this._chunkTextByLength(fullText, SUMMARIZE_CHUNK_SIZE);
+        const chunks = this._chunkTextByLength(fullText, this._summarizeChunkSize());
         const focusNote = focus ? `（重點方向：${focus}）` : '';
         const chunkSummaries = [];
         for (let i = 0; i < chunks.length; i++) {

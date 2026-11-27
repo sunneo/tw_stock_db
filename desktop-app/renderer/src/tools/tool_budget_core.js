@@ -162,5 +162,13 @@
         return { ok: !v.length, violations: v, totals: { tools: input.tools.length, domains: input.domains.length } };
     }
 
-    return { LIMITS, estimateTokens, shortOf, compactSchema, compactToBudget, tokens, buildIndex, rank, PHASE_GROUPS, PHASE_ORDER, planSplit, autoClusters, budgetReport };
+    // ───────────────────────── 批次大小（2026-11-28 使用者定案）─────────────────────────
+    // 「一次塞多少內容給模型」的比例：所有批次選項上限 0.4、預設 0.25（都是 contextWindowTokens 的比例，不寫死字元數），
+    // 避免一個批次加上提示與歷史碰到推理死角的 0.5 門檻（REASONING_DEADEND_CONTEXT_WINDOW_FRACTION）。
+    const BATCH_FRACTION_MAX = 0.4, BATCH_FRACTION_DEFAULT = 0.25;
+    function batchFraction(requested) { const f = Number(requested); return Math.min(BATCH_FRACTION_MAX, Number.isFinite(f) && f > 0 ? f : BATCH_FRACTION_DEFAULT); }
+    // ctxTokens：視窗大小（token）；沒給或 0 就只回 floorChars。charsPerToken 預設 3（跟推理死角判斷同一個估計）。
+    function batchChars(ctxTokens, requested, floorChars, charsPerToken) { const ctx = Number(ctxTokens) || 0; const scaled = ctx > 0 ? Math.round(ctx * batchFraction(requested) * (charsPerToken || 3)) : 0; return Math.max(Number(floorChars) || 0, scaled); }
+
+    return { BATCH_FRACTION_MAX, BATCH_FRACTION_DEFAULT, batchFraction, batchChars, LIMITS, estimateTokens, shortOf, compactSchema, compactToBudget, tokens, buildIndex, rank, PHASE_GROUPS, PHASE_ORDER, planSplit, autoClusters, budgetReport };
 });

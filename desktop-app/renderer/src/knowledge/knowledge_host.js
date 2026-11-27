@@ -597,7 +597,7 @@ const FaKnowledgeHost = (function () {
                 return { text: kept.join('').trim(), terms: Array.from(new Set(terms.filter((x) => hay.indexOf(norm(x)) >= 0))).slice(0, 8), dropped };
             };
             // 第 1 層的視窗：依序切全文，一行都不漏
-            const WIN = 2400, secStarts = new Set((src.sections || []).filter((x) => x.level <= 2).map((x) => x.line_start)), windows = []; let cur = null;
+            const WIN = this._kiWindowChars(), secStarts = new Set((src.sections || []).filter((x) => x.level <= 2).map((x) => x.line_start)), windows = []; let cur = null;
             const flush = () => { if (cur) { windows.push({ a: cur.a, b: cur.b, text: cur.lines.join('\n') }); cur = null; } };
             for (let li = 0; li < src.lines.length; li++) {
                 const ln = src.lines[li], l1 = li + 1;
