@@ -151736,6 +151736,14 @@ _result
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
         }
         if (ok) this._unitCatalogObserve(name, result);
+        // 壓縮索引（預設開）：工具結果自己叫模型去用某個被收起來的工具（例如網頁讀回的章節索引叫它用 big_content 分段讀）：把它補進這一輪的清單，否則模型看不到那個工具、只能重複打同一個呼叫（2026-11-27 使用者回報不停 repeat）
+        if (this._compactIxOn() && !this._compactWiden && log === this._toolCallLog && typeof result === 'string' && result.length) {
+            try {
+                const hid = this._compactHidden(); const add = [];
+                for (const n of hid) { if (add.length >= 6) break; if (this._compactExtra && this._compactExtra.has(n)) continue; if (/^[A-Za-z0-9_]{6,}$/.test(n) && new RegExp('(^|[^A-Za-z0-9_])' + n + '([^A-Za-z0-9_]|$)').test(result)) add.push(n); }
+                if (add.length) { this._compactExtra = this._compactExtra || new Set(); for (const n of add) this._compactExtra.add(n); this._intentPlanCache = null; this._log('🧭 壓縮索引：工具結果提到被收起來的工具 ' + add.join('、') + '，補進清單'); this._intentRefreshPrompt(); }
+            } catch (_) { /* 補進失敗不影響原本結果 */ }
+        }
         if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
         if (ok && this._intentOn() && log === this._toolCallLog) { try { if (this._intentMiss && this._intentMiss.has(name)) { this._intentMiss.delete(name); this._capAliasLearn(this._currentTurnUserText, name); } const rt = (this._intentRecentTurns = this._intentRecentTurns || []); let cur = rt[rt.length - 1]; if (!cur || cur.turn !== this._currentTurnUserText) { cur = { turn: this._currentTurnUserText, names: [] }; rt.push(cur); } if (cur.names.indexOf(name) < 0) cur.names.push(name); if (rt.length > 6) rt.shift(); } catch (_) { /* 學不起來不影響回答 */ } }
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
