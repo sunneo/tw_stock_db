@@ -1,80 +1,74 @@
-# 交接：把紅米端的「工具與領域多層壓縮＋路由子代理快取＋描述式申請工具」移植到我們這邊
+# 交接：壓縮工具索引（紅米端設計移植）——現況與下一個待辦：查「抓網頁」出錯的根因
 
 ## 1. 開場提示（接手者收到的原文）
 
-請從這份交接文件接手：`desktop-app/docs/HANDOFF.compact-modes-port.md`（repo 根目錄 `D:\Downloads\videos-嗨投資-desktop-app`，分支 `desktop-app`）。完整讀完，包含「使用者原話」與「做事方式」，並照做。執行 low-context-long-run 技能：做下一個待辦；脈絡到門檻時寫下一份交接並啟動自己的接手者。第一則訊息用一行確認你讀了文件、要從哪個待辦開始。
+請從這份交接文件接手：`desktop-app/docs/HANDOFF.compact-modes-port.md`（repo 根目錄 `D:\Downloads\videos-嗨投資-desktop-app`，分支 `desktop-app`）。完整讀完，包含「使用者原話」與「做事方式」，並照做。執行 low-context-long-run 技能（門檻 30%）：做下一個待辦；脈絡到門檻時寫下一份交接並啟動自己的接手者。第一則訊息用一行確認你讀了文件、要從哪個待辦開始。
 
-使用者原話（2026-11-27，逐字）：
-「redmine這邊設計了把tools, domain像是藏書閣一樣多層壓縮的方式，並做了subagent cache，讓route subagent (認識所有tool的subagent)進行cache，只有tool變多時才重新壓縮/更新cache 也要讓request_additional_tool支援prompt(roughly) 用描述來申請更多tool 我們這邊也要跟上」
+使用者原話（逐字，摘要見第 5 節）：「redmine這邊設計了把tools, domain像是藏書閣一樣多層壓縮的方式，並做了subagent cache，讓route subagent (認識所有tool的subagent)進行cache，只有tool變多時才重新壓縮/更新cache 也要讓request_additional_tool支援prompt(roughly) 用描述來申請更多tool 我們這邊也要跟上」
 
 ## 2. 概況
 
-- 目標：我們這邊（桌面版／網頁版共用的 `desktop-app/renderer/src/floating-assistant.js`）要跟上紅米端的設計：
-  1. 工具與領域像藏書閣一樣**多層壓縮**成精簡索引（每個工具／領域一行摘要，先給索引、要用才載入完整描述與參數）。
-  2. **路由子代理快取**：認識所有工具的路由子代理，其壓縮結果快取起來，**只有工具變多（工具集改變）時才重新壓縮／更新快取**。
-  3. `request_additional_tools`（我們的名字是複數）要**支援用描述（大致的文字提示）申請更多工具**，不只能用精確工具名。
-- 紅米端參考文件（唯讀，別改）：`D:\Downloads\SRC\redmine_ai_chat\docs\HANDOFF-compact-modes.md`。要點：
-  - 新增兩個實驗模式 `orchestrator_full_compact`、`orchestrator_thin_compact`；`subagent_mode_base` 對應回舊模式，舊模式提示與工具清單必須逐位元組不變。
-  - 壓縮索引模組 `app/models/redmine_ai_chat/compact_index.rb`：`CORE_TOOLS`、`summary`、`build(catalog, core:, budget_chars:)`、`resolve(index, domains:, tools:)`、`reachable?`、`domain_for`。目錄格式 `{領域鍵 => {label, tools => {名稱 => 描述}}}`。
-  - 重用既有機制：`prune_to_core!`（只留核心工具、其餘收進暫存）、`expand_domain`、`request_tools`（意圖過濾工具）；索引一次送出，取代「非核心原生 schema＋重複文字清單」。
-  - 量測基準：完整 43.9k → 目標約 15k；精簡 17.2k → 目標約 9k（紅米端估算值，不可為達標調估算器）。
-  - 可達性測試：至少 40 題典型問題，斷言所需領域／工具在索引裡且能被申請載入（確定性、不跑模型）。
-  - 那份文件的「第 9.3 節」有它們現有 prompt／schema 組成的研究，可借鏡。
-  - 紅米端的快取細節（路由子代理快取）在該文件**可能尚未寫到**；若找不到，到 `redmine/plugins/redmine_ai_chat`（repo `WebServices`，本機在 `D:\Downloads\SRC\redmine_ai_chat`）查原始碼與最新提交，再決定我們這邊的做法。
-- 我們這邊現況（已查，供起點）：
-  - `request_additional_tools`、`get_tool_details`、`delegate_to_subagent` 在 `renderer/src/floating-assistant.js`（約 3455 行的元工具集合；約 75864 行起有領域工具申請說明；約 113528 行有各路徑擋 ask_user_card 的處理）。
-  - `renderer/src/tools/tool_budget_core.js` 有工具預算相關邏輯，值得先讀。
-  - 領域上限檢查：約 51507 行（領域工具 schema token 上限，冷門工具建議移到 request_additional_tools）。
-  - 此檔 2MB 以上：只用 Grep 加小範圍 Read，不要整檔讀。
-- 本段尚未改任何程式；沒有提交過這個任務的程式變更；沒有發布。
-- 本機已提交未推送：`1a0f1e941`（待辦文件）。已發布到 v588。下次發布版本會是 589，但**只在使用者說「發布」時才做**。
+- 領導者（發起這條線的工作階段）：`local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`（名稱 desktop-app）。回報由系統自動轉給它；要問它才用 SendMessage。
+- 已完成並提交（分支 desktop-app，未發布、未推送）：
+  - 設計 `desktop-app/docs/DESIGN.compact-tool-index.md`（含實測表，第 6 節）。
+  - 純模組 `renderer/src/tools/compact_index.js`（嵌入為 `FaCompactIndex`；測試 `compact_index.test.js`，15 項）。三層索引、內容雜湊快取、描述式比對＋字母選擇題、第 0 層截斷、共用工具摘要只寫一次。
+  - 接進 `renderer/src/floating-assistant.js`：開關 `localStorage['fa.compactToolIndex']`，**預設開**（只有 `'0'` 才關）；根層級索引區塊（`_compactRootNote`）、根層級 `request_additional_tools`（`description`／`names`／`choice`）、off 模式收起領域閘門工具（`_compactHidden`）、逃生口（`_compactWiden`、直接呼叫補進 `_compactExtra`）、路由子代理常駐提示（`_compactRouterPrompt`，工具集雜湊沒變就重用、無歷史、不限提問長短）。
+  - 關閉時與改動前逐位元組一致：基準 `scripts/eval/baselines/compact-off-baseline.json`（改動前版本 ddbe3276f 抓的），比對腳本 `scripts/compact-off-baseline.test.js`（18 項相同）。
+  - 評估檔（真 Electron、假語言模型）：`scripts/eval/compact-tool-index.eval.js`（各模式前後 token、off 模式、逃生口、路由不退步、路由常駐與無狀態）、`scripts/eval/compact-baseline.eval.js`。
+- 最後一筆提交：`3f7740cef`（路由子代理常駐化）。之前：`4c89bc7ec`（預設開＋off 模式）、`b60393b2f`（基準）、`d70b163fc`、`c8295948d`、`ddbe3276f`。
+- 使用者已發布到 v589～v592（領導者轉述：v589 起預設開；v590～v592 修了重複呼叫與「提到的工具補進」）。**這些版本號是使用者／領導者發的，不是我發的；我不發布。**
+- 實測（估算 token，假語言模型）：off 模式 59,200→17,578；其他模式根層級 1,468→4,210（多 2,742）；路由系統提示約 16,987（固定、完整索引；舊的先檢索縮減版 2,010～9,275）；本地組裝約 4.5～8.6 毫秒。
 
 ## 3. 待辦（依序）
 
-1. **先查資料再設計**（唯讀）：
-   a. 讀 `tools/tool_budget_core.js`，Grep `request_additional_tools` 的實作位置（工具定義與處理函式，不是提示文字）、`get_tool_details`、現有領域登錄表（領域鍵、工具描述從哪來）、現有路由子代理（`delegate_to_subagent`／領域路由）如何認識工具。
-   b. 讀紅米端原始碼：`compact_index.rb`、`intent_filter_tools.rb`、路由子代理快取（找 cache／digest／工具集雜湊相關程式）。
-   c. 寫一頁設計 `desktop-app/docs/DESIGN.compact-tool-index.md`：我們的壓縮層級（領域層摘要 → 工具一行摘要 → 完整 schema）、快取鍵（工具集內容雜湊，工具變多或描述變才重做）、快取存放處（桌面版 userData、網頁版 IndexedDB／localStorage，兩邊都要能退路）、`request_additional_tools` 的描述比對流程。
-2. **描述式申請**：`request_additional_tools` 新增 `description`（自然語言）參數；先用程式比對壓縮索引（關鍵字、領域標籤、摘要）給候選，弱模型走字母選擇題由程式確認（遵守 CoLU／封閉題形狀），不確定時回候選清單讓模型選，不可悄悄猜。精確名稱的舊用法必須照舊。
-3. **壓縮索引與快取**：新純模組（建議 `renderer/src/tools/compact_index.js`，純函式、可在 Node 測試、不依賴 DOM），含 `build`、`resolve`、工具集雜湊。快取只在工具集雜湊變了才重算。
-4. **接進提示組裝**：新增實驗開關（預設關，預設行為逐位元組不變），開啟時送一份壓縮索引取代非核心工具的完整 schema；工具要用時用 `request_additional_tools`／`get_tool_details` 載入。逃生口：模型說沒有工具時程式自動放寬。
-5. **測試**：(a) 雜湊與快取失效；(b) 索引預算；(c) 描述式申請的可達性（至少 40 題，含台股網頁自己帶的技能不可混進通用層——見做事方式）；(d) 預設關閉時提示與工具清單與改動前完全一致（先從 HEAD 抓基準）。
-6. **量測**：用實際提示 token 數比較前後，如實報告，不調估算。
-7. 全部完成、測試通過後：提交（明確路徑），回報使用者；**不發布、不合併、不推送**，等使用者指示。
+1. **（進行中，尚未動手）查「抓網頁」出錯的根因，要通用修法**。領導者轉述使用者（2026-11-28）：「這次他犯錯了」。記錄檔 `C:\Users\sunneo\Downloads\ai-conversation-hi-transcript-1795797525766.md`（已讀：問題句「https://www.aiposthub.com/nemotron-parse-open-datasets-document-adaptation-recipe/ 這篇在說什麼」）。現象：
+   (1) 模型第一輪直接回「我目前沒有直接瀏覽外部網頁的工具」，沒有 request_additional_tools、沒用 fetch_web_page；
+   (2) 接著 `delegate_to_subagent`，domain 卻是 `music`，任務是抓網頁並總結；
+   (3) 子代理日誌「🧭 任務符合專用工具：translate_text——已補給這個子agent」（任務文字有「不要翻譯成其他語言」被誤判成翻譯）。
+   上一份記錄 `1795794206166.md` 是模型有申請工具、但重打 fetch_web_page 23 次（已在 v590～v592 修）。
+   領導者要求逐項查並**印出實際證據**才下結論：
+   a. 壓縮索引開著時，這句話實際的根層級系統提示與工具清單給了模型什麼（借用 `compact-tool-index.eval.js` 的做法印出來：模式要用使用者實際的模式，先查預設模式與該使用者設定；`_getFinalSystemPrompt()`、`_getRootToolNames()`、`_buildNativeToolsSchema`）。逃生口為什麼沒觸發（`FaCapReflect.claimsNoTool` 的比對詞是否涵蓋「我目前沒有直接瀏覽外部網頁的工具」；`_noToolClaimNudge` 在哪些條件下直接 return，例如 `_forceNoTools`、已有 delegate_to_subagent 呼叫、counter）。
+   b. domain 為什麼是 music：模型自己選的，還是路由子代理（`_compactRouterPrompt`、`_routeTaskToDomains`）選的？（delegate_to_subagent 帶了 domain 參數時走 `_delegateToSubagentDomain`，不經路由；要看模型是不是照 delegate 說明裡的領域清單亂選。）印出路由輸入與輸出；索引裡「網路與瀏覽器」領域（鍵名要查，可能是 `web` 一類，`fetch_web_page` 在 `ph_research` 階段群組與其他領域）有沒有被看到、摘要夠不夠。
+   c. 專用工具提示（`FA_TASK_TOOL_HINTS`／`_rootTaskHints`／子代理的「任務符合專用工具」）把 translate_text 誤判：是舊問題還是壓縮索引造成；若舊問題另列。
+   d. 關閉壓縮索引（`localStorage fa.compactToolIndex='0'`）時同一句怎麼走，作對照。
+   修法要通用：例如「提示裡有網址」這類最常見意圖，任何模式都要直接拿得到 `fetch_web_page`，或第一步就被程式帶到（可接 `_rootTaskHints` 的任務專用工具機制，注意它不能含台股專屬字眼）。補測試；用真 Electron 重現這句話的提示與工具清單（沒有真模型就標明是模擬）。完成後提交（明確路徑），不發布、不推送，回報：根因、證據、改了什麼、測試、未驗證項。
+2. 之後的選配（領導者沒要求，先不做）：路由提示若嫌大，可改領域層索引（約 3.5k）；web 版延遲載入未實跑。
 
 ## 4. 做事方式（逐條照做）
 
 - 回覆用純繁體中文，句子裡不要夾英文縮寫或術語（程式識別字用英文可以）。
-- 子工作階段或工作者只寫程式與測試，不發布、不推送；發布只在使用者說「發布」時，用 `scripts/publish.sh`；合併只在使用者說「合併」時。
-- 提交一律用明確路徑，不用 `git add -A`／`commit -a`；提交訊息結尾加 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`。
-- 使用者 build 前會 `git checkout ./`，沒提交的半成品會消失：做到一半也要先提交。
-- 改程式用 Edit 工具，別用 shell 內嵌修補（反斜線與引號會被吃）；腳本先用 Write 寫成檔再執行。
-- `floating-assistant.js` 裡嵌入的區塊要改來源模組，改嵌入後那份會被蓋掉；改完用 `node scripts/embed-code-ui.js` 一類的既有腳本（先查）。
-- 台股專屬技能只能由台股網頁帶，通用層不可有程式痕跡。
-- 門檻（塞多少內容算太大）要跟 `contextWindowTokens` 按比例，不要寫死常數。
-- 不要建議換模型；失敗訊息要附具體事實（狀態碼、耗時等）。
-- 一次只開一個 Electron，用獨立 `--user-data-dir`、自選埠（不可用 17923），結束後用 Win32_Process 確認無殘留。別做大範圍遞迴 grep。
-- 整套核心測試一天只跑一次；平常只跑動到的測試。
-- 紅米端：不要改其共享設定、不讀憑證、不動線上；本任務只讀它的文件與原始碼。
-- 管理層（本交接的發起者）工作階段不封存；接手者若是工作者，完成後回報給領導者。
-- 配額：每週約 81%（2026-11-27）；接近 90% 就停下並寫交接。
+- 不發布、不推送、不合併（使用者說才做；發布用 `scripts/publish.sh`）。提交一律明確路徑，不用 `git add -A`／`commit -a`；提交訊息結尾加 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`。
+- 使用者 build 前會 `git checkout ./`：沒提交的半成品會消失，做到一半也要先提交。
+- 改程式用 Edit 工具；修補腳本先用 Write 工具寫成檔再執行（shell 內嵌會吃反斜線，本任務已踩過兩次）。
+- `floating-assistant.js` 極大（2MB 以上）：只用 Grep 加小範圍 Read。嵌入區塊要改來源模組（`renderer/src/tools/compact_index.js`），改完 `node scripts/embed-code-ui.js`，再 `node build-assistant.js`（約 2.5 分鐘）才會進 `renderer/floating-assistant.js`；建置產物（`renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/`）是發布用，**跑完評估後用 `git checkout -- <那些路徑>` 還原並 `git clean -fdq web-lazy`，不要提交**。
+- 預設行為逐位元組不變的規則已改為：壓縮索引預設開；但開關設成 `'0'` 時必須與基準逐位元組一致（改了共用路徑後要重跑 `compact-baseline.eval.js` 並用 `scripts/compact-off-baseline.test.js` 比對）。
+- 台股專屬技能只能由台股網頁帶，通用層（含索引模組）不可有站別字眼（單元測試有檢查）。
+- 門檻要跟 `contextWindowTokens` 按比例，不要寫死常數。不要建議換模型；失敗訊息附具體事實。
+- 真 Electron 評估做法：`bash E:/Temp/claude/1845096e089295dd/eaf34fa0-b767-4943-b585-f7c4459e39cd/scratchpad/run-eval.sh <評估檔名> <輸出檔名>`（若暫存資料夾已被清，照 `reference_real_electron_eval_verification` 記憶：獨立 `--user-data-dir`、寫入 `main-ext-rev.txt`、`FA_DISABLE_MAIN_OVERLAY=1`、`FA_DEBUG_EVAL_FILE`、`FA_BROWSER_CONTROL_PORT=18777`（不可用 17923）；輸出的 `[eval-file] result:` 行是結果；結束後用 Win32_Process 確認沒有殘留 electron）。評估前必須先 embed＋build，否則跑的是舊版。評估檔裡設模式要用 `fa.advancedSettings.multiSubAgentMode = ...; fa._amMode = ...`，不是 `fa.multiSubAgentMode`（那是唯讀 getter）。時鐘會變，比對提示前先 `fa._getGroundingContext = () => '固定'`。
+- 別做大範圍遞迴 grep；整套核心測試一天只跑一次，平常只跑動到的測試（`node renderer/src/tools/compact_index.test.js`、`tool_budget_core.test.js`）。
+- 歧義自行決定、不來回詢問；做完回報領導者（系統自動轉，最後一則訊息前 400 字是重點：先寫做了什麼＋提交雜湊）。
+- 配額：每週約 85%（2026-11-28 重置前）；接近 90% 就停下並寫交接。
+- 提交只含自己改的檔：`desktop-app/scripts/publish.sh` 的修改、`bash.exe.stackdump`、`wiki/` 不是我的，別碰。
 
-## 5. 使用者原話（逐字）
+## 5. 使用者原話（逐字，含領導者轉述的指示）
 
 - 2026-11-27：「redmine這邊設計了把tools, domain像是藏書閣一樣多層壓縮的方式，並做了subagent cache，讓route subagent (認識所有tool的subagent)進行cache，只有tool變多時才重新壓縮/更新cache 也要讓request_additional_tool支援prompt(roughly) 用描述來申請更多tool 我們這邊也要跟上」
-- 2026-11-27（呼叫技能時附上的參照，逐字）：`D:\Downloads\SRC\redmine_ai_chat\docs\HANDOFF-compact-modes.md`
-- 常駐規則（來自記憶，使用者先前所說）：「不猜不放棄」「UML design 是達成路線」「已知缺口要現在補完」「有多少release多少」「給了順序就做到底」。
+- 2026-11-27：「off模式也接  預設打開」（已完成）
+- 2026-11-27：「router mode的路由比較像是我們剛說的"認識所有tool的subagent" 他要常駐，但不具備記憶體，可以很快的反應路由」（已完成）
+- 2026-11-27：「路由的輸入上限為什麼要有上限  他應該是自由的orchestrator問什麼就可以給出方向」（已遵守：不設上限、不截斷）
+- 2026-11-28（領導者轉述使用者原話）：「這次他犯錯了」
+- 常駐規則（來自記憶）：「不猜不放棄」「UML design 是達成路線」「已知缺口要現在補完」「有多少release多少」「給了順序就做到底」。
 
 ## 6. 交接程序（自我遞迴）
 
-執行 low-context-long-run 技能，門檻 30%。在完成並提交的批次邊界檢查脈絡用量（`mcp__ccd_session_mgmt__get_usage`）；到門檻就重寫本文件（章節順序不變）、提交（訊息註明是交接）、用 `mcp__ccd_session__start_session`（initiation「user_asked」、context「fresh」、同一目錄）啟動接手者，標題含交接次數，提示中逐字引用使用者原話。接手者確認接手後，前一個才可退場；管理層不封存。待辦清空且驗證完成就不再交接，回報完成。
+執行 low-context-long-run 技能，門檻 30%。在完成並提交的批次邊界檢查脈絡用量（`mcp__ccd_session_mgmt__get_usage`，需先 ToolSearch 載入）；到門檻就重寫本文件（章節順序不變）、提交（訊息註明是交接）、用 `mcp__ccd_session__start_session`（initiation「user_asked」、context「fresh」、同一目錄、不開新 worktree）啟動接手者，標題含交接次數，提示中逐字引用使用者原話。接手者確認接手後，前一個才可退場；本工作階段是領導者啟動的工作者，退場方式照技能（mark_completed、archive）；若被拒絕就跳過並說明。待辦清空且驗證完成就不再交接，回報完成。
 
 ## 7. 陷阱
 
-- 我們的工具名是 `request_additional_tools`（複數），使用者說的是單數，指同一個東西。
-- `floating-assistant.js` 極大，整檔讀會爆脈絡。
-- 預設行為必須逐位元組不變（新機制走實驗開關，預設關）。
-- 紅米端是 Ruby 2.6；我們這邊是 JavaScript，移植的是設計不是程式碼。
-- 網頁版與桌面版共用同一份程式，快取存放處要兩邊都能退路。
-- publish.sh 工作目錄是 CRLF 修改版：發布時才用 `git update-index --assume-unchanged`，之後還原；本任務先不發布。
-- 子工作階段若開，簡報要寫明：歧義自決、不來回詢問、不縮小範圍。
+- 評估用 `Get-Content -Raw`／中文路徑的 PowerShell 腳本會失敗（PowerShell 5.1 與編碼）；用上面的 bash 腳本。
+- `git show` 抓舊版原始碼要放到 `/tmp`；覆蓋 `renderer/src/floating-assistant.js` 做基準後要 `git checkout --` 還原。
+- 路由提示的 `## 鍵（標籤）` 標頭：解析鍵名用 `^## ([A-Za-z0-9_]+)`，不是 `\S+`。
+- `request_additional_tools` 現在一律註冊；關閉時由 `_getRootToolNames` 濾掉；子代理內另有同名偽工具（`_runSubAgentTask`，參數 `need`，也接受 `description`）。
+- off 模式開啟時重新呼叫 `_registerBuiltinAiTools()` 會重設 `_domainGatedToolNames`（評估時要先存後還原）。
+- 路由請求主體的 `stream` 在送出時是 true（程式寫 false，呼叫層改的），不是本任務造成。
+- 領導者啟動的是這條線；使用者發布版本時會用到 `publish.sh`，不要動。
