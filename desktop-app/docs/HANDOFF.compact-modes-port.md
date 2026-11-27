@@ -79,3 +79,8 @@
 - 路由子代理：`_compactRootRoutePrompt`（完整索引、常駐重用）、`_compactRootRoute`（每輪在 `executeChat` 開頭呼叫一次，12 秒逾時，輸出 `{"tools","domains","reason"}`，用索引驗證後把工具補進 `_compactExtra`、領域寫成建議；答不出來只有詞彙比對很有把握才補）、`_compactRouteNote`。評估 `scripts/eval/compact-route.eval.js`（模型是模擬的）。
 - **尚未做（使用者 2026-11-28 指定）**：批次大小上限定案——所有批次選項上限 0.4、預設 0.25（按 `contextWindowTokens` 比例，不寫死），避開推理死角 0.5 門檻（`floating-assistant.js` 約 110502 行）；先做三件最大的（藏書閣第 1 層、`summarize_large_text`、`big_content` 分段），各附測試；其餘（藏書閣整理、`article_section` 等）列清單與預估節省、別一次全改。這項要從頭查：先 Grep 各分段大小常數與現有按比例縮放的函式（`chunkSizing`、約 110460 行的比例函式）。
 - 還沒驗證：真模型的路由品質與延遲（評估是模擬）；每輪多一次路由呼叫的延遲代價。
+
+## 9. 更新（2026-11-28 再晚）：虛擬領域 general
+
+- 已做：`_syncGeneralDomain`（壓縮索引開著時在 `this.domains` 最前面放虛擬領域 `general`，關閉時刪掉；`executeChat` 開頭同步）、`_clarifyWrap`（子代理回 `{need_clarification,question,options}` 原樣帶回申請者）、所有「退回第一個領域」改指 general（`_noToolClaimNudge`、`_capabilityReflectionText`、`_delegateToSubagentAutoOnce` 路由失敗／空領域）；「工具數最少領域」的啟發式已拿掉；路由提示與根層級路由都認得 general。評估 `scripts/eval/compact-general.eval.js`（模型是模擬的）。
+- 還沒做：批次大小上限 0.4／0.25（見第 8 節）；`delegate_to_subagent` 的說明文字沒有告訴 orchestrator 有 general（它只透過退回提醒、available_domains 與路由知道）。

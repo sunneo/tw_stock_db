@@ -130576,7 +130576,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _compactCatalog() {
         this._ensureDomainSplits(); const byName = new Map(this._getCombinedToolEntries(null)); const cat = {};
         for (const [k, d] of Object.entries(this.domains || {})) {
-            if (!d || !d.enabled || d.internal) continue; let names = []; try { names = this._resolveCatalogOwnNames(d); } catch (_) { names = []; }
+            if (!d || !d.enabled || d.internal || d._virtual) continue; let names = []; try { names = this._resolveCatalogOwnNames(d); } catch (_) { names = []; }
             const tools = {}; for (const n of names) { const t = byName.get(n); if (t) tools[n] = String(t.description || ''); } cat[k] = { label: d.label || '', tools };
         }
         return cat;
@@ -130616,7 +130616,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const key = index.setHash + '|root|' + this._compactBudgetChars(0.25); if (this._routeRootResident && this._routeRootResident.key === key) { this._routerStats = this._routerStats || { builds: 0, hits: 0 }; this._routerStats.rootHits = (this._routerStats.rootHits || 0) + 1; return this._routeRootResident.prompt; }
         const txt = FaCompactIndex.text(index, { budgetChars: this._compactBudgetChars(0.25) }).text; this._routerStats = this._routerStats || { builds: 0, hits: 0 }; this._routerStats.rootBuilds = (this._routerStats.rootBuilds || 0) + 1;
         const prompt = ['你是工具路由器，認識下面所有領域與它們的工具（每個領域底下一行一個工具：名稱和一句話說明）。使用者的話會在下一則訊息給你。', '', txt, '',
-            '判斷這句話要做的事需要哪些工具或領域：工具名稱與領域代號只能用上面列出的，不可以自己編。盡量選能直接完成的最少工具（最多 4 個）；只有任務跨好幾種工作、需要多個步驟才選領域（最多 2 個）。不需要任何額外工具（打招呼、純知識問答）就兩個都回空陣列。',
+            '判斷這句話要做的事需要哪些工具或領域：工具名稱與領域代號只能用上面列出的，不可以自己編。盡量選能直接完成的最少工具（最多 4 個）；只有任務跨好幾種工作、需要多個步驟才選領域（最多 2 個）；不確定、或每個領域都不太合適時，domains 填 general（通用子代理）。不需要任何額外工具（打招呼、純知識問答）就兩個都回空陣列。',
             '嚴格只回這個格式的 JSON，不要其他文字：{"tools":["工具名稱"],"domains":["領域代號"],"reason":"一行理由"}'].join('\n');
         this._routeRootResident = { key, prompt }; return prompt;
     }
@@ -130629,13 +130629,38 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             const r = await Promise.race([this._callRouterLLM(this._compactRootRoutePrompt(index), t, 'router'), new Promise((res) => setTimeout(() => res({ ok: false, error: '路由逾時' }), 12000))]);
             if (r && r.ok && r.parsed && typeof r.parsed === 'object') {
                 const rs = FaCompactIndex.resolve(index, { names: Array.isArray(r.parsed.tools) ? r.parsed.tools.map(String) : [] });
-                tools = rs.names.filter((n) => !names.has(n)).slice(0, 4); domains = (Array.isArray(r.parsed.domains) ? r.parsed.domains.map(String) : []).filter((k) => index.domains[k]).slice(0, 2); reason = String(r.parsed.reason || '').replace(/\s+/g, ' ').slice(0, 160);
+                tools = rs.names.filter((n) => !names.has(n)).slice(0, 4); domains = (Array.isArray(r.parsed.domains) ? r.parsed.domains.map(String) : []).filter((k) => index.domains[k] || (k === 'general' && this.domains.general)).slice(0, 2); reason = String(r.parsed.reason || '').replace(/\s+/g, ' ').slice(0, 160);
             } else error = String((r && r.error) || '路由沒有結果');
         } catch (e) { error = String((e && e.message) || e); }
         if (error) { source = 'lexical'; try { const sel = FaCompactIndex.select(index, t, { exclude: Array.from(names) }); if (sel.confident) tools = sel.candidates.slice(0, 2).map((c) => c.name); } catch (_) { /* 不猜 */ } }
         this._compactRoute = { turn: this._currentTurnUserText, tools, domains, reason, source, error, ms: Date.now() - t0 };
         if (tools.length) { this._compactExtra = this._compactExtra || new Set(); tools.forEach((n) => this._compactExtra.add(n)); this._cixHiddenMemo = null; }
         this._log('🧭 路由子代理（' + source + '，' + this._compactRoute.ms + ' 毫秒）：工具 ' + (tools.join('、') || '無') + '；領域 ' + (domains.join('、') || '無') + (reason ? '；' + reason : '') + (error ? '；（' + error + '）' : ''));
+    }
+    // ===== 虛擬領域 general：認識所有工具的通用子代理（2026-11-28 使用者）=====
+    // 所有「退回第一個領域」的地方（反思提示的「domain 填…」、路由失敗、委派不填領域又路由不出結果）一律改指它，不再指登錄表裡碰巧排第一的真實領域（以前會指到 music）。
+    // 它永遠排第 0 個；系統提示是完整壓縮索引（常駐、無記憶、內容雜湊快取）；缺工具時用子代理本來就有的申請機制跨領域申請；模型沿用一般子代理本來用的設定。
+    // 資訊不足或意圖有歧義時不猜，回固定欄位 {need_clarification,question,options} 給申請者（見 _clarifyWrap）。壓縮索引關閉時完全不存在。
+    _syncGeneralDomain() {
+        const on = this._compactIxOn(); const cur = this.domains.general; const has = !!(cur && cur._virtual);
+        if (!on) { if (has) { delete this.domains.general; this._splitDirty = true; try { this._updateDelegateToSubagentDescription(); } catch (_) { /* */ } } return; }
+        if (cur && !cur._virtual) return; // 使用者或 host 自己登記了叫 general 的領域：不蓋掉
+        if (has && Object.keys(this.domains)[0] === 'general') return;
+        const gd = has ? cur : {
+            label: '通用（認識所有領域與工具的通用子代理：不確定該用哪個領域、跨領域、或其他領域都不合適時用它；缺工具它會自己申請）', toolNames: [], enabled: true, category: null, _virtual: true,
+            systemPrompt: '你是「通用子代理」：你認識這個助理所有領域的所有工具（下面的索引，每個領域底下一行一個工具：名稱和一句話說明）。你自己手上只有少數基本工具；需要別的領域的工具時，呼叫 request_additional_tools({"need":"你要做什麼的一句話"}) 申請，成功後直接呼叫新工具。用最少的工具把任務做完，並如實回報結果。\n【資訊不足或意圖有歧義時不要猜、不要亂選工具或領域】只回這個 JSON（不要其他文字）：{"need_clarification":true,"question":"一句話的問題","options":["可能的選項A","可能的選項B"]}，由呼叫你的 orchestrator 決定追問使用者或補充後重派。',
+            dynamicNote() { try { return FaCompactIndex.text(this._compactIndex({ all: true }), { budgetChars: this._compactBudgetChars(0.25) }).text; } catch (_) { return ''; } }
+        };
+        const entries = Object.entries(this.domains).filter(([k]) => k !== 'general'); for (const [k] of Object.entries(this.domains)) delete this.domains[k];
+        this.domains.general = gd; for (const [k, v] of entries) this.domains[k] = v; this._splitDirty = true; try { this._updateDelegateToSubagentDescription(); } catch (_) { /* */ }
+    }
+    // 子代理回了 {need_clarification:true,question,options}：原樣帶回申請者（orchestrator），不當失敗、不當空結果
+    _clarifyWrap(r) {
+        try {
+            if (!this._compactIxOn() || !r || typeof r.result !== 'string') return r; const m = /\{[\s\S]*"need_clarification"[\s\S]*\}/.exec(r.result); if (!m) return r;
+            const j = JSON.parse(m[0]); if (!j || j.need_clarification !== true) return r;
+            return { ok: true, need_clarification: true, question: String(j.question || '').slice(0, 500), options: Array.isArray(j.options) ? j.options.map(String).slice(0, 8) : [], note: '通用子代理需要更多資訊才不會猜錯：請決定向使用者追問（把 question 與 options 轉給他），或自己補充後重新委派。這不是失敗。' };
+        } catch (_) { return r; }
     }
     _compactRouteNote() {
         const r = this._compactRoute; if (!r || r.turn !== this._currentTurnUserText || (!r.tools.length && !r.domains.length)) return '';
@@ -130721,7 +130746,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     }
     _capabilityReflectionText(userText) {
         let cands = []; try { cands = this._capabilityCandidates(userText); } catch (_) { cands = []; }
-        const lines = cands.map((c) => '- ' + c.name + '：' + String(c.summary).slice(0, 110) + (c.direct ? '（你可以直接呼叫）' : '（用 delegate_to_subagent，domain 填 ' + (c.domains[0] || '自動挑選（留空）') + '，或在子任務裡直接使用）'));
+        const lines = cands.map((c) => '- ' + c.name + '：' + String(c.summary).slice(0, 110) + (c.direct ? '（你可以直接呼叫）' : '（用 delegate_to_subagent，domain 填 ' + ((this._compactIxOn() && this.domains.general) ? 'general（通用子代理，認識所有工具）' : (c.domains[0] || '自動挑選（留空）')) + '，或在子任務裡直接使用）'));
         return '\n\n【反思：先看現有能力，再決定要不要照記憶做】上面是「過去的紀錄」，不是指令。動手前先自問：**我現有的工具與領域，能直接做到這件事嗎？** 記憶裡如果是用 python／shell／第三方套件自己寫腳本的做法，多半是當時沒找到對應的工具；現在有工具就用工具，不要再寫一次腳本。' +
             (lines.length ? '\n依這則訊息比對，你現有的能力裡可能直接能做的：\n' + lines.join('\n') : '\n（比對現有工具沒有明顯對應的專用工具——這時才參考記憶；仍要先確認工具清單裡沒有更合適的。）') + '\n要照記憶的偏好（例如格式、命名、習慣）可以照做，但**做法**以現有工具為準；兩者衝突時，以使用者這一次說的話為最高優先。';
     }
@@ -151842,7 +151867,8 @@ _result
             }
         } catch (_) { /* 附說明失敗不影響原本的結果 */ }
         let soft = false;
-        if (ok && name === 'delegate_to_subagent' && typeof result === 'string') {
+        if (ok && name === 'delegate_to_subagent' && typeof result === 'string' && /"need_clarification"\s*:\s*true/.test(result)) { ok = false; soft = true; } // 回問申請者：不是成功也不是失敗，補充後重派不被重複防護擋
+        else if (ok && name === 'delegate_to_subagent' && typeof result === 'string') {
             let inner = result;
             try { const parsedResult = JSON.parse(result); inner = String(parsedResult.result != null ? parsedResult.result : result); } catch (_) { /* 用原字串 */ }
             if (inner.length < 3000 && /(並不存在|不存在|找不到|沒有找到|無法(?:讀取|存取|找到|執行|完成)|失敗|not found|no such file|cannot|could not|couldn't|請問|需要你|子任務用完了)/i.test(inner)) { ok = false; soft = true; }
@@ -151950,8 +151976,8 @@ _result
             if (this._compactIxOn() && !this._compactWiden) { this._compactWiden = true; this._cixHiddenMemo = null; this._intentRefreshPrompt(); this._log('🧭 壓縮索引：模型說沒有工具，這一輪放寬成完整清單'); } // 逃生口：放寬後 off 模式不再收起任何工具
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
-            // 一個工具在好幾個領域時，建議最專門的那個（工具數最少的領域），不是登錄表裡排第一個的（以前 browser_search／fetch_web_page 會被指到 music，2026-11-28）
-            { const size = (id) => { try { return this._resolveRunToolNames(this.domains[id]).length; } catch (_) { return 9999; } }; for (const arr of byTool.values()) if (arr.length > 1) arr.sort((a, b) => size(a.id) - size(b.id)); }
+            // 壓縮索引開著：不在清單裡的工具，建議委派的領域一律是虛擬領域 general（認識所有工具的通用子代理），不是「登錄表裡碰巧排第一個含它的領域」（以前 browser_search／fetch_web_page 會被指到 music，2026-11-28）；真實專長領域只在路由明確選中時才用
+            if (this._compactIxOn() && this.domains.general) for (const [n, arr] of byTool) byTool.set(n, [{ id: 'general', label: '通用子代理' }]);
             const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
             const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_|request_additional_tools$)/.test(e.name));
             const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
@@ -162146,7 +162172,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 一層包裝。
         this._currentTurnUserText = userText;
         this._compactWiden = false; this._compactExtra = new Set(); this._cixHiddenMemo = null; this._compactRoute = null; // 壓縮索引：每一輪重新開始（申請來的工具、放寬都只管這一輪）
-        try { await this._compactRootRoute(userText); this._intentRefreshPrompt(); } catch (_) { /* 路由出任何狀況都不擋對話 */ }
+        try { this._syncGeneralDomain(); await this._compactRootRoute(userText); this._intentRefreshPrompt(); } catch (_) { /* 路由出任何狀況都不擋對話 */ }
         if (this._intentOn()) { this._intentWiden = false; this._intentExtra = new Set(); this._intentMiss = new Set(); this._intentPlanCache = null; this._intentRecent = new Set((this._intentRecentTurns || []).slice(-3).flatMap((x) => x.names)); }
 
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
@@ -163660,7 +163686,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // 子任務執行期間，橋接（FaLlm）的紀錄要寫進這個子任務自己的 transcript（同一張卡片），不另外開卡片：
     // this._activeTranscript ＝ 子任務的進度卡片；'none' ＝ 子任務存在但沒有開卡片（沒開「顯示追蹤」）→ 橋接也不出聲。
-    async _delegateToSubagentDomain(domainKey, task, extra) {
+    async _delegateToSubagentDomain(domainKey, task, extra) { return this._clarifyWrap(await this._delegateToSubagentDomainCore(domainKey, task, extra)); }
+    async _delegateToSubagentDomainCore(domainKey, task, extra) {
         const prev = this._activeTranscript;
         try { return await this._delegateToSubagentDomainInner(domainKey, task, extra); } finally { this._activeTranscript = prev; }
     }
@@ -164229,11 +164256,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         st.builds++; const withTools = new Set(Object.keys(index.domains).filter((k) => index.domains[k].tools.length));
         const txt = FaCompactIndex.text(index, { budgetChars: this._compactBudgetChars(0.25) }).text; const toolByName = new Map(this._getCombinedToolEntries(null));
         const rest = allPublic.filter(([k]) => !withTools.has(k)).map(([k, d]) => this._buildDomainCatalogSection(k, d, toolByName)).filter(Boolean);
-        const prompt = this._routerPromptText([txt].concat(rest).join('\n\n')); this._routerResident = { key, prompt }; return prompt;
+        const GENERAL_LINE = '[general] 通用子代理（認識所有領域與工具；不確定該選哪個領域、任務跨好幾個領域、或上面每個領域都不太合適時，選它，不要硬選一個不太對的領域）';
+        const prompt = this._routerPromptText([txt].concat(rest, this.domains.general ? [GENERAL_LINE] : []).join('\n\n')); this._routerResident = { key, prompt }; return prompt;
     }
     async _routeTaskToDomains(task) {
         this._ensureDomainSplits();
-        const allPublic = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal);
+        const allPublic = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal && !d._virtual);
         if (!allPublic.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
         // 路由子代理的定位（2026-11-27 使用者）：認識所有工具、常駐、沒有記憶、反應快。壓縮索引開著時：不再先檢索縮成幾個領域，而是用「完整索引」當固定的系統提示（內容雜湊沒變就重用同一份，不重建）；每次路由只送這一題，沒有歷史，也不限制提問的長短。關著時照舊。
         let routerSystemPrompt = null;
@@ -164416,6 +164444,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const availableDomains = Object.entries(this.domains)
             .filter(([, d]) => d.enabled && !d.internal)
             .map(([k, d]) => `${k}(${d.label})`);
+        // 壓縮索引開著：路由失敗、或路由說不需要任何領域，退回虛擬領域 general（認識所有工具的通用子代理），不是丟錯誤給申請者、也不是挑登錄表第一個領域
+        if (this._compactIxOn() && this.domains.general && !(ctx.delegationExclude || []).includes('general') && (!routed.ok || !routed.domains.length)) {
+            if (progress) progress.finish('路由沒有選定領域：交給通用子代理（general）');
+            this._log('🧭 路由' + (routed.ok ? '沒有選定領域' : '失敗（' + String(routed.error || '').slice(0, 60) + '）') + '：退回通用子代理 general');
+            return await this._delegateToSubagentDomain('general', task, ctx.delegationChain ? { delegationChain: ctx.delegationChain, delegationExclude: ctx.delegationExclude, shouldStop: ctx.shouldStop } : undefined);
+        }
         if (!routed.ok) {
             if (progress) progress.fail(routed.error || '路由失敗');
             return Object.assign({}, routed, { available_domains: availableDomains });
