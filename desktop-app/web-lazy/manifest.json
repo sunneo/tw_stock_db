@@ -1437,6 +1437,14 @@
    "size": 28895,
    "md5": "8bd7c90179c781b73e6809cd188df766"
   },
+  "compactix": {
+   "file": "chunks/compactix.js",
+   "names": [
+    "FaCompactIndex"
+   ],
+   "size": 6625,
+   "md5": "ebbb4fb25378ccf186b12ca040774bfa"
+  },
   "toolargs": {
    "file": "chunks/toolargs.js",
    "names": [
@@ -2199,7 +2207,7 @@
   }
  },
  "core": {
-  "size": 6951601,
-  "md5": "5d9cf8172eec9251a4fbbd4269dbc82f"
+  "size": 6959176,
+  "md5": "692c5795d591d309bbf7695384101b89"
  }
 }
