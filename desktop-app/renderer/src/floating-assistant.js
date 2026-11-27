@@ -51546,7 +51546,7 @@ const holder = {};
         '圖片': ['image', 'picture'], '照片': ['image', 'picture'], '畫圖': ['image', 'render'],
         '簡報': ['deck', 'slide', 'presentation'], slide: ['deck', 'presentation'], deck: ['presentation'],
         '動畫': ['animation'], '語音': ['tts', 'speech', 'audio'], '朗讀': ['tts', 'speech'], '字幕': ['subtitle', 'transcribe'],
-        '搜尋': ['search'], '網頁': ['web', 'page', 'browser'], '表格': ['sheet', 'table', 'csv'], '試算表': ['sheet', 'csv'],
+        '搜尋': ['search'], '網頁': ['web', 'page', 'browser'], '網址': ['url', 'fetch', 'web', 'page'], '抓取': ['fetch'], '讀取': ['fetch', 'read'], '表格': ['sheet', 'table', 'csv'], '試算表': ['sheet', 'csv'],
         '圖表': ['chart', 'plot'], '統計': ['statistics', 'stats'], '翻譯': ['translate'], '截圖': ['screenshot']
     };
 
@@ -76203,7 +76203,7 @@ FA_TASK_TOOL_HINTS.push({
     re: /https?:\/\/[^\s"'<>）)」』]{4,}/i,
     neg: /(youtube\.com|youtu\.be)\/|https?:\/\/[^\s]+\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|mp3|mp4|wav|mkv)(\?[^\s]*)?(\s|$)/i,
     tools: ['fetch_web_page'],
-    note: '【這段話有網址：要知道網頁在說什麼，先呼叫 fetch_web_page({"url":"完整網址"})】它會把網頁抓下來轉成文字再讀，不要只憑網址猜內容，也不要說你沒有瀏覽網頁的工具。抓不到（工具回傳錯誤）就把工具回的原因照實告訴使用者。',
+    note: '【這段話有網址：要知道網頁在說什麼，先呼叫 fetch_web_page({"url":"完整網址"})】它會把網頁抓下來轉成文字再讀（幾秒），不要只憑網址猜內容，也不要說你沒有瀏覽網頁的工具。只是「讀這個網址在說什麼」不要委派瀏覽器子agent（開真 Chrome 要二十秒以上）；只有需要操作、點擊、登入、截圖，或 fetch_web_page 回來是空白（頁面靠 JavaScript 渲染）才改用瀏覽器。抓不到（工具回傳錯誤）就把工具回的原因照實告訴使用者。',
 });
 // 被否定的句子不算需求：「不要翻譯成其他語言」不是要翻譯（只拿掉「不要／別／不用…」後面的一小段再比對 re；neg 仍看原文）
 const FA_NEGATED_CLAUSE = /(不要|不用|不必|無須|無需|別|勿|請勿|避免|don'?t|do not|never|without)[^。！？!?\n,，；;]{0,14}/gi;
@@ -112219,7 +112219,9 @@ ${fnData.code}
                     else notFound.push(name);
                 }
                 if (this._intentOn && this._intentOn()) this._intentAdmit(Object.keys(found), '查了工具細節');
-                return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined });
+                // 壓縮索引開著：編出來的工具名（browser_control、code_execution…）不是丟個 notFound 就算了，給最接近的真工具與下一步
+                let near; if (notFound.length && this._compactIxOn()) { try { near = this._compactNearest(notFound); if (!Object.keys(near).length) near = undefined; } catch (_) { near = undefined; } }
+                return JSON.stringify({ ok: true, tools: found, notFound: notFound.length ? notFound : undefined, did_you_mean: near, next: near ? '沒有這個名字的工具。did_you_mean 是最接近的真工具；要用就呼叫 request_additional_tools({"names":[...]}) 或描述你要做的事。' : undefined });
             },
             { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
         );
@@ -130603,16 +130605,38 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return '[其他可申請的工具領域（每行：領域、工具數，可能附代表工具；沒有完整參數）]\n' + r.text + '\n【你想說「我沒有某某工具」之前，先呼叫 request_additional_tools 查查：這份清單只是領域，不是全部工具。】需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
         } catch (_) { return ''; }
     }
+    // 「讀一個網址的內容」的任務嗎：有網址、是問在說什麼／摘要／讀，而且不是要操作、登入、截圖、捲動、下載。回網址或 null
+    _readUrlTask(text) {
+        const t = String(text || ''); const m = /https?:\/\/[^\s)）」』"'<>]{4,}/i.exec(t); if (!m) return null;
+        if (/(youtube\.com|youtu\.be)\//i.test(m[0]) || /\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|mp3|mp4|wav|mkv)(\?|$)/i.test(m[0])) return null;
+        const pos = t.replace(FA_NEGATED_CLAUSE, ' ');
+        if (/(點擊|點選|按下|登入|登錄|填寫|填表|截圖|截屏|螢幕|操作|滾動|捲動|下載|上傳|click|log\s*in|sign\s*in|screenshot|scroll|fill\s+in)/i.test(pos)) return null;
+        const rest = pos.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
+        return (!rest || rest.length <= 12 || /(在說什麼|說什麼|講什麼|內容|摘要|總結|重點|閱讀|讀|看看|看一下|解釋|介紹|抓取|擷取|summar|read|what(?:'s| is)|explain|tl;?dr)/i.test(rest)) ? m[0] : null;
+    }
+    // 模型編出來的工具名（browser_control、code_execution…）：用名稱近似比對給最接近的真工具；名稱剛好是領域代號就列出那個領域的工具
+    _compactNearest(names) {
+        const out = {}; let ix = null; try { ix = this._compactIndex({ all: true }); } catch (_) { return out; }
+        for (const n of names || []) {
+            const key = String(n || ''); let list = [];
+            if (ix.domains[key]) list = ix.domains[key].tools.slice(0, 6);
+            else { const s = FaCompactIndex.select(ix, key.replace(/[_\-]+/g, ' '), { minHit: 1, max: 4 }); list = s.candidates.map((c) => c.name); }
+            if (list.length) out[key] = list;
+        }
+        return out;
+    }
     // 申請：names（精確名稱，照舊）與／或 description（自然語言）。回傳給模型的 JSON 字串。沒把握不悄悄猜：回字母選擇題讓模型選。
     _compactRequest(parsed, alreadyHave) {
         const index = this._compactIndex(); const have = new Set(alreadyHave || []); const names = [].concat(Array.isArray(parsed.names) ? parsed.names : (parsed.names ? [parsed.names] : [])).map(String);
-        const desc = String(parsed.description || parsed.need || '').trim(); const out = { ok: true };
-        let load = []; if (names.length) { const r = FaCompactIndex.resolve(index, { names }); load = r.names.slice(); if (r.notFound.length) out.not_found = r.notFound; }
+        let desc = String(parsed.description || parsed.need || '').trim(); const out = { ok: true };
+        let load = []; if (names.length) { const r = FaCompactIndex.resolve(index, { names }); load = r.names.slice(); if (r.notFound.length) { out.not_found = r.notFound; const near = this._compactNearest(r.notFound); if (Object.keys(near).length) out.did_you_mean = near; if (!desc) desc = r.notFound.join(' ').replace(/[_\-]+/g, ' '); } } // 編出來的工具名：給最接近的真工具；沒給描述就拿名字當描述
+        // 選擇題的字母要固定：第一次問時把「字母→工具」存起來（鍵＝描述＋名稱＋索引雜湊），第二次帶 choice 用同一份，不重算（排除已有的工具會改變排序，字母會被重新對應，2026-11-28 使用者記錄）
+        const ckey = desc + '|' + names.join(',') + '|' + index.setHash;
         if (desc) {
-            if (parsed.choice) { const sel0 = FaCompactIndex.select(index, desc, { exclude: Array.from(have) }); const picked = FaCompactIndex.answer(sel0, parsed.choice); if (picked && picked.length) load = load.concat(picked); else if (picked) out.note = '沒有合適的工具：用現有工具完成，或如實告訴使用者做不到哪一部分。'; else out.note = 'choice 只能是選項的一個字母。'; }
+            if (parsed.choice) { const sel0 = (this._cixChoice && this._cixChoice.key === ckey) ? { choices: this._cixChoice.choices } : FaCompactIndex.select(index, desc, { exclude: Array.from(have) }); const picked = FaCompactIndex.answer(sel0, parsed.choice); if (picked && picked.length) load = load.concat(picked); else if (picked) out.note = '沒有合適的工具：用現有工具完成，或如實告訴使用者做不到哪一部分。'; else out.note = 'choice 只能是選項的一個字母。'; }
             else { const sel = FaCompactIndex.select(index, desc, { exclude: Array.from(have) });
                 if (sel.confident) load = load.concat([sel.candidates[0].name]).concat(sel.candidates.slice(1).filter((c) => c.score >= sel.candidates[0].score * 0.8).map((c) => c.name));
-                else if (sel.choices.length) { out.need_choice = true; out.question = FaCompactIndex.choiceQuestion(sel); out.how = '再呼叫一次 request_additional_tools，帶同一個 description 與 choice（一個字母）。'; }
+                else if (sel.choices.length) { this._cixChoice = { key: ckey, choices: sel.choices }; out.need_choice = true; out.question = FaCompactIndex.choiceQuestion(sel); out.how = '再呼叫一次 request_additional_tools，帶同一個 description 與 choice（一個字母）。'; }
                 else if (!load.length) out.note = '索引裡沒有符合「' + desc + '」的工具：不要宣稱它存在；用現有工具完成，或如實說明做不到。'; }
         }
         load = Array.from(new Set(load)).filter((n) => !have.has(n)); out.added_tools = load; if (!load.length && !out.need_choice && !out.note && !out.not_found) out.note = '這些工具已經在你的清單裡了。';
@@ -163685,6 +163709,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                 + (imgs.length ? String.fromCharCode(10, 10) + '【文章自己的圖（已匯入，直接用這些代號當 visual 的 src；圖的優先順序：這些 → generate_image 生圖 → 最後才截圖）】' + String.fromCharCode(10) + imgs.map((x) => x.ref + ' ' + (x.alt || '')).join(String.fromCharCode(10)) : '');
                         } else lg('✗ 預先讀網址沒讀到內容（' + String((br && br.error) || '').slice(0, 60) + '），交給模型自己處理');
                     } catch (e) { lg('✗ 預先讀網址失敗（' + String((e && e.message) || e).slice(0, 60) + '），交給模型自己處理'); }
+                }
+            }
+            // 只是「讀一個網址在說什麼」：不靠模型挑領域、也不開瀏覽器——系統先讀（先 fetch_web_page 幾秒；抓不到才開瀏覽器，見 _deckUrlBrief），把全文寫進任務。需要操作、登入、截圖的不在此列（2026-11-28：委派到 browser_control 開真 Chrome 要二十秒以上）
+            if (!isDeck && !Array.isArray(extra.restrictTools) && !/\[網頁素材：|系統已讀好這個網址|client-file\//.test(task)) {
+                const ru = this._readUrlTask(task0 || task);
+                if (ru) {
+                    const lg = (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); };
+                    try {
+                        const br = await this._deckUrlBrief(ru, lg);
+                        if (br && br.text) { lg('🌐 這是「讀網址」的任務：系統先讀好了（' + String(br.title || '').slice(0, 40) + '，' + br.text.length + ' 字），子agent不必再自己開瀏覽器'); task += String.fromCharCode(10, 10) + '【系統已讀好這個網址（內容只能取自下面，不要編造；不必再用瀏覽器或 fetch_web_page 讀）：' + String(br.title || '') + '】' + String.fromCharCode(10) + br.text.slice(0, this._compactBudgetChars(0.2)); }
+                        else lg('✗ 預先讀網址沒讀到內容（' + String((br && br.error) || '').slice(0, 60) + '），交給子agent自己處理');
+                    } catch (e) { lg('✗ 預先讀網址失敗（' + String((e && e.message) || e).slice(0, 60) + '），交給子agent自己處理'); }
                 }
             }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';

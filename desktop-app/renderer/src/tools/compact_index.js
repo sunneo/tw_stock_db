@@ -23,7 +23,7 @@
         '圖片': ['image', 'picture'], '照片': ['image', 'picture'], '畫圖': ['image', 'render'],
         '簡報': ['deck', 'slide', 'presentation'], slide: ['deck', 'presentation'], deck: ['presentation'],
         '動畫': ['animation'], '語音': ['tts', 'speech', 'audio'], '朗讀': ['tts', 'speech'], '字幕': ['subtitle', 'transcribe'],
-        '搜尋': ['search'], '網頁': ['web', 'page', 'browser'], '表格': ['sheet', 'table', 'csv'], '試算表': ['sheet', 'csv'],
+        '搜尋': ['search'], '網頁': ['web', 'page', 'browser'], '網址': ['url', 'fetch', 'web', 'page'], '抓取': ['fetch'], '讀取': ['fetch', 'read'], '表格': ['sheet', 'table', 'csv'], '試算表': ['sheet', 'csv'],
         '圖表': ['chart', 'plot'], '統計': ['statistics', 'stats'], '翻譯': ['translate'], '截圖': ['screenshot']
     };
 
