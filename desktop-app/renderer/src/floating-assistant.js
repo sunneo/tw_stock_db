@@ -76197,7 +76197,17 @@ FA_TASK_TOOL_HINTS.push({
     tools: ['midi_compose', 'midi_compose_tree', 'midi_song_jsonl', 'midi_edit_open', 'midi_to_mp3', 'midi_play', 'music_topic'],
     note: '【這個需求有專用工具：midi_compose】使用者要你作曲或產生 MIDI：直接呼叫 midi_compose({description: 使用者的原話})——程式依風格範本產生並檢查音域與跳進，結果會變成對話裡的 MIDI 編輯器卡片（可試聽、改、下載 MIDI、轉 mp3、轉成配樂）。不要自己寫 Python／mido 腳本、不要把 .mid 寫到資料夾後只報路徑——成品一律用卡片交付。作曲家、樂派或沒有專屬範本的風格（例如貝多芬、重金屬）工具會自動挑最接近的範本並在結果裡寫 style_note，回覆時照實轉述這句話，不要說成真的是那位作曲家的作品。',
 });
-function _faTaskToolHints(task) { const t = String(task || ''); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(t) && !(h.neg && h.neg.test(t))); }
+// 話裡有網址：任何模式都要直接拿得到 fetch_web_page（以前它只在好幾個領域裡，根層級看不到，模型就說「我沒有瀏覽網頁的工具」，2026-11-28 使用者回報）
+FA_TASK_TOOL_HINTS.push({
+    id: 'fetch_web_page',
+    re: /https?:\/\/[^\s"'<>）)」』]{4,}/i,
+    neg: /(youtube\.com|youtu\.be)\/|https?:\/\/[^\s]+\.(png|jpe?g|gif|webp|bmp|pdf|zip|tar|gz|mp3|mp4|wav|mkv)(\?[^\s]*)?(\s|$)/i,
+    tools: ['fetch_web_page'],
+    note: '【這段話有網址：要知道網頁在說什麼，先呼叫 fetch_web_page({"url":"完整網址"})】它會把網頁抓下來轉成文字再讀，不要只憑網址猜內容，也不要說你沒有瀏覽網頁的工具。抓不到（工具回傳錯誤）就把工具回的原因照實告訴使用者。',
+});
+// 被否定的句子不算需求：「不要翻譯成其他語言」不是要翻譯（只拿掉「不要／別／不用…」後面的一小段再比對 re；neg 仍看原文）
+const FA_NEGATED_CLAUSE = /(不要|不用|不必|無須|無需|別|勿|請勿|避免|don'?t|do not|never|without)[^。！？!?\n,，；;]{0,14}/gi;
+function _faTaskToolHints(task) { const t = String(task || ''); const pos = t.replace(FA_NEGATED_CLAUSE, ' '); return FA_TASK_TOOL_HINTS.filter((h) => h.re.test(pos) && !(h.neg && h.neg.test(t))); }
 /* TASK-HINTS-END */
 
 // tw_stock_db客製: 2026-09-15使用者回報——桌面版委派給desktop_ops domain
@@ -130590,7 +130600,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     _compactRootNote() {
         if (!this._compactIxOn() || this._compactWiden) return '';
         try { const index = this._compactIndex(); if (!Object.keys(index.tools).length) return ''; const r = FaCompactIndex.cachedText(index, this._cixCache, { level: 0, short: this.multiSubAgentMode !== 'off', budgetChars: this._compactBudgetChars() }); // 根層級只放領域層（off 模式帶代表工具；其他模式已有委派說明，只列領域與數量）（每領域一行＋代表工具），細節靠申請；工具層的一行摘要留給路由目錄用
-            return '[其他可申請的工具領域（每行：領域、工具數，可能附代表工具；沒有完整參數）]\n' + r.text + '\n需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
+            return '[其他可申請的工具領域（每行：領域、工具數，可能附代表工具；沒有完整參數）]\n' + r.text + '\n【你想說「我沒有某某工具」之前，先呼叫 request_additional_tools 查查：這份清單只是領域，不是全部工具。】需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
         } catch (_) { return ''; }
     }
     // 申請：names（精確名稱，照舊）與／或 description（自然語言）。回傳給模型的 JSON 字串。沒把握不悄悄猜：回字母選擇題讓模型選。
@@ -151899,6 +151909,8 @@ _result
             if (this._compactIxOn() && !this._compactWiden) { this._compactWiden = true; this._cixHiddenMemo = null; this._intentRefreshPrompt(); this._log('🧭 壓縮索引：模型說沒有工具，這一輪放寬成完整清單'); } // 逃生口：放寬後 off 模式不再收起任何工具
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
+            // 一個工具在好幾個領域時，建議最專門的那個（工具數最少的領域），不是登錄表裡排第一個的（以前 browser_search／fetch_web_page 會被指到 music，2026-11-28）
+            { const size = (id) => { try { return this._resolveRunToolNames(this.domains[id]).length; } catch (_) { return 9999; } }; for (const arr of byTool.values()) if (arr.length > 1) arr.sort((a, b) => size(a.id) - size(b.id)); }
             const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
             const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_|request_additional_tools$)/.test(e.name));
             const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
