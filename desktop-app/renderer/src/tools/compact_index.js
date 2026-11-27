@@ -6,7 +6,7 @@
  *  - 描述式比對：select(index, 文字) → 候選＋有沒有把握＋字母選擇題（沒把握不悄悄猜）。 */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) module.exports = factory(require('./tool_budget_core.js'));
-    else root.FaCompactIndex = factory(root.FaToolBudget);
+    else root.FaCompactIndex = factory(typeof FaToolBudget !== 'undefined' ? FaToolBudget : root.FaToolBudget);
 })(typeof self !== 'undefined' ? self : this, function (B) {
     'use strict';
 
@@ -97,18 +97,19 @@
 
     // ───────────────────────── 索引文字 ─────────────────────────
     // level 0：只有領域層；level 1：領域層＋每個工具一行。budgetChars 給了而且第 1 層超過，自動降到第 0 層（overBudget=true）。
-    function layer0(index) {
-        return Object.keys(index.domains).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : ''); }).join('\n');
+    function keysOf(index, only) { const all = Object.keys(index.domains); return only ? all.filter((k) => only.indexOf(k) >= 0) : all; }
+    function layer0(index, only) {
+        return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : ''); }).join('\n');
     }
-    function layer1(index) {
+    function layer1(index, only) {
         const out = [];
-        for (const k of Object.keys(index.domains)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
+        for (const k of keysOf(index, only)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
         return out.join('\n');
     }
     function text(index, opt) {
-        opt = opt || {}; const full = layer1(index);
-        if (opt.budgetChars && full.length > opt.budgetChars) return { text: layer0(index), level: 0, overBudget: true, chars: layer0(index).length };
-        const level = opt.level === 0 ? 0 : 1; const t = level === 0 ? layer0(index) : full;
+        opt = opt || {}; const only = opt.only || null; const full = layer1(index, only);
+        if (opt.budgetChars && full.length > opt.budgetChars) { const z = layer0(index, only); return { text: z, level: 0, overBudget: true, chars: z.length }; }
+        const level = opt.level === 0 ? 0 : 1; const t = level === 0 ? layer0(index, only) : full;
         return { text: t, level, overBudget: false, chars: t.length };
     }
     // 路由用索引文字的快取：集合雜湊沒變（也沒換層級／預算）就直接用上次存的，不重組
