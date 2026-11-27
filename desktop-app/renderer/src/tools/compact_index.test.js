@@ -50,6 +50,11 @@ t('索引文字：第 1 層含工具行；超過預算自動降到第 0 層並�
     const cache = C.createCache(null); const a = C.cachedText(ix, cache); assert.strictEqual(a.fromCache, false); const b = C.cachedText(ix, cache); assert.strictEqual(b.fromCache, true); assert.strictEqual(a.text, b.text);
     const cat2 = JSON.parse(JSON.stringify(CAT)); cat2.web.tools.fetch_rss = '抓取 RSS 訂閱內容。'; const ix2 = C.build(cat2, { core: CORE }); const c = C.cachedText(ix2, cache); assert.strictEqual(c.fromCache, false); assert.ok(c.text.indexOf('fetch_rss') >= 0);
 });
+t('小視窗：第 0 層也超過預算時截斷，尾巴註明沒列出幾個領域；level 0 要求不算降級', () => {
+    const ix = C.build(CAT, { core: CORE }); const r = C.text(ix, { level: 0, budgetChars: 120 }); assert.ok(r.chars <= 120 + 80, String(r.chars)); assert.strictEqual(r.overBudget, true); assert.ok(/另有 \d+ 個領域沒列出/.test(r.text));
+    const ok0 = C.text(ix, { level: 0, budgetChars: 100000 }); assert.strictEqual(ok0.overBudget, false); assert.strictEqual(ok0.level, 0); assert.ok(ok0.text.indexOf('merge_pdf') >= 0 || ok0.text.indexOf('docs') >= 0);
+    const down = C.text(ix, { budgetChars: 300 }); assert.strictEqual(down.level, 0); assert.strictEqual(down.overBudget, true);
+});
 t('索引比完整目錄小很多（壓縮有效）', () => {
     const ix = C.build(CAT, { core: CORE }); const fullLen = Object.values(CAT).reduce((a, d) => a + Object.entries(d.tools).reduce((x, [n, desc]) => x + n.length + desc.length + 40, 0), 0); assert.ok(C.text(ix).chars < fullLen);
 });

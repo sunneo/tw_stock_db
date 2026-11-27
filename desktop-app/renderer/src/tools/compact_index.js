@@ -106,11 +106,22 @@
         for (const k of keysOf(index, only)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
         return out.join('\n');
     }
+    // 第 0 層也超過預算時（小視窗模型）：照領域順序截到預算內，尾巴註明還有幾個領域沒列、用 description 申請
+    function trim0(index, only, budget) {
+        const lines = layer0(index, only).split('\n'); const out = []; let used = 0;
+        for (let i = 0; i < lines.length; i++) {
+            if (used + lines[i].length + 1 > budget) { out.push('…（另有 ' + (lines.length - i) + ' 個領域沒列出，用 description 申請）'); break; }
+            out.push(lines[i]); used += lines[i].length + 1;
+        }
+        return out.join('\n');
+    }
     function text(index, opt) {
-        opt = opt || {}; const only = opt.only || null; const full = layer1(index, only);
-        if (opt.budgetChars && full.length > opt.budgetChars) { const z = layer0(index, only); return { text: z, level: 0, overBudget: true, chars: z.length }; }
-        const level = opt.level === 0 ? 0 : 1; const t = level === 0 ? layer0(index, only) : full;
-        return { text: t, level, overBudget: false, chars: t.length };
+        opt = opt || {}; const only = opt.only || null; const budget = opt.budgetChars || 0;
+        const want0 = opt.level === 0; const full = want0 ? '' : layer1(index, only);
+        if (!want0 && (!budget || full.length <= budget)) return { text: full, level: 1, overBudget: false, chars: full.length };
+        const z = layer0(index, only); const over = !want0 && !!budget; // 想要第 1 層卻放不下＝降級
+        if (budget && z.length > budget) { const t = trim0(index, only, budget); return { text: t, level: 0, overBudget: true, chars: t.length }; }
+        return { text: z, level: 0, overBudget: over, chars: z.length };
     }
     // 路由用索引文字的快取：集合雜湊沒變（也沒換層級／預算）就直接用上次存的，不重組
     function cachedText(index, cache, opt) {
