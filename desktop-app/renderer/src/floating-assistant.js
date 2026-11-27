@@ -133085,7 +133085,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             (id ? '完整內容已暫存，代號 ' + id + '。' : '') +
             '先自問：我真的需要整份嗎？我有工具可以代勞嗎？不要用一樣的方式再讀一次（一樣會被截斷）。可以考慮：' +
             (id ? 'big_content 工具（action: info 看結構、read 分段讀、grep 找關鍵字、json 取指定路徑、js 寫幾行JavaScript解析／篩選／統計，只回傳你要的結果）；' : '') +
-            'python_execute 寫腳本處理；原本是檔案就用 fs_read_file 帶 offset 分段讀，只要分析摘要用 analyze_large_file；不確定怎麼處理時，可以委派 big_content 領域請子agent評估。]';
+            'python_execute 寫腳本處理；原本是檔案就用 fs_read_file 帶 offset 分段讀，要整份摘要且有 file_id 時用 summarize_large_text（傳 file_id，分段摘要不截斷）；不確定怎麼處理時，可以委派 big_content 領域請子agent評估。]';
     }
 
     _formatToolResult(result, toolName) {
@@ -151691,6 +151691,52 @@ _result
         }
         return softFails >= 3 ? lastSoft : null;
     }
+    // 通用防護（2026-11-28，補「模型不停重打同一個工具」的缺口，見 docs/AUDIT.repeat-calls.md）：同一輪內「連續」用完全相同的參數呼叫同一個工具、
+    // 而且每次都成功，第 N 次起直接攔下（桌面版連續 3 次成功後攔、網頁版 2 次）。只看連續的呼叫：中間只要有別的工具被呼叫、或有一次失敗，就重算，
+    // 不會誤擋「讀→改→再讀」這種合理的重複。有狀態、會輪詢、會寫入或執行的工具不在這裡。關閉：localStorage fa.genericRepeatGuard='0'。
+    _repeatGuardOn() { try { return typeof localStorage === 'undefined' || localStorage.getItem('fa.genericRepeatGuard') !== '0'; } catch (_) { return true; } }
+    _repeatKey(rawArgs) {
+        try { const a = JSON.parse(rawArgs); const o = {}; for (const k of Object.keys(a).sort()) { if (a[k] === '' || a[k] == null) continue; o[k] = typeof a[k] === 'string' ? a[k].trim() : a[k]; } return JSON.stringify(o); } catch (_) { return String(rawArgs == null ? '' : rawArgs).trim(); }
+    }
+    _findConsecutiveRepeat(log, name, rawArgs) {
+        const EXCL = /^(terminal_|job_|browser_(?!search)|get_|list_|catalog_|mcp_|set_|add_|delete_|remove_|register_|write_|fs_(write|mkdir|delete|move|remove|copy)|fap_(write|apply|copy|download)|apply_|attachment_apply|merge_patch|fix_code|write_code|optimize_code|convert_|compose_|render_|transcribe_|extract_|burn_|text_to_speech|concat_|generate_|youtube_|python_execute|bash_execute|llvm_execute|sandbox_|skill_|delegate_|request_additional|extend_rounds|ask_user|start_dubbing|midi_|edit_|webedit_|worksheet_|playbook_|coding_(run|workspace|task|write|apply)|git_|uml_|image_|intent_|plan_route|images_to_pdf|merge_pdfs|remove_pdf|designed_|offline_trainer|rag_|mix_|glue_define)/;
+        if (!log || !Array.isArray(log.tail) || !this._repeatGuardOn() || EXCL.test(name)) return null;
+        const key = this._repeatKey(rawArgs); let run = 0, last = null;
+        for (let i = log.tail.length - 1; i >= 0; i--) { const e = log.tail[i]; if (e.name !== name || e.key !== key || !e.ok) break; run++; last = e; }
+        return run >= (this._isAutoAgentMode() ? 3 : 2) ? { run, last } : null;
+    }
+    // 工具結果提到「不在模型這一輪清單裡」的工具（壓縮索引收起來、領域閘門、意圖過濾、子agent沒開放）：補進去，讓模型下一步真的叫得到。
+    // 不再只看壓縮索引：任何模式只要某工具沒送進清單，提到它就補；子agent只補「根層級本來就能用」或「唯讀讀取」的工具，其他的在結果裡明講它不能用，不擴權。
+    _promoteMentionedTools(log, result) {
+        if (typeof result !== 'string' || !result.length) return;
+        const text = result.slice(0, Math.max(2000, this._toolResultBudgetChars()));
+        const META = /^(get_tool_details|request_additional_tools|list_ai_features|delegate_to_subagent|delegate_subtask|extend_rounds)$/;
+        const mentioned = (n) => text.indexOf(n) >= 0 && /^[A-Za-z0-9_]{6,}$/.test(n) && new RegExp('(^|[^A-Za-z0-9_])' + n + '([^A-Za-z0-9_]|$)').test(text);
+        if (log === this._toolCallLog) {
+            let adv; try { adv = this._getRootToolNames() || []; } catch (_) { return; }
+            const add = [];
+            for (const n of Object.keys(this.tools)) { if (add.length >= 6) break; if (!this.tools[n] || adv.indexOf(n) >= 0 || META.test(n) || (this._compactExtra && this._compactExtra.has(n))) continue; if (mentioned(n)) add.push(n); }
+            if (!add.length) return;
+            this._compactExtra = this._compactExtra || new Set(); for (const n of add) this._compactExtra.add(n); this._intentPlanCache = null;
+            this._log('🧭 工具結果提到沒送進清單的工具 ' + add.join('、') + '，補進清單'); this._intentRefreshPrompt();
+            this._intentAdmit(add, '工具結果提到');
+            return;
+        }
+        if (!log || typeof log.allowedNow !== 'function') return;
+        const allowed = log.allowedNow() || []; let root = []; try { root = this._getRootToolNames() || []; } catch (_) { root = []; }
+        const SAFE_READ = /^(big_content|article_outline|article_section|parse_uploaded_file|summarize_large_text|get_tool_details|list_uploaded_files|fap_read_file|fs_read_file|browser_get_page_text)$/;
+        const grant = [], notice = [];
+        for (const n of Object.keys(this.tools)) { if (grant.length + notice.length >= 6) break; if (!this.tools[n] || allowed.indexOf(n) >= 0 || META.test(n) || !mentioned(n)) continue; if (root.indexOf(n) >= 0 || SAFE_READ.test(n)) grant.push(n); else notice.push(n); }
+        if (grant.length && typeof log.grantMention === 'function') { log.grantMention(grant); this._log('🧭 子agent：結果提到的工具 ' + grant.join('、') + ' 補進它的清單'); }
+        else notice.push(...grant); // 不能擴權的子agent：根層級能用的工具也只能告知
+        return notice;
+    }
+    // 子agent的結果提到它沒有開放的工具：在結果裡明講「不能用」，免得它反覆嘗試（不擴權）
+    _appendUnavailableToolNotice(result, names) {
+        const note = '不能用的工具（不在你這個子任務的工具清單裡）：' + names.join('、') + '。不要重試它；用你現有的工具完成，或在回覆裡說明需要上層處理。';
+        try { const o = JSON.parse(result); if (o && typeof o === 'object' && !Array.isArray(o)) { o.system_notice = note; return JSON.stringify(o); } } catch (_) { /* 不是 JSON：附在後面 */ }
+        return result + '\n[系統提示] ' + note;
+    }
     // 包住工具執行：重複呼叫直接回傳「已做過」的提示，不真的再跑一次；否則執行並記錄結果。
     async _callToolGuarded(log, name, rawArgs, run) {
         // 壓縮索引（預設開）：模型直接叫了一個真的存在、但被收起來的工具：照常執行，順便補進這一輪的清單（跟意圖過濾同一個做法，不打擾使用者）
@@ -151709,6 +151755,17 @@ _result
                 ok: true, duplicate_call_blocked: true,
                 message: name === 'fetch_web_page' ? '這個網址、這種輸出格式在這一輪已經抓過了（結果如下），再抓一次不會有新內容。接下來要讀內容：用上一次結果裡提示的讀法往下讀（章節索引的 read_blocks、file_id 搭配 parse_uploaded_file／article_section／summarize_large_text、或 big_content 分段讀），不要再抓同一個網址；要換格式請明確換 output（text／jsonl）再抓。' : dup.soft ? `你在這一輪已經用幾乎相同的內容呼叫過 ${name} 3次，每次都沒有得到有用的結果（最後一次如下）。不要再用同樣的做法：請換一個做法（例如自己直接用fs_list_files/fs_read_file確認路徑是否正確、把任務講得更具體、或拆成更小的步驟），做不到就如實告訴使用者卡在哪裡。` : `你在這一輪已經用幾乎相同的內容呼叫過 ${name}，而且已經成功了（結果如下）。不要再重複執行——請直接把這個結果整理成最終回覆告訴使用者。只有在上次結果明顯不符合使用者需求時，才可以改用「不同」的做法，並說明原因。`,
                 previous_result: String(dup.resultText).slice(0, 1500),
+            });
+        }
+        const rep = this._findConsecutiveRepeat(log, name, rawArgs);
+        if (rep) {
+            log.blocked = (log.blocked || 0) + 1;
+            this._log(`🛡️ 已攔下連續重複呼叫 ${name}（連續${rep.run}次相同參數、每次都成功；這一輪第${log.blocked}次攔阻）。`);
+            if (log.blocked >= (this._isAutoAgentMode() ? 8 : 2) && log === this._toolCallLog) this._forceNoTools = true;
+            return JSON.stringify({
+                ok: true, duplicate_call_blocked: true, repeat_run: rep.run,
+                message: `你在這一輪已經連續 ${rep.run} 次用完全相同的參數呼叫 ${name}，每次都成功、結果一樣（上一次結果如下）。不要再重打——直接用上一次的結果；如果它沒有你要的內容，就換參數、換工具或換做法，做不到就如實告訴使用者。`,
+                previous_result: String(rep.last && rep.last.resultText || '').slice(0, 1500),
             });
         }
         let result = await run();
@@ -151741,17 +151798,13 @@ _result
         }
         if (ok) this._unitCatalogObserve(name, result);
         // 壓縮索引（預設開）：工具結果自己叫模型去用某個被收起來的工具（例如網頁讀回的章節索引叫它用 big_content 分段讀）：把它補進這一輪的清單，否則模型看不到那個工具、只能重複打同一個呼叫（2026-11-27 使用者回報不停 repeat）
-        if (this._compactIxOn() && !this._compactWiden && log === this._toolCallLog && typeof result === 'string' && result.length) {
-            try {
-                const hid = this._compactHidden(); const add = [];
-                for (const n of hid) { if (add.length >= 6) break; if (this._compactExtra && this._compactExtra.has(n)) continue; if (/^[A-Za-z0-9_]{6,}$/.test(n) && new RegExp('(^|[^A-Za-z0-9_])' + n + '([^A-Za-z0-9_]|$)').test(result)) add.push(n); }
-                if (add.length) { this._compactExtra = this._compactExtra || new Set(); for (const n of add) this._compactExtra.add(n); this._intentPlanCache = null; this._log('🧭 壓縮索引：工具結果提到被收起來的工具 ' + add.join('、') + '，補進清單'); this._intentRefreshPrompt(); }
-            } catch (_) { /* 補進失敗不影響原本結果 */ }
-        }
+        // 2026-11-28 擴大：不只壓縮索引，任何模式（領域閘門、意圖過濾、子agent）只要結果提到沒送進清單的工具就補進去
+        try { const notice = this._promoteMentionedTools(log, result); if (notice && notice.length && typeof result === 'string') result = this._appendUnavailableToolNotice(result, notice); } catch (_) { /* 補進失敗不影響原本結果 */ }
         if (ok) (this._turnToolSuccess = this._turnToolSuccess || new Set()).add(name); // 這一輪（含子agent）成功呼叫過哪些工具——RAG 自我修正用
         if (ok && this._intentOn() && log === this._toolCallLog) { try { if (this._intentMiss && this._intentMiss.has(name)) { this._intentMiss.delete(name); this._capAliasLearn(this._currentTurnUserText, name); } const rt = (this._intentRecentTurns = this._intentRecentTurns || []); let cur = rt[rt.length - 1]; if (!cur || cur.turn !== this._currentTurnUserText) { cur = { turn: this._currentTurnUserText, names: [] }; rt.push(cur); } if (cur.names.indexOf(name) < 0) cur.names.push(name); if (rt.length > 6) rt.shift(); } catch (_) { /* 學不起來不影響回答 */ } }
         if (log === this._toolCallLog) (this._otCalls = this._otCalls || []).push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: (this.advancedSettings.offlineAutoTrain || 'off') !== 'off' ? this._otScalarFields(result) : undefined });
         if (log && log.collect && log !== this._toolCallLog) log.collect.push({ name, rawArgs: String(rawArgs == null ? '' : rawArgs).slice(0, 3000), ok, res: this._otScalarFields(result) });
+        (log.tail = log.tail || []).push({ name, key: this._repeatKey(rawArgs), ok, resultText: typeof result === 'string' ? result.slice(0, 4000) : String(JSON.stringify(result) || '').slice(0, 4000) }); if (log.tail.length > 30) log.tail.shift(); // 通用連續重複防護用（見 _findConsecutiveRepeat）
         if (FA_DEDUP_TOOLS.has(name)) log.calls.push({ name, ok, soft, key: FA_DEDUP_EXACT_TOOLS.has(name) ? this._dedupText(name, rawArgs) : null, tokens: this._dedupTokens(this._dedupText(name, rawArgs)), resultText: typeof result === 'string' ? result : JSON.stringify(result) });
         return result;
     }
@@ -164743,6 +164796,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const describedSeen = new Map();
         const intentGuard = { count: 0 };
         const subToolLog = { calls: [], blocked: 0, collect: Array.isArray(options.collectCalls) ? options.collectCalls : null };
+        // 結果提到子agent沒開放的工具時（見 _promoteMentionedTools）：根層級能用的、或唯讀讀取的才補進來；allowedToolNames 為 null（沒有限制）就不用
+        if (Array.isArray(allowedToolNames)) { subToolLog.allowedNow = () => allowedToolNames; subToolLog.grantMention = canRequestMore ? (ns) => { for (const n of ns) if (!allowedToolNames.includes(n)) allowedToolNames.push(n); } : null; }
         // 見SUBAGENT_MAX_MALFORMED_CALL_RETRIES的說明——跟reasoningDeadendRetries
         // 一樣不消耗maxRounds，獨立計數。
         let malformedCallRetries = 0;

@@ -4,12 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
 const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'src', 'floating-assistant.js'), 'utf8');
-const i = src.indexOf('工具結果自己叫模型去用某個被收起來的工具');
-assert(i > 0, '找不到結果提到被收起來工具的補進邏輯');
-const body = src.slice(i, i + 1600);
-assert(/_compactHidden\(\)/.test(body) && /_compactExtra\.add\(n\)/.test(body) && /_intentRefreshPrompt\(\)/.test(body), '補進邏輯不完整');
-assert(/_compactIxOn\(\)/.test(body) && /_compactWiden/.test(body), '必須只在壓縮索引開著、沒放寬時作用');
-console.log('通過  原始碼：結果提到被收起來的工具會補進清單');
+// 2026-11-28 起補進邏輯移到 _promoteMentionedTools（任何模式都補、意圖模式也補）；完整行為見 scripts/repeat-guard.test.js
+const i = src.indexOf('_promoteMentionedTools(log, result) {');
+assert(i > 0, '找不到結果提到沒送進清單工具的補進邏輯');
+const body = src.slice(i, i + 2400);
+assert(/_getRootToolNames\(\)/.test(body) && /_compactExtra\.add\(n\)/.test(body) && /_intentRefreshPrompt\(\)/.test(body) && /_intentAdmit\(add/.test(body), '補進邏輯不完整');
+assert(src.indexOf('this._promoteMentionedTools(log, result)') > src.indexOf('async _callToolGuarded('), '_callToolGuarded 必須呼叫補進邏輯');
+console.log('通過  原始碼：結果提到沒送進清單的工具會補進清單（壓縮索引、意圖過濾都補）');
 
 // 行為：把比對那段抽出來單獨跑
 function mentions(hidden, extra, result) {
