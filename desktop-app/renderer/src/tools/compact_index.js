@@ -82,7 +82,7 @@
             const entry = catalog[key] || {}; const label = String(entry.label || ''); const names = [];
             for (const name of Object.keys(entry.tools || {}).sort()) {
                 if (core.has(name)) continue;
-                if (tools[name]) continue; // 同一個工具出現在多個領域：以第一個領域為準
+                if (tools[name]) { names.push(name); continue; } // 同一個工具出現在多個領域：摘要以第一個領域為準，但每個領域的清單都要列到它（路由看領域能做什麼）
                 const intro = introText(name, entry.tools[name], key, label); const h = hash(intro); liveKeys.push(h);
                 let hit = cache.fetch(h);
                 if (hit) reused++; else { recomputed++; hit = { summary: summaryOf(name, entry.tools[name]), keywords: keywordsOf(name, entry.tools[name]) }; cache.store(h, hit); }
@@ -98,8 +98,9 @@
     // ───────────────────────── 索引文字 ─────────────────────────
     // level 0：只有領域層；level 1：領域層＋每個工具一行。budgetChars 給了而且第 1 層超過，自動降到第 0 層（overBudget=true）。
     function keysOf(index, only) { const all = Object.keys(index.domains); return only ? all.filter((k) => only.indexOf(k) >= 0) : all; }
-    function layer0(index, only) {
-        return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : ''); }).join('\n');
+    // short：只列領域鍵、標籤、工具數（給已經有委派說明的模式，更省）
+    function layer0(index, only, short) {
+        return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具' + (short ? '' : '：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : '')); }).join('\n');
     }
     function layer1(index, only) {
         const out = [];
@@ -107,8 +108,8 @@
         return out.join('\n');
     }
     // 第 0 層也超過預算時（小視窗模型）：照領域順序截到預算內，尾巴註明還有幾個領域沒列、用 description 申請
-    function trim0(index, only, budget) {
-        const lines = layer0(index, only).split('\n'); const out = []; let used = 0;
+    function trim0(index, only, budget, short) {
+        const lines = layer0(index, only, short).split('\n'); const out = []; let used = 0;
         for (let i = 0; i < lines.length; i++) {
             if (used + lines[i].length + 1 > budget) { out.push('…（另有 ' + (lines.length - i) + ' 個領域沒列出，用 description 申請）'); break; }
             out.push(lines[i]); used += lines[i].length + 1;
@@ -119,13 +120,13 @@
         opt = opt || {}; const only = opt.only || null; const budget = opt.budgetChars || 0;
         const want0 = opt.level === 0; const full = want0 ? '' : layer1(index, only);
         if (!want0 && (!budget || full.length <= budget)) return { text: full, level: 1, overBudget: false, chars: full.length };
-        const z = layer0(index, only); const over = !want0 && !!budget; // 想要第 1 層卻放不下＝降級
-        if (budget && z.length > budget) { const t = trim0(index, only, budget); return { text: t, level: 0, overBudget: true, chars: t.length }; }
+        const z = layer0(index, only, opt.short); const over = !want0 && !!budget; // 想要第 1 層卻放不下＝降級
+        if (budget && z.length > budget) { const t = trim0(index, only, budget, opt.short); return { text: t, level: 0, overBudget: true, chars: t.length }; }
         return { text: z, level: 0, overBudget: over, chars: z.length };
     }
     // 路由用索引文字的快取：集合雜湊沒變（也沒換層級／預算）就直接用上次存的，不重組
     function cachedText(index, cache, opt) {
-        const tag = index.setHash + '|' + ((opt && opt.level) === 0 ? 0 : 1) + '|' + ((opt && opt.budgetChars) || 0); const hit = cache.routerText();
+        const tag = index.setHash + '|' + ((opt && opt.level) === 0 ? 0 : 1) + '|' + ((opt && opt.budgetChars) || 0) + '|' + ((opt && opt.short) ? 's' : 'f'); const hit = cache.routerText();
         if (hit && hit.tag === tag) return { text: hit.text, level: hit.level, overBudget: hit.overBudget, chars: hit.text.length, fromCache: true };
         const r = text(index, opt); cache.setRouterText({ tag, text: r.text, level: r.level, overBudget: r.overBudget }); return Object.assign({ fromCache: false }, r);
     }

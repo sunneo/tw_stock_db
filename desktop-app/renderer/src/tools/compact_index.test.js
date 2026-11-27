@@ -55,6 +55,12 @@ t('小視窗：第 0 層也超過預算時截斷，尾巴註明沒列出幾個�
     const ok0 = C.text(ix, { level: 0, budgetChars: 100000 }); assert.strictEqual(ok0.overBudget, false); assert.strictEqual(ok0.level, 0); assert.ok(ok0.text.indexOf('merge_pdf') >= 0 || ok0.text.indexOf('docs') >= 0);
     const down = C.text(ix, { budgetChars: 300 }); assert.strictEqual(down.level, 0); assert.strictEqual(down.overBudget, true);
 });
+t('同一個工具在兩個領域：兩個領域的清單都列到；short 只列領域與數量；原始碼沒有任何站別字眼', () => {
+    const cat = { a: { label: 'A', tools: { shared_tool: '共用工具說明。', only_a: 'A 專用。' } }, b: { label: 'B', tools: { shared_tool: '共用工具說明。', only_b: 'B 專用。' } } };
+    const ix = C.build(cat, { core: [] }); assert.ok(ix.domains.a.tools.includes('shared_tool') && ix.domains.b.tools.includes('shared_tool')); const l1 = C.text(ix).text; assert.strictEqual((l1.match(/- shared_tool:/g) || []).length, 2);
+    const sh = C.text(ix, { level: 0, short: true }).text; assert.ok(sh.indexOf('shared_tool') < 0 && /a（A）：2 個工具/.test(sh));
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'compact_index.js'), 'utf8'); assert.ok(!/台股|twse|stock/i.test(src));
+});
 t('索引比完整目錄小很多（壓縮有效）', () => {
     const ix = C.build(CAT, { core: CORE }); const fullLen = Object.values(CAT).reduce((a, d) => a + Object.entries(d.tools).reduce((x, [n, desc]) => x + n.length + desc.length + 40, 0), 0); assert.ok(C.text(ix).chars < fullLen);
 });

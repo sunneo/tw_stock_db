@@ -51605,7 +51605,7 @@ const holder = {};
             const entry = catalog[key] || {}; const label = String(entry.label || ''); const names = [];
             for (const name of Object.keys(entry.tools || {}).sort()) {
                 if (core.has(name)) continue;
-                if (tools[name]) continue; // 同一個工具出現在多個領域：以第一個領域為準
+                if (tools[name]) { names.push(name); continue; } // 同一個工具出現在多個領域：摘要以第一個領域為準，但每個領域的清單都要列到它（路由看領域能做什麼）
                 const intro = introText(name, entry.tools[name], key, label); const h = hash(intro); liveKeys.push(h);
                 let hit = cache.fetch(h);
                 if (hit) reused++; else { recomputed++; hit = { summary: summaryOf(name, entry.tools[name]), keywords: keywordsOf(name, entry.tools[name]) }; cache.store(h, hit); }
@@ -51621,23 +51621,35 @@ const holder = {};
     // ───────────────────────── 索引文字 ─────────────────────────
     // level 0：只有領域層；level 1：領域層＋每個工具一行。budgetChars 給了而且第 1 層超過，自動降到第 0 層（overBudget=true）。
     function keysOf(index, only) { const all = Object.keys(index.domains); return only ? all.filter((k) => only.indexOf(k) >= 0) : all; }
-    function layer0(index, only) {
-        return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : ''); }).join('\n');
+    // short：只列領域鍵、標籤、工具數（給已經有委派說明的模式，更省）
+    function layer0(index, only, short) {
+        return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具' + (short ? '' : '：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : '')); }).join('\n');
     }
     function layer1(index, only) {
         const out = [];
         for (const k of keysOf(index, only)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
         return out.join('\n');
     }
+    // 第 0 層也超過預算時（小視窗模型）：照領域順序截到預算內，尾巴註明還有幾個領域沒列、用 description 申請
+    function trim0(index, only, budget, short) {
+        const lines = layer0(index, only, short).split('\n'); const out = []; let used = 0;
+        for (let i = 0; i < lines.length; i++) {
+            if (used + lines[i].length + 1 > budget) { out.push('…（另有 ' + (lines.length - i) + ' 個領域沒列出，用 description 申請）'); break; }
+            out.push(lines[i]); used += lines[i].length + 1;
+        }
+        return out.join('\n');
+    }
     function text(index, opt) {
-        opt = opt || {}; const only = opt.only || null; const full = layer1(index, only);
-        if (opt.budgetChars && full.length > opt.budgetChars) { const z = layer0(index, only); return { text: z, level: 0, overBudget: true, chars: z.length }; }
-        const level = opt.level === 0 ? 0 : 1; const t = level === 0 ? layer0(index, only) : full;
-        return { text: t, level, overBudget: false, chars: t.length };
+        opt = opt || {}; const only = opt.only || null; const budget = opt.budgetChars || 0;
+        const want0 = opt.level === 0; const full = want0 ? '' : layer1(index, only);
+        if (!want0 && (!budget || full.length <= budget)) return { text: full, level: 1, overBudget: false, chars: full.length };
+        const z = layer0(index, only, opt.short); const over = !want0 && !!budget; // 想要第 1 層卻放不下＝降級
+        if (budget && z.length > budget) { const t = trim0(index, only, budget, opt.short); return { text: t, level: 0, overBudget: true, chars: t.length }; }
+        return { text: z, level: 0, overBudget: over, chars: z.length };
     }
     // 路由用索引文字的快取：集合雜湊沒變（也沒換層級／預算）就直接用上次存的，不重組
     function cachedText(index, cache, opt) {
-        const tag = index.setHash + '|' + ((opt && opt.level) === 0 ? 0 : 1) + '|' + ((opt && opt.budgetChars) || 0); const hit = cache.routerText();
+        const tag = index.setHash + '|' + ((opt && opt.level) === 0 ? 0 : 1) + '|' + ((opt && opt.budgetChars) || 0) + '|' + ((opt && opt.short) ? 's' : 'f'); const hit = cache.routerText();
         if (hit && hit.tag === tag) return { text: hit.text, level: hit.level, overBudget: hit.overBudget, chars: hit.text.length, fromCache: true };
         const r = text(index, opt); cache.setRouterText({ tag, text: r.text, level: r.level, overBudget: r.overBudget }); return Object.assign({ fromCache: false }, r);
     }
@@ -112197,8 +112209,8 @@ ${fnData.code}
             },
             { type: 'object', properties: { names: { type: 'array', items: { type: 'string' }, description: '要查詢的工具名稱清單' } }, additionalProperties: false }
         );
-        // 壓縮工具索引（實驗，預設關，見 _compactIxOn）：根層級申請更多工具。關閉時完全不註冊，工具清單與提示不變。
-        if (this._compactIxOn()) this.register_openai_tool('request_additional_tools',
+        // 壓縮工具索引（預設開，見 _compactIxOn）：根層級申請更多工具。一律註冊，但關閉時 _getRootToolNames 會把它濾掉，工具清單與提示不變。
+        this.register_openai_tool('request_additional_tools',
             '申請你清單上沒有、但「其他可申請的工具」索引裡列出的工具。可以用一句話描述要做什麼（description），或直接給精確工具名（names）；成功後那些工具加進你的清單，下一步就能直接呼叫。描述不夠明確時會回一道字母選擇題，照 how 再呼叫一次並帶 choice。',
             async function (rawArgs) {
                 let parsed = {}; try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
@@ -129514,12 +129526,19 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return { ok: true };
     }
 
+    // 壓縮工具索引關閉（localStorage 'fa.compactToolIndex'='0'）時，申請工具不出現在任何清單：清單與沒有這個機制時相同
     _getRootToolNames() {
+        const r = this._getRootToolNamesBase();
+        return (Array.isArray(r) && !this._compactIxOn()) ? r.filter((n) => n !== 'request_additional_tools') : r;
+    }
+    _getRootToolNamesBase() {
         const mode = this.multiSubAgentMode;
         const custom = this.advancedSettings.customTools.map(t => t.name);
         if (mode === 'off') {
             const allBuiltins = Object.keys(this.tools).filter(n => n !== 'delegate_to_subagent');
-            return this._subchatToolFilter(allBuiltins.concat(custom));
+            let names = allBuiltins.concat(custom);
+            if (this._compactIxOn() && !this._compactWiden) { const hid = this._compactHidden(); if (hid.size) names = names.filter((n) => !hid.has(n) || (this._compactExtra && this._compactExtra.has(n))); } // 開著時收起領域閘門裡的工具，改成索引＋申請
+            return this._subchatToolFilter(names);
         }
         const rootBuiltins = Object.keys(this.tools).filter(n => !this._domainGatedToolNames.has(n));
         if (this._compactExtra && this._compactExtra.size) for (const n of this._compactExtra) if (this.tools[n] && !rootBuiltins.includes(n)) rootBuiltins.push(n); // 壓縮索引（實驗）申請來的工具；沒開時集合永遠是空的
@@ -130536,8 +130555,14 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return '[其他工具（這一輪沒有送完整說明，只列名稱）] ' + hid.join('、') + '。需要時直接呼叫它的名稱（參數不確定就先 get_tool_details）；不確定有沒有、或任務橫跨好幾種工作，用 delegate_to_subagent（domain 留空，系統用本地意圖比對挑領域，不多花一輪模型呼叫）。不要因為這裡沒有列完整說明就說「我沒有這個工具」。';
     }
     // ===== 壓縮工具索引（實驗，預設關）：設計見 docs/DESIGN.compact-tool-index.md =====
-    // 開關：localStorage 'fa.compactToolIndex' = '1'（重新載入後生效）。關閉時下面所有入口都直接回空／原樣，提示與工具清單與沒有這個機制時逐位元組相同。
-    _compactIxOn() { try { return typeof localStorage !== 'undefined' && localStorage.getItem('fa.compactToolIndex') === '1'; } catch (_) { return false; } }
+    // 開關：localStorage 'fa.compactToolIndex'。預設開（沒設值＝開，2026-11-27 使用者決定）；只有明確設成 '0' 才關。關閉時下面所有入口都直接回空／原樣，提示與工具清單與沒有這個機制時逐位元組相同（scripts/eval/baselines/compact-off-baseline.json 比對）。
+    _compactIxOn() { try { return typeof localStorage === 'undefined' || localStorage.getItem('fa.compactToolIndex') !== '0'; } catch (_) { return true; } }
+    // off 模式（全部內建工具原生曝光）開啟時：只收起「領域閘門裡、而且索引裡有」的工具（要用就申請）；核心、host 自己註冊的、使用者自訂的、這句話的專用工具一律照舊給。
+    _compactHidden() {
+        const key = Object.keys(this.tools).length + ':' + Object.keys(this.domains || {}).length + ':' + this._domainGatedToolNames.size; if (this._cixHiddenMemo && this._cixHiddenMemo.key === key) return this._cixHiddenMemo.set;
+        const set = new Set(); try { const ix = this._compactIndex(); for (const n of this._domainGatedToolNames) if (ix.tools[n] && this.tools[n]) set.add(n); for (const h of this._rootTaskHints()) for (const n of h.tools) set.delete(n); for (const n of this._compactCoreNames()) set.delete(n); } catch (_) { set.clear(); }
+        this._cixHiddenMemo = { key, set }; return set;
+    }
     _compactCoreNames() { return ['get_tool_details', 'request_additional_tools', 'delegate_to_subagent', 'list_ai_features', 'extend_rounds', 'delegate_subtask']; }
     // 目錄：{領域鍵:{label,tools:{名:完整說明}}}；只放「根層級原本看不到、要靠領域才拿得到」的工具
     _compactCatalog() {
@@ -130549,17 +130574,18 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         return cat;
     }
     // 內容雜湊快取：工具介紹沒變就整份重用；存 localStorage（不可用就只在記憶體，這次頁面有效）；桌面版與網頁版同一條路
-    _compactIndex() {
+    // opt.all：不排除核心與根層級工具（路由目錄要看到每個領域「能做什麼」的完整清單）
+    _compactIndex(opt) {
         if (!this._cixCache) { const KEY = 'fa.compactIndexCache'; this._cixCache = FaCompactIndex.createCache({ get: () => { try { return localStorage.getItem(KEY); } catch (_) { return null; } }, set: (s) => { try { localStorage.setItem(KEY, s); } catch (_) { /* 滿了或不可用：只在記憶體 */ } } }); }
         const rootBase = Object.keys(this.tools).filter((n) => !this._domainGatedToolNames.has(n));
-        const index = FaCompactIndex.build(this._compactCatalog(), { core: this._compactCoreNames().concat(rootBase), cache: this._cixCache }); if (index.recomputed) this._cixCache.save(); return index;
+        const index = FaCompactIndex.build(this._compactCatalog(), { core: (opt && opt.all) ? [] : this._compactCoreNames().concat(rootBase), cache: this._cixCache }); if (index.recomputed) this._cixCache.save(); return index;
     }
     _compactBudgetChars() { let cw = 0; try { cw = Number(this._getGenerationSettings().contextWindowTokens) || 0; } catch (_) { /* */ } return Math.max(1500, Math.floor((cw || 8000) * 0.06 * 3)); } // 視窗的 6%（約 3 字元一個 token）：跟 contextWindowTokens 成比例
     // 根層級提示裡的索引區塊（只有開關開、而且不是「off」模式才有）
     _compactRootNote() {
-        if (!this._compactIxOn() || this.multiSubAgentMode === 'off') return '';
-        try { const index = this._compactIndex(); if (!Object.keys(index.tools).length) return ''; const r = FaCompactIndex.cachedText(index, this._cixCache, { level: 0, budgetChars: this._compactBudgetChars() }); // 根層級只放領域層（每領域一行＋代表工具），細節靠申請；工具層的一行摘要留給路由目錄用
-            return '[其他可申請的工具領域（每行：領域、工具數、代表工具；沒有完整參數）]\n' + r.text + '\n需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
+        if (!this._compactIxOn() || this._compactWiden) return '';
+        try { const index = this._compactIndex(); if (!Object.keys(index.tools).length) return ''; const r = FaCompactIndex.cachedText(index, this._cixCache, { level: 0, short: this.multiSubAgentMode !== 'off', budgetChars: this._compactBudgetChars() }); // 根層級只放領域層（off 模式帶代表工具；其他模式已有委派說明，只列領域與數量）（每領域一行＋代表工具），細節靠申請；工具層的一行摘要留給路由目錄用
+            return '[其他可申請的工具領域（每行：領域、工具數，可能附代表工具；沒有完整參數）]\n' + r.text + '\n需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
         } catch (_) { return ''; }
     }
     // 申請：names（精確名稱，照舊）與／或 description（自然語言）。回傳給模型的 JSON 字串。沒把握不悄悄猜：回字母選擇題讓模型選。
@@ -151658,6 +151684,10 @@ _result
     }
     // 包住工具執行：重複呼叫直接回傳「已做過」的提示，不真的再跑一次；否則執行並記錄結果。
     async _callToolGuarded(log, name, rawArgs, run) {
+        // 壓縮索引（預設開）：模型直接叫了一個真的存在、但被收起來的工具：照常執行，順便補進這一輪的清單（跟意圖過濾同一個做法，不打擾使用者）
+        if (this._compactIxOn() && log === this._toolCallLog && this.tools[name] && !/^(delegate_to_subagent|get_tool_details|request_additional_tools|list_ai_features)$/.test(name)) {
+            try { const adv = this._getRootToolNames() || []; if (adv.indexOf(name) < 0) { (this._compactExtra = this._compactExtra || new Set()).add(name); this._intentPlanCache = null; this._log('🧭 壓縮索引：模型直接叫了收起來的工具 ' + name + '，補進清單'); this._intentRefreshPrompt(); } } catch (_) { /* 不影響執行 */ }
+        }
         if (this._intentOn() && log === this._toolCallLog && this.tools[name] && !/^(delegate_to_subagent|get_tool_details|request_additional_tools|list_ai_features)$/.test(name)) {
             try { const adv = this._getRootToolNames() || []; if (adv.indexOf(name) < 0 && this._intentAll && this._intentAll.indexOf(name) >= 0) { (this._intentMiss = this._intentMiss || new Set()).add(name); this._intentAdmit([name], '模型直接叫了沒送說明的工具'); } } catch (_) { /* 不影響執行 */ }
         }
@@ -151796,10 +151826,11 @@ _result
             if (this._forceNoTools || !counterHolder || (counterHolder.cap || 0) >= 2) return null; if ((this._toolCallLog && this._toolCallLog.calls || []).some((c) => /^(delegate_to_subagent|get_tool_details|catalog_query)$/.test(c.name))) return null; // 已經查過了
             const c = FaCapReflect.claimsNoTool(text); if (!c) return null;
             if (this._intentOn()) { this._intentWiden = true; this._intentPlanCache = null; this._intentRefreshPrompt(); this._log('🎯 意圖過濾：模型說沒有工具，這一輪放寬成完整清單'); }
+            if (this._compactIxOn() && !this._compactWiden) { this._compactWiden = true; this._cixHiddenMemo = null; this._intentRefreshPrompt(); this._log('🧭 壓縮索引：模型說沒有工具，這一輪放寬成完整清單'); } // 逃生口：放寬後 off 模式不再收起任何工具
             const user = String(this._currentTurnUserText || ''); const root = new Set(this._getRootToolNames ? (this._getRootToolNames() || Object.keys(this.tools)) : Object.keys(this.tools)); const byTool = new Map();
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
             const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
-            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: root.has(name), aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_|request_additional_tools$)/.test(e.name));
             const hits = FaCapReflect.search(user + ' ' + (c.concept || ''), entries, { k: 3 }); if (!hits.length) return null;
             counterHolder.cap = (counterHolder.cap || 0) + 1; this._capPending = { user, tool: hits[0].name }; return FaCapReflect.nudgeText(c.claim, hits, user);
         } catch (_) { return null; }
@@ -152456,7 +152487,7 @@ _result
         try {
             const byTool = new Map(); const learned = this._capAliasStore ? this._capAliasStore.tools || {} : {};
             for (const [id, d] of Object.entries(this.domains || {})) for (const n of (() => { let tn = d && d.toolNames; if (typeof tn === 'function') { try { tn = tn.call(d); } catch (_) { tn = []; } } return Array.isArray(tn) ? tn : []; })()) { if (!this.tools[n]) continue; if (!byTool.has(n)) byTool.set(n, []); byTool.get(n).push({ id, label: d.label || '' }); }
-            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: false, aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_)/.test(e.name));
+            const entries = Object.entries(this.tools).map(([name, t]) => ({ name, domains: byTool.get(name) || [], text: String((t && t.description) || '').slice(0, 400), direct: false, aliases: FaCapReflect.aliasOf(name, (learned[name] || []).map((x) => x.p)).concat(this._designedAliases(name)) })).filter((e) => !/^(delegate_|get_tool_details|catalog_|request_additional_tools$)/.test(e.name));
             return (FaCapReflect.search(String(text || ''), entries, { k: k || 3 }) || []).map((h) => Object.assign({}, h, { designed: !!(this.tools[h.name] && this.tools[h.name].designed) }));
         } catch (_) { return []; }
     }
@@ -161991,6 +162022,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 固定用這裡存的原始文字，不管壓縮幾次，重新接回去的內容永遠只有
         // 一層包裝。
         this._currentTurnUserText = userText;
+        this._compactWiden = false; this._compactExtra = new Set(); this._cixHiddenMemo = null; // 壓縮索引：每一輪重新開始（申請來的工具、放寬都只管這一輪）
         if (this._intentOn()) { this._intentWiden = false; this._intentExtra = new Set(); this._intentMiss = new Set(); this._intentPlanCache = null; this._intentRecent = new Set((this._intentRecentTurns || []).slice(-3).flatMap((x) => x.names)); }
 
         // tw_stock_db客製: 原本這裡有一個「訊息數超過20則就主動壓縮」的
@@ -164060,7 +164092,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             .filter(Boolean);
         // 壓縮工具索引（實驗，預設關）：路由子代理的目錄改用內容雜湊快取過的一行摘要索引，只列這次候選領域；純知識型領域（沒有工具）照舊用原本的段落
         if (this._compactIxOn()) { try {
-            const index = this._compactIndex(); const only = enabledDomains.map(([k]) => k).filter((k) => index.domains[k] && index.domains[k].tools.length);
+            const index = this._compactIndex({ all: true }); const only = enabledDomains.map(([k]) => k).filter((k) => index.domains[k] && index.domains[k].tools.length);
             if (only.length) { const txt = FaCompactIndex.text(index, { only, budgetChars: this._compactBudgetChars() }).text; const rest = enabledDomains.filter(([k]) => !only.includes(k)).map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName)).filter(Boolean); catalogSections = [txt].concat(rest); }
         } catch (_) { /* 退回原本的目錄 */ } }
 
