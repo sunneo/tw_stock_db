@@ -51626,8 +51626,12 @@ const holder = {};
         return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具' + (short ? '' : '：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : '')); }).join('\n');
     }
     function layer1(index, only) {
-        const out = [];
-        for (const k of keysOf(index, only)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
+        const out = []; const shown = new Set();
+        for (const k of keysOf(index, only)) {
+            const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); const again = [];
+            for (const n of d.tools) { if (shown.has(n)) again.push(n); else { shown.add(n); out.push('- ' + n + ': ' + index.tools[n].summary); } }
+            if (again.length) out.push('（也含，摘要見前面：' + again.join('、') + '）'); // 共用工具（例如好幾個程式領域都有的檔案工具）摘要只寫一次，不重複吃提示
+        }
         return out.join('\n');
     }
     // 第 0 層也超過預算時（小視窗模型）：照領域順序截到預算內，尾巴註明還有幾個領域沒列、用 description 申請
@@ -130580,7 +130584,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         const rootBase = Object.keys(this.tools).filter((n) => !this._domainGatedToolNames.has(n));
         const index = FaCompactIndex.build(this._compactCatalog(), { core: (opt && opt.all) ? [] : this._compactCoreNames().concat(rootBase), cache: this._cixCache }); if (index.recomputed) this._cixCache.save(); return index;
     }
-    _compactBudgetChars() { let cw = 0; try { cw = Number(this._getGenerationSettings().contextWindowTokens) || 0; } catch (_) { /* */ } return Math.max(1500, Math.floor((cw || 8000) * 0.06 * 3)); } // 視窗的 6%（約 3 字元一個 token）：跟 contextWindowTokens 成比例
+    // 視窗的一個比例（約 3 字元一個 token）：跟 contextWindowTokens 成比例。根層級索引區塊 6%；路由子代理的系統提示只裝索引，給 25%（放不下自動降到領域層）
+    _compactBudgetChars(frac) { let cw = 0; try { cw = Number(this._getGenerationSettings().contextWindowTokens) || 0; } catch (_) { /* */ } return Math.max(1500, Math.floor((cw || 8000) * (frac || 0.06) * 3)); }
     // 根層級提示裡的索引區塊（只有開關開、而且不是「off」模式才有）
     _compactRootNote() {
         if (!this._compactIxOn() || this._compactWiden) return '';
@@ -164080,26 +164085,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return `[${key}] ${domain.label}\n${lines.join('\n')}` + (note ? `\n${note}` : '');
     }
 
-    async _routeTaskToDomains(task) {
-        this._ensureDomainSplits();
-        const allPublic = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal);
-        if (!allPublic.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
-        const enabledDomains = this._shortlistDomains(task, allPublic);
-
-        const toolByName = new Map(this._getCombinedToolEntries(null));
-        let catalogSections = enabledDomains
-            .map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName))
-            .filter(Boolean);
-        // 壓縮工具索引（實驗，預設關）：路由子代理的目錄改用內容雜湊快取過的一行摘要索引，只列這次候選領域；純知識型領域（沒有工具）照舊用原本的段落
-        if (this._compactIxOn()) { try {
-            const index = this._compactIndex({ all: true }); const only = enabledDomains.map(([k]) => k).filter((k) => index.domains[k] && index.domains[k].tools.length);
-            if (only.length) { const txt = FaCompactIndex.text(index, { only, budgetChars: this._compactBudgetChars() }).text; const rest = enabledDomains.filter(([k]) => !only.includes(k)).map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName)).filter(Boolean); catalogSections = [txt].concat(rest); }
-        } catch (_) { /* 退回原本的目錄 */ } }
-
-        const routerSystemPrompt = [
+    // 路由子代理的系統提示（目錄文字由呼叫端給）：關著壓縮索引時的內容跟以前逐位元組相同
+    _routerPromptText(catalogText) {
+        return [
             '你是一個工具領域路由器。以下是系統目前登記的所有「專家領域」，每個領域底下列出它擁有的工具（僅供你判斷相關性參考，不代表你自己能呼叫這些工具）：',
             '',
-            catalogSections.join('\n\n'),
+            catalogText,
             '',
             '使用者的任務描述會在下一則訊息給你，請判斷這個任務需要用到哪個或哪些領域的工具（可以是0個、1個、或多個）。只需要回傳領域代號（例如"scene_3d"），不要回傳個別工具名稱。如果任務不需要用到任何專家領域（例如只是打招呼、或你判斷不需要用到上面任何一個領域），domains請回傳空陣列。',
             // tw_stock_db客製: 2026-09-13使用者要求「規劃階段盡量選齊，避免
@@ -164110,6 +164101,32 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             this._getDomainPreferenceRoutingHint(),
             '嚴格只回傳這個格式的JSON，不要有任何其他文字說明、不要用markdown程式碼區塊包住：{"domains": ["領域代號1", "領域代號2"]}',
         ].join('\n');
+    }
+    // 壓縮索引開著時的常駐路由提示：以工具集雜湊＋啟用領域＋偏好提示為鍵，沒變就重用（this._routerStats：builds＝重建次數、hits＝重用次數）
+    _compactRouterPrompt(allPublic) {
+        const index = this._compactIndex({ all: true }); const hint = this._getDomainPreferenceRoutingHint(); const keys = allPublic.map(([k]) => k).join(',');
+        const key = index.setHash + '|' + keys + '|' + hint + '|' + this._compactBudgetChars(0.25); const st = this._routerStats = this._routerStats || { builds: 0, hits: 0 };
+        if (this._routerResident && this._routerResident.key === key) { st.hits++; return this._routerResident.prompt; }
+        st.builds++; const withTools = new Set(Object.keys(index.domains).filter((k) => index.domains[k].tools.length));
+        const txt = FaCompactIndex.text(index, { budgetChars: this._compactBudgetChars(0.25) }).text; const toolByName = new Map(this._getCombinedToolEntries(null));
+        const rest = allPublic.filter(([k]) => !withTools.has(k)).map(([k, d]) => this._buildDomainCatalogSection(k, d, toolByName)).filter(Boolean);
+        const prompt = this._routerPromptText([txt].concat(rest).join('\n\n')); this._routerResident = { key, prompt }; return prompt;
+    }
+    async _routeTaskToDomains(task) {
+        this._ensureDomainSplits();
+        const allPublic = Object.entries(this.domains).filter(([, d]) => d.enabled && !d.internal);
+        if (!allPublic.length) return { ok: false, error: '目前沒有任何已啟用的domain可以委派' };
+        // 路由子代理的定位（2026-11-27 使用者）：認識所有工具、常駐、沒有記憶、反應快。壓縮索引開著時：不再先檢索縮成幾個領域，而是用「完整索引」當固定的系統提示（內容雜湊沒變就重用同一份，不重建）；每次路由只送這一題，沒有歷史，也不限制提問的長短。關著時照舊。
+        let routerSystemPrompt = null;
+        if (this._compactIxOn()) { try { routerSystemPrompt = this._compactRouterPrompt(allPublic); } catch (_) { routerSystemPrompt = null; } }
+        if (!routerSystemPrompt) {
+            const enabledDomains = this._shortlistDomains(task, allPublic);
+            const toolByName = new Map(this._getCombinedToolEntries(null));
+            const catalogSections = enabledDomains
+                .map(([key, d]) => this._buildDomainCatalogSection(key, d, toolByName))
+                .filter(Boolean);
+            routerSystemPrompt = this._routerPromptText(catalogSections.join('\n\n'));
+        }
 
         const routed = await this._callRouterLLM(routerSystemPrompt, task);
         if (!routed.ok) return routed;

@@ -57,7 +57,7 @@ t('小視窗：第 0 層也超過預算時截斷，尾巴註明沒列出幾個�
 });
 t('同一個工具在兩個領域：兩個領域的清單都列到；short 只列領域與數量；原始碼沒有任何站別字眼', () => {
     const cat = { a: { label: 'A', tools: { shared_tool: '共用工具說明。', only_a: 'A 專用。' } }, b: { label: 'B', tools: { shared_tool: '共用工具說明。', only_b: 'B 專用。' } } };
-    const ix = C.build(cat, { core: [] }); assert.ok(ix.domains.a.tools.includes('shared_tool') && ix.domains.b.tools.includes('shared_tool')); const l1 = C.text(ix).text; assert.strictEqual((l1.match(/- shared_tool:/g) || []).length, 2);
+    const ix = C.build(cat, { core: [] }); assert.ok(ix.domains.a.tools.includes('shared_tool') && ix.domains.b.tools.includes('shared_tool')); const l1 = C.text(ix).text; assert.strictEqual((l1.match(/- shared_tool:/g) || []).length, 1); assert.ok(/也含，摘要見前面：shared_tool/.test(l1));
     const sh = C.text(ix, { level: 0, short: true }).text; assert.ok(sh.indexOf('shared_tool') < 0 && /a（A）：2 個工具/.test(sh));
     const src = require('fs').readFileSync(require('path').join(__dirname, 'compact_index.js'), 'utf8'); assert.ok(!/台股|twse|stock/i.test(src));
 });

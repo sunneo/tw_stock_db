@@ -103,8 +103,12 @@
         return keysOf(index, only).map((k) => { const d = index.domains[k]; return '- ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '') + '：' + d.tools.length + ' 個工具' + (short ? '' : '：' + d.tools.slice(0, 4).join('、') + (d.tools.length > 4 ? '…' : '')); }).join('\n');
     }
     function layer1(index, only) {
-        const out = [];
-        for (const k of keysOf(index, only)) { const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); for (const n of d.tools) out.push('- ' + n + ': ' + index.tools[n].summary); }
+        const out = []; const shown = new Set();
+        for (const k of keysOf(index, only)) {
+            const d = index.domains[k]; if (!d.tools.length) continue; out.push('## ' + k + (d.label ? '（' + d.label.slice(0, 60) + '）' : '')); const again = [];
+            for (const n of d.tools) { if (shown.has(n)) again.push(n); else { shown.add(n); out.push('- ' + n + ': ' + index.tools[n].summary); } }
+            if (again.length) out.push('（也含，摘要見前面：' + again.join('、') + '）'); // 共用工具（例如好幾個程式領域都有的檔案工具）摘要只寫一次，不重複吃提示
+        }
         return out.join('\n');
     }
     // 第 0 層也超過預算時（小視窗模型）：照領域順序截到預算內，尾巴註明還有幾個領域沒列、用 description 申請
