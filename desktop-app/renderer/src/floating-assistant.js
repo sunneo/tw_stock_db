@@ -130558,8 +130558,8 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
     // 根層級提示裡的索引區塊（只有開關開、而且不是「off」模式才有）
     _compactRootNote() {
         if (!this._compactIxOn() || this.multiSubAgentMode === 'off') return '';
-        try { const index = this._compactIndex(); if (!Object.keys(index.tools).length) return ''; const r = FaCompactIndex.cachedText(index, this._cixCache, { budgetChars: this._compactBudgetChars() });
-            return '[其他可申請的工具（只列一行摘要，沒有完整參數）]\n' + r.text + '\n需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
+        try { const index = this._compactIndex(); if (!Object.keys(index.tools).length) return ''; const r = FaCompactIndex.cachedText(index, this._cixCache, { level: 0, budgetChars: this._compactBudgetChars() }); // 根層級只放領域層（每領域一行＋代表工具），細節靠申請；工具層的一行摘要留給路由目錄用
+            return '[其他可申請的工具領域（每行：領域、工具數、代表工具；沒有完整參數）]\n' + r.text + '\n需要其中任何一個：呼叫 request_additional_tools({"description":"用一句話說你要做什麼"}) 或 ({"names":["工具名"]})，它們會加進你的工具清單，下一步就能直接呼叫；也可以用 delegate_to_subagent 交給領域子agent。不要因為清單裡沒有完整說明就說「我沒有這個工具」。';
         } catch (_) { return ''; }
     }
     // 申請：names（精確名稱，照舊）與／或 description（自然語言）。回傳給模型的 JSON 字串。沒把握不悄悄猜：回字母選擇題讓模型選。
