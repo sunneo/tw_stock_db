@@ -26,6 +26,7 @@ const suites = [
     ['文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版）', 'renderer/src/docmerge/docmerge_core.test.js'],
     ['依任務文字補專用工具（圖片轉PDF、合併文件成PDF）', 'scripts/task-tool-hints.test.js'],
     ['工具預算：短說明、精簡參數、階段切割、檢索', 'renderer/src/tools/tool_budget_core.test.js'],
+    ['壓縮工具索引：多層索引、內容雜湊快取、描述式比對、可達性', 'renderer/src/tools/compact_index.test.js'],
     ['工具參數消毒（所有工具共用：型別／欄位名／字串化 JSON／args_id＋patch）', 'renderer/src/tools/tool_args_core.test.js'],
     ['選測工具（依相依只測改動與受影響功能）', 'scripts/test-affected.test.js'],
     ['申請工具：名單外的真工具自動追加、追加不了時退回並教申請、簡報領域有 generate_image', 'scripts/self-correct/tool_request_wiring.test.js'],
