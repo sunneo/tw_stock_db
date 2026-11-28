@@ -516,6 +516,9 @@ const WGSL_ATTN_BWD_Q_VT = (() => {
   let s = WGSL_ATTN_BWD_Q;
   const rep = (from, to) => { if (s.indexOf(from) < 0) throw new Error('attn_bwd_q_vt 替換失敗：' + from.slice(0, 60)); s = s.split(from).join(to); };
   rep('// @kernel attn_bwd_q', '// @kernel attn_bwd_q_vt');
+  // 順便把每列的 di（Σ dao·ao，只與 i、h 有關）寫進 dio[h·T+i]，供 attn_bwd_kv 直接讀，不必每個 (j,h) 重算
+  rep('@group(0) @binding(6) var<uniform> u: P;', '@group(0) @binding(6) var<storage, read_write> dio: array<f32>;\n@group(0) @binding(7) var<uniform> u: P;');
+  rep('  let di = rdi[0];', '  let di = rdi[0];\n  if (t == 0u) { dio[h * u.T + i] = di; }');
   rep('dp = dp + gs[u2] * v[j * d + h * u.hd + u2];', 'dp = dp + gs[u2] * v[(h * u.hd + u2) * u.T + j];');
   rep('for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + sds[j] * k[j * d + h * u.hd + t]; }',
       'var a1: f32 = 0.0; var a2: f32 = 0.0; var a3: f32 = 0.0;\n' +
@@ -526,5 +529,17 @@ const WGSL_ATTN_BWD_Q_VT = (() => {
   return s;
 })();
 
+// 反向 dK、dV（讀 di 緩衝）：與 WGSL_ATTN_BWD_KV 相同，只把 di 的 hd 長點積改成讀 dio[h·T+i]（由 Q_VT 寫入）。
+// 綁定：0 q、1 v、2 dao、3 pm、4 dio（讀）、5 dk、6 dv、7 uniform。
+const WGSL_ATTN_BWD_KV_DI = (() => {
+  let s = WGSL_ATTN_BWD_KV;
+  const rep = (from, to) => { if (s.indexOf(from) < 0) throw new Error('attn_bwd_kv_di 替換失敗：' + from.slice(0, 60)); s = s.split(from).join(to); };
+  rep('@group(0) @binding(4) var<storage, read> ao: array<f32>;', '@group(0) @binding(4) var<storage, read> dio: array<f32>;');
+  rep('      var di: f32 = 0.0;\n', '');
+  rep('        di = di + go * ao[i * d + h * u.hd + u2];\n', '');
+  rep('sds[i] = p * (dp - di) * u.sc;', 'sds[i] = p * (dp - dio[h * u.T + i]) * u.sc;');
+  return s;
+})();
+
 module.exports = { trainStepDevice, WGSL_CAST16, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,
-  WGSL_TRANSPOSE_TH, WGSL_ATTN_FWD_KT, WGSL_ATTN_BWD_Q_VT, attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };
+  WGSL_TRANSPOSE_TH, WGSL_ATTN_FWD_KT, WGSL_ATTN_BWD_Q_VT, WGSL_ATTN_BWD_KV_DI, attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };

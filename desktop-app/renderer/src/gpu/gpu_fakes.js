@@ -166,12 +166,14 @@ function fakeNavigator(opts) {
         f32(e[5], n).set(r.dq);
       }
     } else if (k === 'attn_bwd_q_vt') {
-      // 綁定 0 k、1 vt([H][hd][T])、2 dao、3 pm、4 ao、5 dq(寫)、6 uniform：先還原 v 成 [T][H·hd]，同 attn_bwd_q 的參考呼叫
+      // 綁定 0 k、1 vt([H][hd][T])、2 dao、3 pm、4 ao、5 dq(寫)、6 dio(寫，[H][T]，di＝Σ dao·ao)、7 uniform：先還原 v 成 [T][H·hd]，同 attn_bwd_q 的參考呼叫
       const TS = require('./train_step_device.js');
-      const T = u32(e[6])[0], H = u32(e[6])[1], hd = u32(e[6])[2], n = T * H * hd, d = H * hd;
+      const T = u32(e[7])[0], H = u32(e[7])[1], hd = u32(e[7])[2], n = T * H * hd, d = H * hd;
       const vt = f32(e[1], n), vv = new Float32Array(n);
       for (let t = 0; t < T; t++) for (let r = 0; r < d; r++) { const h = Math.floor(r / hd), c = r % hd; vv[t * d + r] = vt[(h * hd + c) * T + t]; }
-      const r = TS.attnBwdRef(f32(e[2], n), f32(e[0], n), f32(e[0], n), vv, f32(e[3], H * T * T), T, H, hd);
+      const daoA = f32(e[2], n), aoA = f32(e[4], n), dioA = f32(e[6], H * T);
+      for (let i = 0; i < T; i++) for (let h = 0; h < H; h++) { let s = 0; for (let u2 = 0; u2 < hd; u2++) s += daoA[i * d + h * hd + u2] * aoA[i * d + h * hd + u2]; dioA[h * T + i] = s; }
+      const r = TS.attnBwdRef(daoA, f32(e[0], n), f32(e[0], n), vv, f32(e[3], H * T * T), T, H, hd);
       f32(e[5], n).set(r.dq);
     } else if (k === 'rms_bwd') {
       // 綁定 0 dy、1 x、2 g、3 dx(寫)、4 uniform（T、d 為 u32，eps 為 f32 位於位元組 8）
