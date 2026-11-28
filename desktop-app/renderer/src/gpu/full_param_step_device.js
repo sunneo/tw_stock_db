@@ -97,14 +97,14 @@ function extend(b) {
   r.attnFwd = (q, k, v, T, H, hd) => {
     const ao = b.alloc(T * H * hd), pm = b.alloc(H * T * T);
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
-    b.dispatchRaw(TS.WGSL_ATTN_FWD, [q.buf, k.buf, v.buf, ao.buf, pm.buf], uni, Math.ceil(T * H / 64));
+    b.dispatchRaw(TS.WGSL_ATTN_FWD, [q.buf, k.buf, v.buf, ao.buf, pm.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { ao: ao, pm: pm };
   };
   r.attnBwd = (dao, q, k, v, ao, pm, T, H, hd) => {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
     const dk = b.alloc(T * H * hd), dv = b.alloc(T * H * hd), dq = b.alloc(T * H * hd);
     b.dispatchRaw(TS.WGSL_ATTN_BWD_KV, [q.buf, v.buf, dao.buf, pm.buf, ao.buf, dk.buf, dv.buf], uni, T * H);   // 一個 (j,h) 一個工作群組
-    b.dispatchRaw(TS.WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, Math.ceil(T * H / 64));
+    b.dispatchRaw(TS.WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { dq: dq, dk: dk, dv: dv };
   };
   // RMSNorm 反向：rows 列、寬度 width（qk-norm 時 rows＝T·頭數、width＝hd）

@@ -20,31 +20,61 @@ struct P { T: u32, H: u32, hd: u32, sc: f32 }
 @group(0) @binding(3) var<storage, read_write> ao: array<f32>;
 @group(0) @binding(4) var<storage, read_write> pm: array<f32>;
 @group(0) @binding(5) var<uniform> u: P;
+// 一個工作群組負責一個 (i,h)，64 執行緒：q 列放進共用記憶體 qs；分數 z_j 由 lane j 平行算（不同 j 不同 lane）存進 sc；
+// 最大值與和用樹狀歸約；機率寫回 pm（j＞i 為 0）；輸出 ao 的第 t 分量由第 t 條執行緒累加。
+// 舊版一執行緒一個 (i,h)：整條 j 迴圈串列、每個分數與輸出都串列讀全域記憶體（與 attn_bwd_kv 同類）。
+// 限制：hd ≤ 64、T ≤ 256。
+var<workgroup> qs: array<f32, 64>;
+var<workgroup> scs: array<f32, 256>;
+var<workgroup> rr: array<f32, 64>;
 // @kernel attn_fwd
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
+fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let idx = w.x;
   if (idx >= u.T * u.H) { return; }
   let i = idx / u.H;
   let h = idx % u.H;
   let d = u.H * u.hd;
-  let pb = (h * u.T + i) * u.T;
-  var mx: f32 = -3.0e38;
-  for (var j: u32 = 0u; j <= i; j = j + 1u) {
+  let t = l.x;
+  let isAct = t < u.hd;
+  var qv: f32 = 0.0;
+  if (isAct) { qv = q[i * d + h * u.hd + t]; }
+  qs[t] = qv;
+  workgroupBarrier();
+  for (var j: u32 = t; j <= i; j = j + 64u) {
     var z: f32 = 0.0;
-    for (var t: u32 = 0u; t < u.hd; t = t + 1u) { z = z + q[i * d + h * u.hd + t] * k[j * d + h * u.hd + t]; }
-    z = z * u.sc;
-    pm[pb + j] = z;
-    mx = max(mx, z);
+    for (var u2: u32 = 0u; u2 < u.hd; u2 = u2 + 1u) { z = z + qs[u2] * k[j * d + h * u.hd + u2]; }
+    scs[j] = z * u.sc;
   }
-  var sm: f32 = 0.0;
-  for (var j: u32 = 0u; j <= i; j = j + 1u) { let e = exp(pm[pb + j] - mx); pm[pb + j] = e; sm = sm + e; }
-  for (var j: u32 = 0u; j < u.T; j = j + 1u) {
-    if (j <= i) { pm[pb + j] = pm[pb + j] / sm; } else { pm[pb + j] = 0.0; }
+  workgroupBarrier();
+  var m: f32 = -3.0e38;
+  for (var j: u32 = t; j <= i; j = j + 64u) { m = max(m, scs[j]); }
+  rr[t] = m;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) {
+    if (t < st) { rr[t] = max(rr[t], rr[t + st]); }
+    workgroupBarrier();
   }
-  for (var t: u32 = 0u; t < u.hd; t = t + 1u) {
+  let mx = rr[0];
+  workgroupBarrier();
+  var s: f32 = 0.0;
+  for (var j: u32 = t; j <= i; j = j + 64u) { let e = exp(scs[j] - mx); scs[j] = e; s = s + e; }
+  rr[t] = s;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) {
+    if (t < st) { rr[t] = rr[t] + rr[t + st]; }
+    workgroupBarrier();
+  }
+  let sm = rr[0];
+  workgroupBarrier();
+  let pb = (h * u.T + i) * u.T;
+  for (var j: u32 = t; j < u.T; j = j + 64u) {
+    if (j <= i) { let p = scs[j] / sm; scs[j] = p; pm[pb + j] = p; } else { pm[pb + j] = 0.0; }
+  }
+  workgroupBarrier();
+  if (isAct) {
     var acc: f32 = 0.0;
-    for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + pm[pb + j] * v[j * d + h * u.hd + t]; }
+    for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + scs[j] * v[j * d + h * u.hd + t]; }
     ao[i * d + h * u.hd + t] = acc;
   }
 }
@@ -117,22 +147,47 @@ struct P { T: u32, H: u32, hd: u32, sc: f32 }
 @group(0) @binding(4) var<storage, read> ao: array<f32>;
 @group(0) @binding(5) var<storage, read_write> dq: array<f32>;
 @group(0) @binding(6) var<uniform> u: P;
+// 一個工作群組負責一個 (i,h)，64 執行緒：dao 列放進共用記憶體 gs，di 用樹狀歸約；
+// 各 j 的 ds_j 由不同執行緒平行算（lane j 讀 gs 與 v 列），存進共用記憶體 sds；最後第 t 條執行緒累加 dq 的第 t 分量。
+// 舊版一執行緒一個 (i,h)：整條 j 迴圈串列、每個 j 再串列讀 hd 個全域值（與 attn_bwd_kv 同類）。
+// 限制：hd ≤ 64、T ≤ 256。
+var<workgroup> gs: array<f32, 64>;
+var<workgroup> rdi: array<f32, 64>;
+var<workgroup> sds: array<f32, 256>;
 // @kernel attn_bwd_q
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
+fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let idx = w.x;
   if (idx >= u.T * u.H) { return; }
   let i = idx / u.H;
   let h = idx % u.H;
   let d = u.H * u.hd;
-  var di: f32 = 0.0;
-  for (var t: u32 = 0u; t < u.hd; t = t + 1u) { di = di + dao[i * d + h * u.hd + t] * ao[i * d + h * u.hd + t]; }
-  for (var t: u32 = 0u; t < u.hd; t = t + 1u) { dq[i * d + h * u.hd + t] = 0.0; }
-  for (var j: u32 = 0u; j <= i; j = j + 1u) {
+  let t = l.x;
+  let isAct = t < u.hd;
+  var g: f32 = 0.0;
+  var pa: f32 = 0.0;
+  if (isAct) {
+    g = dao[i * d + h * u.hd + t];
+    pa = g * ao[i * d + h * u.hd + t];
+  }
+  gs[t] = g;
+  rdi[t] = pa;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) {
+    if (t < st) { rdi[t] = rdi[t] + rdi[t + st]; }
+    workgroupBarrier();
+  }
+  let di = rdi[0];
+  for (var j: u32 = t; j <= i; j = j + 64u) {
     var dp: f32 = 0.0;
-    for (var t: u32 = 0u; t < u.hd; t = t + 1u) { dp = dp + dao[i * d + h * u.hd + t] * v[j * d + h * u.hd + t]; }
-    let ds = pm[(h * u.T + i) * u.T + j] * (dp - di) * u.sc;
-    for (var t: u32 = 0u; t < u.hd; t = t + 1u) { dq[i * d + h * u.hd + t] = dq[i * d + h * u.hd + t] + ds * k[j * d + h * u.hd + t]; }
+    for (var u2: u32 = 0u; u2 < u.hd; u2 = u2 + 1u) { dp = dp + gs[u2] * v[j * d + h * u.hd + u2]; }
+    sds[j] = pm[(h * u.T + i) * u.T + j] * (dp - di) * u.sc;
+  }
+  workgroupBarrier();
+  if (isAct) {
+    var acc: f32 = 0.0;
+    for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + sds[j] * k[j * d + h * u.hd + t]; }
+    dq[i * d + h * u.hd + t] = acc;
   }
 }
 `;
@@ -246,14 +301,14 @@ function extend(b) {
   r.attnFwd = (q, k, v, T, H, hd) => {
     const ao = b.alloc(T * H * hd), pm = b.alloc(H * T * T);
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
-    b.dispatchRaw(WGSL_ATTN_FWD, [q.buf, k.buf, v.buf, ao.buf, pm.buf], uni, Math.ceil(T * H / 64));
+    b.dispatchRaw(WGSL_ATTN_FWD, [q.buf, k.buf, v.buf, ao.buf, pm.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { ao: ao, pm: pm };
   };
   r.attnBwd = (dao, q, k, v, ao, pm, T, H, hd) => {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
     const dk = b.alloc(T * H * hd), dv = b.alloc(T * H * hd), dq = b.alloc(T * H * hd);
     b.dispatchRaw(WGSL_ATTN_BWD_KV, [q.buf, v.buf, dao.buf, pm.buf, ao.buf, dk.buf, dv.buf], uni, T * H);   // 一個 (j,h) 一個工作群組（見 WGSL_ATTN_BWD_KV）
-    b.dispatchRaw(WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, Math.ceil(T * H / 64));
+    b.dispatchRaw(WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { dq: dq, dk: dk, dv: dv };
   };
   r.rmsnormBwd = (dy, x, g, T, d, eps) => {
