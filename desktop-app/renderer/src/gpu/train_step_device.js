@@ -94,8 +94,14 @@ struct P { T: u32, H: u32, hd: u32, sc: f32 }
 // 一個工作群組負責一個 (j,h)，64 執行緒（每條通道 t＜hd 一個）：dp、di 用共用記憶體樹狀歸約，dk、dv 的第 t 個分量由第 t 條執行緒累加。
 // 舊版一執行緒一個 (j,h)、整條 i 迴圈＋每個 t 串列讀全域記憶體：L 規模只有 T·H＝1024 條執行緒、長串列依賴，量到 attn_bwd_kv 佔 GPU 通道時間的 38%（27.6 ms／次）。
 // 限制：hd ≤ 64。
-var<workgroup> rdp: array<f32, 64>;
-var<workgroup> rdi: array<f32, 64>;
+// 第二版（2026-11-28）：去掉逐 i 的樹狀歸約（舊版每個 i 要 12 次屏障，i 迴圈最長 T 次）。
+// 階段一：lane 平行算每個 i（i≥j）的 p_ij 與 ds_ij（di、dp 各為 hd 長的串列點積，不用屏障），存進共用記憶體 sp／sds；
+// 屏障一次；階段二：第 t 條執行緒對 i 串列累加 dv[j,t]＝Σ p·dao 與 dk[j,t]＝Σ ds·q（共用記憶體讀取＋全域讀取，無屏障）。
+// 屏障只有一次。限制：hd ≤ 64、T ≤ 256。
+var<workgroup> sp: array<f32, 256>;
+var<workgroup> sds: array<f32, 256>;
+var<workgroup> pv: array<f32, 64>;
+var<workgroup> pk: array<f32, 64>;
 // @kernel attn_bwd_kv
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
@@ -105,36 +111,47 @@ fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: ve
   let h = idx % u.H;
   let d = u.H * u.hd;
   let t = l.x;
-  let isAct = t < u.hd;
-  var dkv: f32 = 0.0;
-  var dvv: f32 = 0.0;
-  for (var i: u32 = j; i < u.T; i = i + 1u) {
-    var pdp: f32 = 0.0;
-    var pdi: f32 = 0.0;
-    if (isAct) {
-      let go = dao[i * d + h * u.hd + t];
-      pdp = go * v[j * d + h * u.hd + t];
-      pdi = go * ao[i * d + h * u.hd + t];
-    }
-    rdp[t] = pdp; rdi[t] = pdi;
-    workgroupBarrier();
-    for (var st: u32 = 32u; st > 0u; st = st >> 1u) {
-      if (t < st) { rdp[t] = rdp[t] + rdp[t + st]; rdi[t] = rdi[t] + rdi[t + st]; }
-      workgroupBarrier();
-    }
-    let dp = rdp[0];
-    let di = rdi[0];
-    workgroupBarrier();   // 讀完 rdp[0]／rdi[0] 才能進下一輪覆寫
-    let pij = pm[(h * u.T + i) * u.T + j];
-    let ds = pij * (dp - di) * u.sc;
-    if (isAct) {
-      dvv = dvv + pij * dao[i * d + h * u.hd + t];
-      dkv = dkv + ds * q[i * d + h * u.hd + t];
+  for (var i: u32 = t; i < u.T; i = i + 64u) {
+    if (i >= j) {
+      var di: f32 = 0.0;
+      var dp: f32 = 0.0;
+      for (var u2: u32 = 0u; u2 < u.hd; u2 = u2 + 1u) {
+        let go = dao[i * d + h * u.hd + u2];
+        di = di + go * ao[i * d + h * u.hd + u2];
+        dp = dp + go * v[j * d + h * u.hd + u2];
+      }
+      let p = pm[(h * u.T + i) * u.T + j];
+      sp[i] = p;
+      sds[i] = p * (dp - di) * u.sc;
+    } else {
+      sp[i] = 0.0;
+      sds[i] = 0.0;
     }
   }
-  if (isAct) {
-    dk[j * d + h * u.hd + t] = dkv;
-    dv[j * d + h * u.hd + t] = dvv;
+  workgroupBarrier();
+  // 階段二（分塊）：64 條執行緒 = nch 個 i 分塊 × hd 個分量（需 hd 為 64 的因數，即 8、16、32、64）；
+  // 每條執行緒只串列走 T/nch 個 i，再由第 t 分量的 nch 個部分和相加（一次屏障）。
+  let nch = 64u / u.hd;
+  let c = t / u.hd;
+  let tt = t % u.hd;
+  var dvv: f32 = 0.0;
+  var dkv: f32 = 0.0;
+  for (var i: u32 = c; i < u.T; i = i + nch) {
+    dvv = dvv + sp[i] * dao[i * d + h * u.hd + tt];
+    dkv = dkv + sds[i] * q[i * d + h * u.hd + tt];
+  }
+  pv[t] = dvv;
+  pk[t] = dkv;
+  workgroupBarrier();
+  if (t < u.hd) {
+    var av: f32 = 0.0;
+    var ak: f32 = 0.0;
+    for (var cc: u32 = 0u; cc < nch; cc = cc + 1u) {
+      av = av + pv[cc * u.hd + t];
+      ak = ak + pk[cc * u.hd + t];
+    }
+    dk[j * d + h * u.hd + t] = ak;
+    dv[j * d + h * u.hd + t] = av;
   }
 }
 `;
