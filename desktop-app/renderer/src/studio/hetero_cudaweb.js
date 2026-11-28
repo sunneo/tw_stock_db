@@ -33,7 +33,7 @@ function createCudawebResource(opts) {
       if (!r || !r.grads) throw new Error('fullParamStepDevice 沒有回傳梯度（applyUpdate:false 未生效）');
       const grads = {};
       for (const k of names) grads[k] = Float64Array.from(r.grads[k]);
-      return { loss: r.loss, n: seqs.length, grads, ms: Date.now() - t0 };
+      return { loss: r.loss, n: seqs.length, grads, ms: Date.now() - t0, computeMs: typeof r.ms === 'number' ? r.ms : null };
     },
   };
   return { id: o.id, kind: 'cudaweb', rate: typeof o.rate === 'number' && o.rate > 0 ? o.rate : null, impl };

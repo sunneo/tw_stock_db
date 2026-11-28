@@ -85,7 +85,7 @@ function createCpuPyResource(opts) {
         Buffer.from(all.buffer).set(gb);
         const grads = {}; off = 0;
         for (const [name, len] of layout) { grads[name] = all.slice(off, off + len); off += len; }
-        return { loss: r.loss, n: r.n, grads, ms: Date.now() - t0 };
+        return { loss: r.loss, n: r.n, grads, ms: Date.now() - t0, workerMs: r.ms };
       });
     },
     close() {
@@ -94,7 +94,7 @@ function createCpuPyResource(opts) {
       try { child.kill(); } catch (e) { /* 已結束 */ }
     },
   };
-  return init.then(() => ({ id: o.id, kind: 'cpu-py', rate: o.rate, impl }));
+  return init.then(() => ({ id: o.id, kind: 'cpu-py', rate: o.rate, layout, impl }));
 }
 
 module.exports = { createCpuPyResource, DEFAULT_SCRIPT };

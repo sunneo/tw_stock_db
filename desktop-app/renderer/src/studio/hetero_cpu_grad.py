@@ -16,6 +16,7 @@
 import json
 import os
 import sys
+import time
 from array import array
 
 import torch
@@ -75,6 +76,7 @@ def main():
                 T = cfg["T"]
                 pos = torch.arange(T).reshape(1, T)
                 am = torch.ones(1, T, dtype=dtype)
+                t0 = time.perf_counter()
                 model.zero_grad(set_to_none=True)
                 n = len(seqs)
                 loss_sum = 0.0
@@ -94,7 +96,7 @@ def main():
                     out.extend(v.double().tolist())
                 with open(req["grads_file"], "wb") as f:
                     f.write(out.tobytes())
-                write_reply({"id": rid, "ok": True, "loss": loss_sum / n, "n": n})
+                write_reply({"id": rid, "ok": True, "loss": loss_sum / n, "n": n, "ms": (time.perf_counter() - t0) * 1000.0})
             else:
                 raise RuntimeError("未知的 op：%s" % op)
         except Exception as e:  # 錯誤走協定回應，協調端會把這個資源標記離線
