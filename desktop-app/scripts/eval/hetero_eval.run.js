@@ -17,6 +17,8 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync, execSync } = require('child_process');
+// 全域量測鎖：取得後才開始任何量測（含 cpu-py 參考）；量前 10 秒的處理器使用率寫進結果
+const MEASURE = require('./measure_lock.js').acquireSync('hetero_eval.run（cudaweb-hetero 合作量測）');
 
 const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith('--' + k + '=')); return a ? a.slice(k.length + 3) : d; };
 const APP = path.join(__dirname, '..', '..');
@@ -153,6 +155,7 @@ function __load(name) {
 const BASE = 'http://127.0.0.1:${PORT}';
 const COMMIT = ${JSON.stringify(commit)};
 const TORCHT = ${JSON.stringify(TORCH_THREADS || 'default')};
+const MEASURE = ${JSON.stringify(MEASURE)};
 const SHAS = ${JSON.stringify({ 'gpu/nn_ops.js': sha(path.join(APP, 'renderer', 'src', 'gpu', 'nn_ops.js')), 'gpu/full_param_step_device.js': sha(path.join(APP, 'renderer', 'src', 'gpu', 'full_param_step_device.js')) })};
 const ROOF = ${JSON.stringify(Object.fromEntries(SIZES.map((z) => [z.name, roofline(z.cfg, { tflops: 0.3, gbs: 14 })])))};
 const FX = ${JSON.stringify(fx)};
@@ -199,7 +202,7 @@ const REF = await (await fetch(BASE + '/ref')).json();
 const g = await NN.getDevice(navigator);
 if (!g.dev) { log('no-device', { reason: g.reason || null }); await fetch(BASE + '/result', { method: 'POST', body: JSON.stringify({ error: 'no WebGPU device', reason: g.reason || null }) }); return; }
 let adapter = null; try { const ad = await navigator.gpu.requestAdapter(); adapter = ad ? { isFallbackAdapter: ad.isFallbackAdapter, info: ad.info ? { vendor: ad.info.vendor, architecture: ad.info.architecture, device: ad.info.device, description: ad.info.description } : null } : null; } catch (e) { adapter = { error: String(e) }; }
-const R = { commit: COMMIT, sha: SHAS, torchThreads: TORCHT, adapter, parity: {}, timing: {}, errors: [] };
+const R = { commit: COMMIT, sha: SHAS, torchThreads: TORCHT, measure: { lockHeld: MEASURE.held, lockDir: MEASURE.dir, cpuBeforeSample: MEASURE.cpuBefore }, adapter, parity: {}, timing: {}, errors: [] };
 
 // (1a) cudaweb 單一梯度 vs PyTorch fp64／f32（fixture，2 序列）
 const S0 = FS.makeResidentState(g.dev, FX.cfg, FX.init);

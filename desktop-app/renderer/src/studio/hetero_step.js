@@ -82,7 +82,7 @@ function createCoordinator(opts) {
     const N = seqs.length;
     const ph = { tSchedWall: 0, tAccum: 0, tNorm: 0, tAdamW: 0 };
     const tA0 = performance.now();
-    const acc = {}; names.forEach((k) => { acc[k] = new Float64Array(P[k].length); });
+    const good = [];   // 本步成功的資源結果：{ w: 序列數÷N, grads }（加權在合併時一次做完）
     let lossAcc = 0, counted = 0;
     const timing = [], failures = [];
     let pending = seqs.slice();
@@ -122,11 +122,8 @@ function createCoordinator(opts) {
             pending.push(...x.j.seqs);
             continue;
           }
-          const w = x.j.seqs.length / N;
-          const tA = performance.now();
-          for (const k of names) { const g = x.r.grads[k], a = acc[k]; for (let i = 0; i < a.length; i++) a[i] += w * g[i]; }
-          ph.tAccum += performance.now() - tA;
-          lossAcc += w * N * x.r.loss; counted += x.j.seqs.length;
+          good.push({ w: x.j.seqs.length / N, grads: x.r.grads });
+          lossAcc += x.j.seqs.length * x.r.loss; counted += x.j.seqs.length;
           timing.push({ id: x.j.id, n: x.j.seqs.length, ms: typeof x.r.ms === 'number' ? x.r.ms : x.wall });
         } else {
           const msg = String(x.err && x.err.message ? x.err.message : x.err);
@@ -138,26 +135,46 @@ function createCoordinator(opts) {
     }
     if (counted !== N) throw new Error('內部錯誤：計入序列 ' + counted + ' 與總數 ' + N + ' 不符');
 
-    // 加權平均梯度（依序列數；每個序列權重相同）→ 裁剪 → AdamW
-    const tN = performance.now();
-    let sq = 0;
-    for (const k of names) { const a = acc[k]; for (let i = 0; i < a.length; i++) sq += a[i] * a[i]; }
-    ph.tNorm = performance.now() - tN;
+    // 加權平均梯度（依序列數；每個序列權重相同）：一次掃描完成「加權合併＋範數平方」（取代逐資源的 pass）
+    const tAc = performance.now();
+    const acc = {}; let sq = 0;
+    for (const k of names) {
+      const len = P[k].length, a = new Float64Array(len), R0 = good.length;
+      // 先把每個資源的同名陣列與權重取出（迴圈內不查物件），常見的 1～3 個資源用展開的迴圈
+      const gs = good.map((r) => r.grads[k]), ws = good.map((r) => r.w);
+      if (R0 === 1) {
+        const g0 = gs[0], w0 = ws[0];
+        for (let i = 0; i < len; i++) { const sum = w0 * g0[i]; a[i] = sum; sq += sum * sum; }
+      } else if (R0 === 2) {
+        const g0 = gs[0], g1 = gs[1], w0 = ws[0], w1 = ws[1];
+        for (let i = 0; i < len; i++) { const sum = w0 * g0[i] + w1 * g1[i]; a[i] = sum; sq += sum * sum; }
+      } else {
+        for (let i = 0; i < len; i++) {
+          let sum = 0;
+          for (let r = 0; r < R0; r++) sum += ws[r] * gs[r][i];
+          a[i] = sum; sq += sum * sum;
+        }
+      }
+      acc[k] = a;
+    }
+    ph.tAccum = performance.now() - tAc;
+    ph.tNorm = 0;
     const tW = performance.now();
     const gradNorm = Math.sqrt(sq);
     const coef = (o.clip > 0 && gradNorm > 0) ? Math.min(1, o.clip / (gradNorm + 1e-6)) : 1;
     t += 1;
     const [b1, b2] = o.betas;
     const bc1 = 1 - Math.pow(b1, t), bc2 = 1 - Math.pow(b2, t);
+    // AdamW（與 torch.optim.AdamW 相同順序）；常數先算好，迴圈內不再讀物件屬性
+    const decay = 1 - o.lr * o.wd, stepSize = o.lr / bc1, invSqrtBc2 = 1 / Math.sqrt(bc2), eps = o.eps, c1 = 1 - b1, c2 = 1 - b2;
     for (const k of names) {
       const p = P[k], m = M[k], v = V[k], g = acc[k];
       for (let i = 0; i < p.length; i++) {
         const gi = g[i] * coef;
-        p[i] *= (1 - o.lr * o.wd);
-        m[i] = b1 * m[i] + (1 - b1) * gi;
-        v[i] = b2 * v[i] + (1 - b2) * gi * gi;
-        const denom = Math.sqrt(v[i]) / Math.sqrt(bc2) + o.eps;
-        p[i] -= (o.lr / bc1) * m[i] / denom;
+        const mi = b1 * m[i] + c1 * gi;
+        const vi = b2 * v[i] + c2 * gi * gi;
+        m[i] = mi; v[i] = vi;
+        p[i] = p[i] * decay - stepSize * mi / (Math.sqrt(vi) * invSqrtBc2 + eps);
       }
     }
 
