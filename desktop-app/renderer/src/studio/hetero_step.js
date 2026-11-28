@@ -167,6 +167,7 @@ function createCoordinator(opts) {
     return {
       loss: lossAcc / N,
       gradNorm,
+      grads: acc,            // 平均後、裁剪前的梯度（供對拍；acc 在這一步之後不再被改動）
       t,
       n: N,
       shares: Object.assign({}, shareMap),
