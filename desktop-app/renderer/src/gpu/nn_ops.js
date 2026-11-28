@@ -346,15 +346,21 @@ struct P { rows: u32, d: u32, eps: f32, pad: u32 }
 @group(0) @binding(1) var<storage, read> g: array<f32>;
 @group(0) @binding(2) var<storage, read_write> y: array<f32>;
 @group(0) @binding(3) var<uniform> p: P;
+// 一個工作群組一列（P1c-3）：64 執行緒跨步累加平方和、共用記憶體樹狀歸約，相鄰執行緒讀相鄰元素（合併存取）。
+// 舊版一執行緒一列：相鄰執行緒相隔 d 個元素，微基準掉到連續複製的 26%；L 只有 T=128 列時佔用率也低。
+var<workgroup> sh: array<f32, 64>;
 // @kernel rmsnorm
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let r = gid.x;
-  if (r >= p.rows) { return; }
+fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let r = w.x; let t = l.x;
+  if (r >= p.rows) { return; }   // 工作群組內所有執行緒的 r 相同，這裡的提前返回是一致的（不會跳過屏障）
   var s: f32 = 0.0;
-  for (var i: u32 = 0u; i < p.d; i = i + 1u) { let v = x[r * p.d + i]; s = s + v * v; }
-  let inv = 1.0 / sqrt(s / f32(p.d) + p.eps);
-  for (var i: u32 = 0u; i < p.d; i = i + 1u) { y[r * p.d + i] = x[r * p.d + i] * inv * g[i]; }
+  for (var i: u32 = t; i < p.d; i = i + 64u) { let v = x[r * p.d + i]; s = s + v * v; }
+  sh[t] = s;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) { if (t < st) { sh[t] = sh[t] + sh[t + st]; } workgroupBarrier(); }
+  let inv = 1.0 / sqrt(sh[0] / f32(p.d) + p.eps);
+  for (var i: u32 = t; i < p.d; i = i + 64u) { y[r * p.d + i] = x[r * p.d + i] * inv * g[i]; }
 }
 `;
 
@@ -393,7 +399,7 @@ async function rmsnorm(x, g, T, d, eps, opts) {
       new Float32Array(uni, 8, 1)[0] = eps;
       const outs = await runWgsl(dev, WGSL_RMSNORM,
         [{ data: xf, out: false }, { data: gf, out: false }, { data: new Float32Array(T * d), out: true }],
-        uni, Math.ceil(T / 64));
+        uni, T);   // 一列一個工作群組（見 WGSL_RMSNORM）
       return outs[0];
     },
     (gl) => glRun(gl, FS_RMSNORM, [xf, gf], { i: { uRows: T, uD: d }, f: { uEps: eps } }, T * d, ['uX', 'uG']),
@@ -1063,7 +1069,7 @@ function createBatch(dev) {
     rmsnorm(x, g, T, d, eps) {
       const y = storage(T * d);
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, d]); new Float32Array(uni, 8, 1)[0] = eps;
-      dispatch(WGSL_RMSNORM, [x.buf, g.buf, y], uni, Math.ceil(T / 64));
+      dispatch(WGSL_RMSNORM, [x.buf, g.buf, y], uni, T);   // 一列一個工作群組（見 WGSL_RMSNORM）
       return { buf: y, n: T * d };
     },
     softmax(x, rows, cols) {
