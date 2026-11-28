@@ -1,0 +1,503 @@
+{
+  "schema": 1,
+  "version": "606",
+  "publishedAt": "2026-11-28T19:08:17.489Z",
+  "notes": "cudaweb 訓練：梯度平方和批次化（sumsq_multi，派發 L 367→328、XL 541→483；L 93.5→88.3、XL 825→799 ms/步，產品檔四 fixture 對拍通過、續訓逐位相同）",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a",
+      "path": "v2/renderer/index.html"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "b3ce098ef750e0e1f152461abe0d8920",
+      "path": "v2/renderer/bootstrap.js"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "2a2b01341071f5dd56db74170edc4796",
+      "path": "v2/renderer/floating-assistant.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.js.000",
+          "md5": "03e3e6c4969573c08c175c0e8700a4e4",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.001",
+          "md5": "366262c91a735adb9fe224d70b6c7c14",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.002",
+          "md5": "41a233bdfacb1187856bd717cdcb4465",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.003",
+          "md5": "279087ce10c2671e73305bccb3248633",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.004",
+          "md5": "15ad568cc5c693473970c4f43a704ff4",
+          "size": 829704
+        }
+      ]
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "2a2b01341071f5dd56db74170edc4796",
+      "path": "v2/renderer/floating-assistant.min.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.min.js.000",
+          "md5": "03e3e6c4969573c08c175c0e8700a4e4",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.001",
+          "md5": "366262c91a735adb9fe224d70b6c7c14",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.002",
+          "md5": "41a233bdfacb1187856bd717cdcb4465",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.003",
+          "md5": "279087ce10c2671e73305bccb3248633",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.004",
+          "md5": "15ad568cc5c693473970c4f43a704ff4",
+          "size": 829704
+        }
+      ]
+    },
+    "renderer/vendor/jsnes/LICENSE": {
+      "md5": "a3154330b15994b9ca951fd9da724416",
+      "path": "v2/renderer/vendor/jsnes/LICENSE"
+    },
+    "renderer/vendor/jsnes/SHA256SUMS.txt": {
+      "md5": "49e1270ebb2357ea157785168026b19d",
+      "path": "v2/renderer/vendor/jsnes/SHA256SUMS.txt"
+    },
+    "renderer/vendor/jsnes/VERSION.txt": {
+      "md5": "ad478b6088b7f84e9f8491274ebef2fa",
+      "path": "v2/renderer/vendor/jsnes/VERSION.txt"
+    },
+    "renderer/vendor/jsnes/build-umd.cjs": {
+      "md5": "d395273c298e58d45480226edaed14b6",
+      "path": "v2/renderer/vendor/jsnes/build-umd.cjs"
+    },
+    "renderer/vendor/jsnes/jsnes.umd.cjs": {
+      "md5": "6c6ef70d8ffa252e188959268624944d",
+      "path": "v2/renderer/vendor/jsnes/jsnes.umd.cjs"
+    },
+    "renderer/vendor/jsnes/package.json": {
+      "md5": "d0707362e90f00edd12435e9d3b9d71c",
+      "path": "v2/renderer/vendor/jsnes/package.json"
+    },
+    "renderer/vendor/jsnes/src/browser.d.ts": {
+      "md5": "f7a1eceaabe858a83767ce0e3ac5d22c",
+      "path": "v2/renderer/vendor/jsnes/src/browser.d.ts"
+    },
+    "renderer/vendor/jsnes/src/browser/frame-timer.js": {
+      "md5": "89aca3c613323b589ba6f24e89545cf9",
+      "path": "v2/renderer/vendor/jsnes/src/browser/frame-timer.js"
+    },
+    "renderer/vendor/jsnes/src/browser/gamepad.js": {
+      "md5": "b5239a41009d7a839f570a64f4f9cecf",
+      "path": "v2/renderer/vendor/jsnes/src/browser/gamepad.js"
+    },
+    "renderer/vendor/jsnes/src/browser/index.js": {
+      "md5": "19775a1a8ac7af9b1a414121a84652e8",
+      "path": "v2/renderer/vendor/jsnes/src/browser/index.js"
+    },
+    "renderer/vendor/jsnes/src/browser/keyboard.js": {
+      "md5": "25ca04bb0a7ef8e4626998c64736f440",
+      "path": "v2/renderer/vendor/jsnes/src/browser/keyboard.js"
+    },
+    "renderer/vendor/jsnes/src/browser/screen.js": {
+      "md5": "c2ab729b1e1d78405a293b996f05a727",
+      "path": "v2/renderer/vendor/jsnes/src/browser/screen.js"
+    },
+    "renderer/vendor/jsnes/src/browser/speakers.js": {
+      "md5": "cc972955e734f17ba554356342eda31e",
+      "path": "v2/renderer/vendor/jsnes/src/browser/speakers.js"
+    },
+    "renderer/vendor/jsnes/src/controller.d.ts": {
+      "md5": "1fe67c5cc7f1beb44eafcfe4ebee0589",
+      "path": "v2/renderer/vendor/jsnes/src/controller.d.ts"
+    },
+    "renderer/vendor/jsnes/src/controller.js": {
+      "md5": "e2ca5afe2580fb9989a797e639e9ed41",
+      "path": "v2/renderer/vendor/jsnes/src/controller.js"
+    },
+    "renderer/vendor/jsnes/src/cpu.js": {
+      "md5": "6e7ec579ef1709e91a4082372315cdf3",
+      "path": "v2/renderer/vendor/jsnes/src/cpu.js"
+    },
+    "renderer/vendor/jsnes/src/gamegenie.d.ts": {
+      "md5": "1ea1ea89d485b80c227d0afa34713c79",
+      "path": "v2/renderer/vendor/jsnes/src/gamegenie.d.ts"
+    },
+    "renderer/vendor/jsnes/src/gamegenie.js": {
+      "md5": "6e100e84b70467b08d91e329686a8e5d",
+      "path": "v2/renderer/vendor/jsnes/src/gamegenie.js"
+    },
+    "renderer/vendor/jsnes/src/index.js": {
+      "md5": "00047f7d21cec6a7622c5731b0d47867",
+      "path": "v2/renderer/vendor/jsnes/src/index.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/index.js": {
+      "md5": "1338271dce89ed7e42bd939765099146",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/index.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper0.js": {
+      "md5": "5214a730eecfa51d25a4e88e79a49792",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper0.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper1.js": {
+      "md5": "0a9f1b0791cfe6ffc10de0a6bed17438",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper1.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper11.js": {
+      "md5": "581c7472c7164cd7d9687278d35cdaea",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper11.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper118.js": {
+      "md5": "3bb06ec573ac4df94e17aed3fe9ef29f",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper118.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper119.js": {
+      "md5": "eae5f0b9db1b2f4e5b8b91c27d91a9de",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper119.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper140.js": {
+      "md5": "d999746d665ea823df7c104d67ea764c",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper140.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper180.js": {
+      "md5": "c4de9891bc74de06d392bf4f5c402b77",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper180.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper2.js": {
+      "md5": "eb38e5184ede291d9a59f1f38ed57948",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper2.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper240.js": {
+      "md5": "a6eb5caa5328e2a95cbc8a5eb4013cb6",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper240.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper241.js": {
+      "md5": "f6a55b2589070e9102037e2bea17de8a",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper241.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper3.js": {
+      "md5": "32b0cb226eb6da17710d62a1371170f4",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper3.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper34.js": {
+      "md5": "490bc02203102131903f29d1cc4e0b2e",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper34.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper38.js": {
+      "md5": "ff649f0b3821c79887a4a3ef3391b9a8",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper38.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper4.js": {
+      "md5": "88b7333b2456cad11e4e1885dd259fc3",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper4.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper5.js": {
+      "md5": "3108d1644f22ac68b66ed594345b076f",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper5.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper66.js": {
+      "md5": "44d64801829f73e0f6d611724ba4de60",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper66.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper7.js": {
+      "md5": "09025cc7b1bd4fb86db278753a2ebea0",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper7.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper71.js": {
+      "md5": "dc4c38947c14e98bfbdd519f00b8b83a",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper71.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper79.js": {
+      "md5": "487cddce19fe78593b81f886c9678484",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper79.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper9.js": {
+      "md5": "dd4b47981da109defad362a2112383f9",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper9.js"
+    },
+    "renderer/vendor/jsnes/src/mappers/mapper94.js": {
+      "md5": "346ba2f5999def2e63bf56092fb252f5",
+      "path": "v2/renderer/vendor/jsnes/src/mappers/mapper94.js"
+    },
+    "renderer/vendor/jsnes/src/nes.d.ts": {
+      "md5": "0a74ea0d5032f586db8c825660ffd0aa",
+      "path": "v2/renderer/vendor/jsnes/src/nes.d.ts"
+    },
+    "renderer/vendor/jsnes/src/nes.js": {
+      "md5": "8cf84cd2de030aeebb92abff69c3f2d1",
+      "path": "v2/renderer/vendor/jsnes/src/nes.js"
+    },
+    "renderer/vendor/jsnes/src/papu/channel-dm.js": {
+      "md5": "2f2c0799de86939f7e63e24e0af2da8e",
+      "path": "v2/renderer/vendor/jsnes/src/papu/channel-dm.js"
+    },
+    "renderer/vendor/jsnes/src/papu/channel-noise.js": {
+      "md5": "b85d1b9d0a38dcecf0c39bcaa022b858",
+      "path": "v2/renderer/vendor/jsnes/src/papu/channel-noise.js"
+    },
+    "renderer/vendor/jsnes/src/papu/channel-square.js": {
+      "md5": "0f5de296e6bad2427f714fd44da01811",
+      "path": "v2/renderer/vendor/jsnes/src/papu/channel-square.js"
+    },
+    "renderer/vendor/jsnes/src/papu/channel-triangle.js": {
+      "md5": "fb6dbd54962688d5f63eeb4d0a4b40f5",
+      "path": "v2/renderer/vendor/jsnes/src/papu/channel-triangle.js"
+    },
+    "renderer/vendor/jsnes/src/papu/index.js": {
+      "md5": "a62a4513a272b1dae75100085b9c65cc",
+      "path": "v2/renderer/vendor/jsnes/src/papu/index.js"
+    },
+    "renderer/vendor/jsnes/src/ppu/index.js": {
+      "md5": "6ab309d796479ff790c4106eb0e5469d",
+      "path": "v2/renderer/vendor/jsnes/src/ppu/index.js"
+    },
+    "renderer/vendor/jsnes/src/ppu/nametable.js": {
+      "md5": "986d893adffbc23d2d0e3d8d880013ed",
+      "path": "v2/renderer/vendor/jsnes/src/ppu/nametable.js"
+    },
+    "renderer/vendor/jsnes/src/ppu/palette-table.js": {
+      "md5": "65833c96b7a53e21718b18100d9cef86",
+      "path": "v2/renderer/vendor/jsnes/src/ppu/palette-table.js"
+    },
+    "renderer/vendor/jsnes/src/rom.js": {
+      "md5": "ec436ca299abc34567bf1929a812e1aa",
+      "path": "v2/renderer/vendor/jsnes/src/rom.js"
+    },
+    "renderer/vendor/jsnes/src/tile.js": {
+      "md5": "bc14a8892c6331224ebabb5b7e33c633",
+      "path": "v2/renderer/vendor/jsnes/src/tile.js"
+    },
+    "renderer/vendor/jsnes/src/utils.js": {
+      "md5": "8f8039312052acc08771639caff4d3f0",
+      "path": "v2/renderer/vendor/jsnes/src/utils.js"
+    },
+    "renderer/vendor/jspce/LICENSE": {
+      "md5": "9fc8dbb7d1891feb105584c29d95f913",
+      "path": "v2/renderer/vendor/jspce/LICENSE"
+    },
+    "renderer/vendor/jspce/VERSION.txt": {
+      "md5": "bc804dc01734fb53bec640afcb2ca253",
+      "path": "v2/renderer/vendor/jspce/VERSION.txt"
+    },
+    "renderer/vendor/midigenai/LICENSE": {
+      "md5": "99eb9c75e3dddbe23104e4cb8e5d8168",
+      "path": "v2/renderer/vendor/midigenai/LICENSE"
+    },
+    "renderer/vendor/midigenai/attributes.mjs": {
+      "md5": "1596c456f30ac128b844544d0ddcc47e",
+      "path": "v2/renderer/vendor/midigenai/attributes.mjs"
+    },
+    "renderer/vendor/midigenai/generator.mjs": {
+      "md5": "09f3c65bda0308b5f4998301edda2c8c",
+      "path": "v2/renderer/vendor/midigenai/generator.mjs"
+    },
+    "renderer/vendor/midigenai/midi.mjs": {
+      "md5": "87bbec17c769aec7008f52b1f05016e6",
+      "path": "v2/renderer/vendor/midigenai/midi.mjs"
+    },
+    "renderer/vendor/midigenai/midigen-prompt.mjs": {
+      "md5": "a2fa11dbfdbc0716a92d43c2f5889d2a",
+      "path": "v2/renderer/vendor/midigenai/midigen-prompt.mjs"
+    },
+    "renderer/vendor/midigenai/midigen-web.mjs": {
+      "md5": "484d48a9a7667560dd7a32d7cf2bf0cc",
+      "path": "v2/renderer/vendor/midigenai/midigen-web.mjs"
+    },
+    "renderer/vendor/midigenai/tasks.mjs": {
+      "md5": "46a0dd78663beda7e1f30ca79c18a73e",
+      "path": "v2/renderer/vendor/midigenai/tasks.mjs"
+    },
+    "renderer/vendor/midigenai/tokenizer.mjs": {
+      "md5": "9393ba9b93552b63a74f21091c961f40",
+      "path": "v2/renderer/vendor/midigenai/tokenizer.mjs"
+    },
+    "renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt": {
+      "md5": "3b83ef96387f14655fc854ddc3c6bd57",
+      "path": "v2/renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt"
+    },
+    "renderer/vendor/spessasynth/spessasynth-lib.js": {
+      "md5": "bace1fd56e9bfee4d4428922bff4fd1d",
+      "path": "v2/renderer/vendor/spessasynth/spessasynth-lib.js"
+    },
+    "renderer/vendor/spessasynth/spessasynth-processor.min.js": {
+      "md5": "46e4dcfc964128aa7bdf41509df4aba8",
+      "path": "v2/renderer/vendor/spessasynth/spessasynth-processor.min.js"
+    },
+    "renderer/vendor/three/3MFLoader.js": {
+      "md5": "d00d9a65406125b59005ae45743a62bd",
+      "path": "v2/renderer/vendor/three/3MFLoader.js"
+    },
+    "renderer/vendor/three/FBXLoader.js": {
+      "md5": "1f41c7848bef78d6cc2db7c5f1091f07",
+      "path": "v2/renderer/vendor/three/FBXLoader.js"
+    },
+    "renderer/vendor/three/LICENSE": {
+      "md5": "39aa4e61c1aaad915b3ca57ddbb559f4",
+      "path": "v2/renderer/vendor/three/LICENSE"
+    },
+    "renderer/vendor/three/OBJLoader.js": {
+      "md5": "a0d3f6d1bfcf2fdbf6b169e6bb9d1024",
+      "path": "v2/renderer/vendor/three/OBJLoader.js"
+    },
+    "renderer/vendor/three/OrbitControls.js": {
+      "md5": "98d0f30d2f372eb8ddd748a23a6763c8",
+      "path": "v2/renderer/vendor/three/OrbitControls.js"
+    },
+    "renderer/vendor/three/SHA256SUMS.txt": {
+      "md5": "81c5b75f4c2018bd6b3d41ede2165721",
+      "path": "v2/renderer/vendor/three/SHA256SUMS.txt"
+    },
+    "renderer/vendor/three/STLLoader.js": {
+      "md5": "52a5d333f21a0f81081e576f7f092489",
+      "path": "v2/renderer/vendor/three/STLLoader.js"
+    },
+    "renderer/vendor/three/fflate.min.js": {
+      "md5": "179550d75b31328ce07fcee0fefbd2d6",
+      "path": "v2/renderer/vendor/three/fflate.min.js"
+    },
+    "renderer/vendor/three/three.min.js": {
+      "md5": "eb8549863a97355411c3259a3f93b8e1",
+      "path": "v2/renderer/vendor/three/three.min.js"
+    },
+    "renderer/vendor/tree-sitter/tree-sitter-python.wasm": {
+      "md5": "555402f5dda8cb338d3ca075cd6fb26d",
+      "path": "v2/renderer/vendor/tree-sitter/tree-sitter-python.wasm"
+    },
+    "renderer/vendor/tree-sitter/tree-sitter.js": {
+      "md5": "185985035017aa48b0a2e5148890b0b1",
+      "path": "v2/renderer/vendor/tree-sitter/tree-sitter.js"
+    },
+    "renderer/vendor/tree-sitter/tree-sitter.wasm": {
+      "md5": "cd659c6d126e5e3635e7da4b138afb72",
+      "path": "v2/renderer/vendor/tree-sitter/tree-sitter.wasm"
+    },
+    "browser-control-server.js": {
+      "md5": "8babb3ebf7c056f0d1e88b41409b34ed"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "ci-fetch.js": {
+      "md5": "959c90918baaf57e599069dc03bea526"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-edit.js": {
+      "md5": "d74fe48f9bc94a1af740f1bcfa1fdab8"
+    },
+    "coding-tools.js": {
+      "md5": "239cbb92b2a1ec4eb3070eeeed4b4e6e"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "computer-png.js": {
+      "md5": "1ba4b721fc9cb3d3bb02920d2dfc6fee"
+    },
+    "computer-remote.js": {
+      "md5": "c2eec722c13752a87183ad24d6dcec83"
+    },
+    "computer-use-atspi.js": {
+      "md5": "853ebd07fc29d418d68878aedc21609d"
+    },
+    "computer-use-elements.js": {
+      "md5": "7d1c69f625380f0ca3d1da2404c2bba9"
+    },
+    "computer-use-ipc.js": {
+      "md5": "f9e4a3e401c7a14008b4f196484ddeab",
+      "path": "v2/computer-use-ipc.js"
+    },
+    "computer-use-linux-parse.js": {
+      "md5": "3043510974d92d0e0dce90a41ab21d6b"
+    },
+    "computer-use-linux.js": {
+      "md5": "8bfe40c9e328e424a4a5d318ed2689a3"
+    },
+    "computer-use-safety.js": {
+      "md5": "e4692e079b30c1d241e43ce1df996b97"
+    },
+    "computer-use-uia.js": {
+      "md5": "51e1c0b2f744866be4703af8799c2b42"
+    },
+    "computer-use-win-cs.js": {
+      "md5": "a37a312d0224a2f57eaf12782233ebdf"
+    },
+    "computer-use-windows.js": {
+      "md5": "973156674025724e247045d8bcfa07b7"
+    },
+    "computer-use.js": {
+      "md5": "c3921fbbd2cb159988fe0da0877c0fe1"
+    },
+    "computer-ws.js": {
+      "md5": "1b25bb55f5f1334fa5f041408f3009af"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    },
+    "judge-core.js": {
+      "md5": "94f3bdfd43f2da943628bdec06427029",
+      "path": "v2/judge-core.js"
+    },
+    "judge-runner.js": {
+      "md5": "27137af1c8e9d847e8b2229e81ad0ca4",
+      "path": "v2/judge-runner.js"
+    },
+    "knowledge-native.js": {
+      "md5": "c350c62c2a65c8f4d11ff68299e4ad94",
+      "path": "v2/knowledge-native.js"
+    },
+    "local-proxy.js": {
+      "md5": "158f13c8135c1dc736efe6d8aebb5b05",
+      "path": "v2/local-proxy.js"
+    },
+    "lora-slot-build.js": {
+      "md5": "0f12371323819fcbc01c6ba5c8f6daa9",
+      "path": "v2/lora-slot-build.js"
+    },
+    "main-ext.js": {
+      "md5": "e11e7b227b7e8c07cca45c2810132a0f",
+      "path": "v2/main-ext.js"
+    },
+    "native-slot-model.js": {
+      "md5": "1d5d913233faf73df77f69c22b6e0c4a",
+      "path": "v2/native-slot-model.js"
+    },
+    "rfb-client.js": {
+      "md5": "1ad7d8a545166f0e965d3f5008b94ccb"
+    },
+    "rfb-codec.js": {
+      "md5": "08f2ada7bc710642e7d29fbff63ee4f1"
+    },
+    "sqlite-engine.js": {
+      "md5": "11018c00a80b760bb3fccdf978adfc16",
+      "path": "v2/sqlite-engine.js"
+    },
+    "preload.js": {
+      "md5": "641a55c8bb54c784217c11736ff64b02",
+      "path": "v2/preload.js"
+    }
+  }
+}

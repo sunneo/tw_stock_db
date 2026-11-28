@@ -1,0 +1,4 @@
+upstream: https://github.com/bfirsh/jsnes
+commit: 1ead3bebca6c8eb6edb270a5b01561b1827814ee
+license: Apache-2.0 (LICENSE in this folder)
+copied: src/ only (no tests, no examples)
