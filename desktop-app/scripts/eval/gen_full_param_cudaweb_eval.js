@@ -70,12 +70,13 @@ const g = await NN.getDevice(navigator);
 R.env = { webgpu: !!(navigator && navigator.gpu), device: !!g.dev, reason: g.reason || null, ua: navigator.userAgent.slice(0, 120) };
 if (!g.dev) { R.note = 'WebGPU 裝置不可用，本次不是 GPU 結果'; return R; }
 const rt = RT.createRuntime({ nn: NN, navigator, mm: MM });
+const gops = T.gpuOpsFrom(NN, navigator);
 for (const name of Object.keys(FX)) {
   const fx = FX[name];
   const be = T.cudawebBackend(rt);
   const m = T.fromInit(fx.cfg, fx.init);
   const st = T.adamInit(m);
-  const opt = { lr: fx.lr, wd: fx.wd, clip: fx.clip, backend: be };
+  const opt = { lr: fx.lr, wd: fx.wd, clip: fx.clip, backend: be, ops: gops };
   let maxLoss = 0, maxGn = 0; const per = [];
   const t1 = performance.now();
   for (let s = 0; s < fx.steps; s++) {
@@ -84,8 +85,37 @@ for (const name of Object.keys(FX)) {
     maxLoss = Math.max(maxLoss, dl); maxGn = Math.max(maxGn, dg);
     per.push(dl);
   }
-  R.fixtures[name] = { maxLossAbsDiff: maxLoss, maxGradNormAbsDiff: maxGn, steps: fx.steps, layer: be.layer, matmulCalls: be.calls, msTotal: Math.round(performance.now() - t1), lossDiffByStep: per.map((x) => +x.toExponential(2)) };
+  R.fixtures[name] = { maxLossAbsDiff: maxLoss, maxGradNormAbsDiff: maxGn, steps: fx.steps, matmulLayer: be.layer, matmulCalls: be.calls, elementwiseOnGpu: 'forward+adamw（rmsnorm/softmax/silu/rope/adamw）；backward 逐元素仍在 CPU', msTotal: Math.round(performance.now() - t1), lossDiffByStep: per.map((x) => +x.toExponential(2)) };
 }
+// ---- 速度（不是對拍）：較大設定、隨機初始化、暖機 1 步後量 3 步；拆解 矩陣乘（GPU 呼叫的牆鐘）、GPU 逐元素、其餘 ----
+const BIG = { V: 2048, d: 256, L: 4, H: 8, kvH: 4, F: 512, T: 128, qkNorm: true };
+const hdB = BIG.d / BIG.H, kdB = BIG.kvH * hdB;
+let seedB = 7; const rndB = () => { seedB = (seedB * 1103515245 + 12345) % 2147483648; return seedB / 2147483648 - 0.5; };
+const mkB = (n, sc) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = rndB() * sc; return a; };
+const ones = (n) => new Float64Array(n).fill(1);
+const bigInit = { emb: mkB(BIG.V * BIG.d, 0.1), nf: ones(BIG.d), layers: [] };
+for (let l = 0; l < BIG.L; l++) bigInit.layers.push({ n1: ones(BIG.d), n2: ones(BIG.d), Wq: mkB(BIG.d * BIG.d, 0.06), Wk: mkB(BIG.d * kdB, 0.06), Wv: mkB(BIG.d * kdB, 0.06), Wo: mkB(BIG.d * BIG.d, 0.06), Wg: mkB(BIG.d * BIG.F, 0.06), Wu: mkB(BIG.d * BIG.F, 0.06), Wd: mkB(BIG.F * BIG.d, 0.06), qn: ones(hdB), kn: ones(hdB) });
+const bigTok = Array.from({ length: BIG.T + 1 }, () => Math.floor((rndB() + 0.5) * BIG.V));
+const timed = (fn, acc) => async (...a) => { const t = performance.now(); try { return await fn(...a); } finally { acc.ms += performance.now() - t; acc.n++; } };
+const speedRun = async (label, be, ops) => {
+  const accM = { ms: 0, n: 0 }, accO = { ms: 0, n: 0 };
+  const be2 = Object.assign({}, be, { matmul: timed(be.matmul, accM) });
+  const ops2 = {}; for (const k of Object.keys(ops)) ops2[k] = timed(ops[k], accO);
+  const m = T.fromInit(BIG, bigInit); const st = T.adamInit(m);
+  const o = { lr: 1e-3, wd: 0.01, clip: 1.0, backend: be2, ops: ops2 };
+  await T.trainStep(m, bigTok, st, o);            // 暖機
+  accM.ms = 0; accM.n = 0; accO.ms = 0; accO.n = 0;
+  const t0 = performance.now(); const losses = [];
+  for (let s = 0; s < 3; s++) losses.push((await T.trainStep(m, bigTok, st, o)).loss);
+  const total = performance.now() - t0;
+  return { label, msPerStep: +(total / 3).toFixed(1), matmulMsPerStep: +(accM.ms / 3).toFixed(1), matmulCallsPerStep: accM.n / 3, gpuElemMsPerStep: +(accO.ms / 3).toFixed(1), gpuElemCallsPerStep: accO.n / 3, otherMsPerStep: +((total - accM.ms - accO.ms) / 3).toFixed(1), losses };
+};
+R.speed = { config: BIG, tokensPerStep: BIG.T };
+R.speed.gpu = await speedRun('cudaweb（矩陣乘＋逐元素 GPU）', T.cudawebBackend(rt), gops);
+const cpuAdamw = async (p, g, m, v, t, lr, b1, b2, eps, wd) => { const P2 = new Float64Array(p.length), M2 = new Float64Array(p.length), V2 = new Float64Array(p.length); const c1 = 1 - Math.pow(b1, t), c2 = 1 - Math.pow(b2, t); for (let i = 0; i < p.length; i++) { M2[i] = b1 * m[i] + (1 - b1) * g[i]; V2[i] = b2 * v[i] + (1 - b2) * g[i] * g[i]; P2[i] = p[i] - lr * wd * p[i] - lr * (M2[i] / c1) / (Math.sqrt(V2[i] / c2) + eps); } return { p: P2, m: M2, v: V2 }; };
+const cpuOpsFull = Object.assign({}, T.CPU_OPS, { adamw: cpuAdamw });
+R.speed.cpuJs = await speedRun('純 JS（CPU，f64）', T.cpuBackend(), cpuOpsFull);
+
 R.msAll = Math.round(performance.now() - t0);
 return R;
 `;

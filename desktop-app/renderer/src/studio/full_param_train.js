@@ -106,7 +106,47 @@ function zeroGrads(m) {
 }
 
 // 前向＋損失：tokens 長度 T+1，輸入 tokens[0..T)、目標 tokens[1..T]。回傳 { loss, cache }。
-async function forward(m, tokens, be) {
+// ---- 運算介面（ops）：CPU 預設；cudaweb 用 gpuOps（nn_ops 的 WGSL 核心）----
+// rmsOp 回傳 { y, inv, x }：y 由 ops 算（可能在 GPU），inv 在 CPU 算（反向要用，且每列只一次平方和）。
+function invOf(x, rows, width) {
+  const inv = new Float64Array(rows);
+  for (let t = 0; t < rows; t++) { let s = 0; for (let i = 0; i < width; i++) s += x[t * width + i] * x[t * width + i]; inv[t] = 1 / Math.sqrt(s / width + EPS); }
+  return inv;
+}
+async function rmsOp(O, x, g, rows, width) {
+  const y = Float64Array.from(await O.rmsnorm(x, g, rows, width));
+  return { y, inv: invOf(x, rows, width), x };
+}
+const CPU_OPS = {
+  rmsnorm: async (x, g, rows, width) => rmsFwd(x, g, rows, width).y,
+  softmax: async (x, rows, cols) => {
+    const out = new Float64Array(x.length);
+    for (let r = 0; r < rows; r++) {
+      let mx = -Infinity; for (let j = 0; j < cols; j++) if (x[r * cols + j] > mx) mx = x[r * cols + j];
+      let s = 0; for (let j = 0; j < cols; j++) { out[r * cols + j] = Math.exp(x[r * cols + j] - mx); s += out[r * cols + j]; }
+      for (let j = 0; j < cols; j++) out[r * cols + j] /= s;
+    }
+    return out;
+  },
+  silu: async (x) => { const y = new Float64Array(x.length); for (let i = 0; i < x.length; i++) y[i] = x[i] * sig(x[i]); return y; },
+  rope: async (x, T, H, hd, dir) => rope(x, T, H, hd, dir),
+};
+// GPU 運算（nn_ops）：RMSNorm、softmax、SiLU、AdamW 直接用 nn_ops 的 trainerOps（T1 WGSL → T3 → cpu-js 三層降級）。
+// RoPE：nn_ops.rope 是交錯成對，本模組是 rotate-half；兩者用純資料排列（無算術）互換，結果等價。
+function gpuOpsFrom(NN, navigator) {
+  const base = NN.trainerOps({ navigator });
+  const toPairs = (x, T, H, hd) => { const y = new Float64Array(x.length), half = hd / 2; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) { const o = t * H * hd + h * hd; for (let i = 0; i < half; i++) { y[o + 2 * i] = x[o + i]; y[o + 2 * i + 1] = x[o + i + half]; } } return y; };
+  const fromPairs = (z, T, H, hd) => { const y = new Float64Array(z.length), half = hd / 2; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) { const o = t * H * hd + h * hd; for (let i = 0; i < half; i++) { y[o + i] = z[o + 2 * i]; y[o + i + half] = z[o + 2 * i + 1]; } } return y; };
+  return {
+    rmsnorm: async (x, g, rows, width) => base.rmsnorm(Float32Array.from(x), Float32Array.from(g), rows, width, EPS),
+    softmax: async (x, rows, cols) => base.softmax(Float32Array.from(x), rows, cols),
+    silu: async (x) => base.silu(Float32Array.from(x)),
+    rope: async (x, T, H, hd, dir) => fromPairs(Float64Array.from(await base.rope(Float32Array.from(toPairs(x, T, H, hd)), T, H, hd, dir)), T, H, hd),
+    adamw: async (p, g, m, v, t, lr, b1, b2, eps, wd) => base.adamw(Float32Array.from(p), Float32Array.from(g), Float32Array.from(m), Float32Array.from(v), t, lr, b1, b2, eps, wd),
+  };
+}
+async function forward(m, tokens, be, ops) {
+  const O = ops || CPU_OPS;
   const { H, d, hd, kvH, kd, F, V, qkNorm } = dims(m.cfg); const T = tokens.length - 1;
   const rep = H / kvH;
   const inp = tokens.slice(0, T), tgt = tokens.slice(1);
@@ -116,38 +156,43 @@ async function forward(m, tokens, be) {
   const sc = 1 / Math.sqrt(hd);
   for (let l = 0; l < m.layers.length; l++) {
     const P = m.layers[l], c = { h0: h };
-    const n1 = rmsFwd(h, P.n1, T, d); c.n1 = n1;
+    const n1 = await rmsOp(O, h, P.n1, T, d); c.n1 = n1;
     let q0 = await mm(be, n1.y, P.Wq, T, d, d), k0 = await mm(be, n1.y, P.Wk, T, d, kd), v = await mm(be, n1.y, P.Wv, T, d, kd);
     // qk-norm：每個頭（每列 hd 維）獨立做 RMSNorm，增益 qn／kn 寬度 hd（與 llm_scratch 行 249 相同，在 RoPE 之前）
     if (qkNorm) {
-      c.qn = rmsFwd(q0.slice(), P.qn, T * H, hd); q0 = c.qn.y;
-      c.kn = rmsFwd(k0.slice(), P.kn, T * kvH, hd); k0 = c.kn.y;
+      c.qn = await rmsOp(O, q0.slice(), P.qn, T * H, hd); q0 = c.qn.y;
+      c.kn = await rmsOp(O, k0.slice(), P.kn, T * kvH, hd); k0 = c.kn.y;
     }
-    const q = rope(q0, T, H, hd, 1), k = rope(k0, T, kvH, hd, 1);
-    // 因果注意力：query 頭 hh 用 kv 頭 floor(hh/rep)
-    const Pm = new Float64Array(H * T * T), ao = new Float64Array(T * d);
+    const q = await O.rope(q0, T, H, hd, 1), k = await O.rope(k0, T, kvH, hd, 1);
+    // 因果注意力：query 頭 hh 用 kv 頭 floor(hh/rep)。分數（上三角為 −1e30）→ ops.softmax → 加權和
+    const S = new Float64Array(H * T * T), ao = new Float64Array(T * d);
     for (let hh = 0; hh < H; hh++) {
       const kh = Math.floor(hh / rep);
-      for (let i = 0; i < T; i++) {
-        const row = (hh * T + i) * T; let mx = -Infinity;
-        for (let j = 0; j <= i; j++) { let z = 0; for (let u = 0; u < hd; u++) z += q[i * d + hh * hd + u] * k[j * kd + kh * hd + u]; Pm[row + j] = z * sc; if (Pm[row + j] > mx) mx = Pm[row + j]; }
-        let s = 0; for (let j = 0; j <= i; j++) { Pm[row + j] = Math.exp(Pm[row + j] - mx); s += Pm[row + j]; }
-        for (let j = 0; j <= i; j++) Pm[row + j] /= s;
-        for (let u = 0; u < hd; u++) { let z = 0; for (let j = 0; j <= i; j++) z += Pm[row + j] * v[j * kd + kh * hd + u]; ao[i * d + hh * hd + u] = z; }
+      for (let i = 0; i < T; i++) for (let j = 0; j < T; j++) {
+        const idx = (hh * T + i) * T + j;
+        if (j > i) { S[idx] = -1e30; continue; }
+        let z = 0; for (let u = 0; u < hd; u++) z += q[i * d + hh * hd + u] * k[j * kd + kh * hd + u];
+        S[idx] = z * sc;
       }
+    }
+    const Pm = Float64Array.from(await O.softmax(S, H * T, T));
+    for (let hh = 0; hh < H; hh++) for (let i = 0; i < T; i++) {
+      const row = (hh * T + i) * T;
+      for (let u = 0; u < hd; u++) { let z = 0; for (let j = 0; j <= i; j++) z += Pm[row + j] * v[j * kd + (Math.floor(hh / rep)) * hd + u]; ao[i * d + hh * hd + u] = z; }
     }
     c.q = q; c.k = k; c.v = v; c.P = Pm; c.ao = ao;
     const o = await mm(be, ao, P.Wo, T, d, d);
     const h1 = new Float64Array(T * d); for (let i = 0; i < h1.length; i++) h1[i] = h[i] + o[i]; c.h1 = h1;
-    const n2 = rmsFwd(h1, P.n2, T, d); c.n2 = n2;
+    const n2 = await rmsOp(O, h1, P.n2, T, d); c.n2 = n2;
     const g = await mm(be, n2.y, P.Wg, T, d, F), u = await mm(be, n2.y, P.Wu, T, d, F);
-    const a = new Float64Array(T * F); for (let i = 0; i < a.length; i++) a[i] = g[i] * sig(g[i]) * u[i];
+    const sg = Float64Array.from(await O.silu(g));
+    const a = new Float64Array(T * F); for (let i = 0; i < a.length; i++) a[i] = sg[i] * u[i];
     const dn = await mm(be, a, P.Wd, T, F, d);
     c.g = g; c.u = u; c.a = a;
     const h2 = new Float64Array(T * d); for (let i = 0; i < h2.length; i++) h2[i] = h1[i] + dn[i];
     h = h2; C.push(c);
   }
-  const nf = rmsFwd(h, m.nf, T, d);
+  const nf = await rmsOp(O, h, m.nf, T, d);
   const embT = tr(m.emb, V, d);
   const logits = await mm(be, nf.y, embT, T, d, V);
   // 交叉熵（平均）與 dlogits = (softmax − onehot)/T
@@ -274,12 +319,24 @@ function adamStep(m, g, st, o) {
 }
 
 // 一步訓練：前向、反向、裁剪、AdamW。回傳 { loss, gradNorm, grads }
+async function adamStepOps(m, g, st, o, ops) {
+  const { lr, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0 } = o;
+  st.t++;
+  const mvAt = (name) => { const parts = name.split('.'); if (parts.length === 1) return [st.m[name], st.v[name]]; const l = +parts[0].slice(1); return [st.m.layers[l][parts[1]], st.v.layers[l][parts[1]]]; };
+  const items = []; eachParam(m, g, (p, gg, name) => items.push({ p, gg, name }));
+  for (const it of items) {
+    const [mm1, vv] = mvAt(it.name);
+    const r = await ops.adamw(it.p, it.gg, mm1, vv, st.t, lr, b1, b2, eps, wd);
+    it.p.set(r.p); mm1.set(r.m); vv.set(r.v);
+  }
+}
 async function trainStep(m, tokens, st, o) {
   const be = (o && o.backend) || cpuBackend();
-  const f = await forward(m, tokens, be);
+  const ops = (o && o.ops) || null;
+  const f = await forward(m, tokens, be, ops);
   const g = await backward(m, f.cache, be);
   const clip = clipGrads(m, g, (o && o.clip) || 1.0);
-  adamStep(m, g, st, o);
+  if (ops) await adamStepOps(m, g, st, o, ops); else adamStep(m, g, st, o);
   return { loss: f.loss, gradNorm: clip.norm, grads: g };
 }
 
@@ -318,4 +375,4 @@ function loadState(m, st, cp) {
   return { nextBatch: cp.ckpt.next_batch };
 }
 
-module.exports = { fromInit, zeroGrads, forward, backward, clipGrads, adamInit, adamStep, trainStep, rmsFwd, rmsBwd, rope, tr, cpuBackend, cudawebBackend, layerKeys, eachParam, EPS, saveState, loadState, dims };
+module.exports = { gpuOpsFrom, CPU_OPS, fromInit, zeroGrads, forward, backward, clipGrads, adamInit, adamStep, trainStep, rmsFwd, rmsBwd, rope, tr, cpuBackend, cudawebBackend, layerKeys, eachParam, EPS, saveState, loadState, dims };
