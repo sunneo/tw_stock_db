@@ -134,6 +134,19 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
       const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
       f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
+    } else if (k === 'transpose_th') {
+      // 綁定 0 src([T][H·hd])、1 dst([H][hd][T])、2 uniform（T、H、hd）
+      const pu = u32(e[2]); const T = pu[0], H = pu[1], hd = pu[2], n = T * H * hd, d = H * hd;
+      const src = f32(e[0], n), dst = f32(e[1], n);
+      for (let o = 0; o < n; o++) { const t = Math.floor(o / d), r = o % d, h = Math.floor(r / hd), c = r % hd; dst[(h * hd + c) * T + t] = src[o]; }
+    } else if (k === 'attn_fwd_kt') {
+      // 綁定 0 q、1 kt([H][hd][T])、2 v、3 ao(寫)、4 pm(寫)、5 uniform：先還原成 [T][H·hd] 再用參考實作
+      const TS = require('./train_step_device.js');
+      const T = u32(e[5])[0], H = u32(e[5])[1], hd = u32(e[5])[2], n = T * H * hd, d = H * hd;
+      const kt = f32(e[1], n), kk = new Float32Array(n);
+      for (let t = 0; t < T; t++) for (let r = 0; r < d; r++) { const h = Math.floor(r / hd), c = r % hd; kk[t * d + r] = kt[(h * hd + c) * T + t]; }
+      const rr = TS.attnFwdRef(f32(e[0], n), kk, f32(e[2], n), T, H, hd);
+      f32(e[3], n).set(rr.ao); f32(e[4], H * T * T).set(rr.pm);
     } else if (k === 'attn_fwd') {
       // O8 整步：綁定 0 q、1 k、2 v、3 ao(寫)、4 pm(寫，H·T·T)、5 uniform（T、H、hd 為 u32，sc 為 f32 位於位元組 12）
       const TS = require('./train_step_device.js');

@@ -610,6 +610,14 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 
 **下一步（依預期收益）**：(1) attention（管線化要用 vec4 與 K/V 分塊；先做消融確認瓶頸）；(2) softmax／rmsnorm 的列內歸約改 subgroup（省屏障，小核心但次數多）；(3) RoPE 與裁剪係數改 uniform（待實測是否有益）。
 
+### 佈局改善：K 轉置＋前向分數合併讀取（2026-11-28，AoS→SoA 原則 1）
+
+- 改動：K 投影輸出後做一次轉置 `[T][H·hd] → [H][hd][T]`（`WGSL_TRANSPOSE_TH`，每層一次，不在注意力核心內）；前向分數點積改讀 `kt[(h·hd+c)·T+j]`（lane 沿 j 連續，合併）；PV 的串列 j 迴圈改四路獨立累加（`WGSL_ATTN_FWD_KT`）。
+- 單核心（量測鎖內，L）：HEAD attn_fwd 4.27 ms／次 → kt 版 2.22 ms／次（約 1.9×；不含每層一次的轉置）。
+- 整步對拍（真 Electron）：四個 fixture 通過（梯度範數相對誤差最差 1.7e-6；第 1 步逐參數 3.0e-6；續訓逐位相同）。
+- 整步 A／B（L，10 步中位數，交錯三次，量測鎖內）：每步讀回 129.8 → 122.2 ms（−5.9%）；不讀回 124.8 → 117.0 ms（−6.3%）。三次新的全部低於三次舊的。
+- **未完成（下一步）**：反向的 K／V 讀取（`attn_bwd_q` 的 dP 讀 v[j] 跨步、`attn_bwd_kv` 的讀取）仍是舊佈局；須用同一套佈局（V 轉置或 dP 改寫）才能避免前向快、反向為了轉回而付費。
+
 ### 融合 1：AdamW＋裁剪係數（2026-11-28）
 
 - 改動：`full_param_step_device.js` 新增 `WGSL_ADAMW_COEF`（梯度先乘裁剪係數再進 AdamW，取代每個張量一次 `scale_buf`）；運算順序與舊路徑逐位相同（(0＋g)·c 再 ·scale）。

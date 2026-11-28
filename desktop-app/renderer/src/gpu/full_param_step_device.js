@@ -182,6 +182,20 @@ function extend(b) {
     b.dispatchRaw(TS.WGSL_ATTN_FWD, [q.buf, k.buf, v.buf, ao.buf, pm.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { ao: ao, pm: pm };
   };
+  // K 轉置（[T][H·hd] → [H][hd][T]）：在 K 投影輸出端做一次（佈局改善：分數點積合併讀取）
+  r.transposeTH = (src, T, H, hd) => {
+    const dst = b.alloc(T * H * hd);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 4).set([T, H, hd, 0]);
+    b.dispatchRaw(TS.WGSL_TRANSPOSE_TH, [src.buf, dst.buf], uni, Math.ceil(T * H * hd / 64));
+    return dst;
+  };
+  // 前向（K 已是轉置佈局 kt）：同 attnFwd，只換分數讀取的佈局
+  r.attnFwdKt = (q, kt, v, T, H, hd) => {
+    const ao = b.alloc(T * H * hd), pm = b.alloc(H * T * T);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
+    b.dispatchRaw(TS.WGSL_ATTN_FWD_KT, [q.buf, kt.buf, v.buf, ao.buf, pm.buf], uni, T * H);
+    return { ao: ao, pm: pm };
+  };
   r.attnBwd = (dao, q, k, v, ao, pm, T, H, hd) => {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
     const dk = b.alloc(T * H * hd), dv = b.alloc(T * H * hd), dq = b.alloc(T * H * hd);
@@ -328,7 +342,8 @@ async function fullParamStepDevice(o) {
       // 分組查詢：k、v 擴成 H 個頭（矩陣乘 with E）
       c.k = gqa ? B.matmul(c.kR, S.expand, T, kd, d) : c.kR;
       c.v = gqa ? B.matmul(v0, S.expand, T, kd, d) : v0;
-      const at = X.attnFwd(c.q, c.k, c.v, T, H, hd); c.ao = at.ao; c.pm = at.pm;
+      const kt = X.transposeTH(c.k, T, H, hd);
+      const at = X.attnFwdKt(c.q, kt, c.v, T, H, hd); c.ao = at.ao; c.pm = at.pm;
       const o2 = B.matmul(c.ao, P('Wo'), T, d, d);
       c.h1 = B.axpy(h, o2, 1);
       c.n2 = B.rmsnorm(c.h1, P('n2'), T, d, EPS);

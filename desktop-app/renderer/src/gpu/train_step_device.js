@@ -471,5 +471,44 @@ async function trainStepDevice(o) {
   return { loss: loss, t: t, precision: f16 ? 'f16' : 'f32' };
 }
 
+// ===== 佈局改善（P1 GPU 原則 1＋2）：K 以 [H][hd][T] 儲存，讓分數點積的 lane（沿 j）讀連續位址 =====
+// 轉置只在 K 投影輸出端做一次（WGSL_TRANSPOSE_TH），不在每個注意力核心裡做。
+// WGSL_TRANSPOSE_TH：src 是 [T][H·hd]（列主序），dst 是 [H][hd][T]。
+const WGSL_TRANSPOSE_TH = `
+struct P { T: u32, H: u32, hd: u32, pad: u32 }
+@group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(2) var<uniform> u: P;
+// @kernel transpose_th
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let o = gid.x;
+  let d = u.H * u.hd;
+  if (o >= u.T * d) { return; }
+  let t = o / d;
+  let r = o % d;
+  let h = r / u.hd;
+  let c = r % u.hd;
+  dst[(h * u.hd + c) * u.T + t] = src[o];
+}
+`;
+// 前向（K 轉置版）：與 WGSL_ATTN_FWD 同一演算法；差別兩處：
+// (1) 分數點積讀 kt[(h·hd+c)·T + j]（lane 沿 j → 連續位址，合併）；
+// (2) PV 的串列 j 迴圈改成四路獨立累加（同一 lane 內的記憶體級平行，蓋住 V 的全域讀取延遲）。
+const WGSL_ATTN_FWD_KT = (() => {
+  let s = WGSL_ATTN_FWD;
+  const rep = (from, to) => { if (s.indexOf(from) < 0) throw new Error('attn_fwd_kt 替換失敗：' + from.slice(0, 60)); s = s.split(from).join(to); };
+  rep('// @kernel attn_fwd', '// @kernel attn_fwd_kt');
+  rep('for (var u2: u32 = 0u; u2 < u.hd; u2 = u2 + 1u) { z = z + qs[u2] * k[j * d + h * u.hd + u2]; }',
+      'for (var u2: u32 = 0u; u2 < u.hd; u2 = u2 + 1u) { z = z + qs[u2] * k[(h * u.hd + u2) * u.T + j]; }');
+  rep('for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + scs[j] * v[j * d + h * u.hd + t]; }',
+      'var a1: f32 = 0.0; var a2: f32 = 0.0; var a3: f32 = 0.0;\n' +
+      '    var jj: u32 = 0u;\n' +
+      '    loop { if (jj + 3u > i) { break; } acc = acc + scs[jj] * v[jj * d + h * u.hd + t]; a1 = a1 + scs[jj + 1u] * v[(jj + 1u) * d + h * u.hd + t]; a2 = a2 + scs[jj + 2u] * v[(jj + 2u) * d + h * u.hd + t]; a3 = a3 + scs[jj + 3u] * v[(jj + 3u) * d + h * u.hd + t]; jj = jj + 4u; }\n' +
+      '    loop { if (jj > i) { break; } acc = acc + scs[jj] * v[jj * d + h * u.hd + t]; jj = jj + 1u; }\n' +
+      '    acc = (acc + a1) + (a2 + a3);');
+  return s;
+})();
+
 module.exports = { trainStepDevice, WGSL_CAST16, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,
-  attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };
+  WGSL_TRANSPOSE_TH, WGSL_ATTN_FWD_KT, attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };
