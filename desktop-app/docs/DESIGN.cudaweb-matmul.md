@@ -63,3 +63,19 @@ LoRA 路徑（`train_step_device.js`）：
 | XL | 未量 | | |
 
 注意：這是整步時間，不是矩陣乘單獨時間。逐形狀時間戳量測與 XL 基線尚未做（XL 可能觸發裝置遺失，待單獨取鎖執行）。上游紀錄的 L 矩陣乘合計 30.8 ms 仍未在本版重測。
+
+## 七、共用記憶體位元組數與驗證錯誤（2026-11-29，依 attn 通知）
+
+依程式碼宣告計算（f32 為 4 位元組）：
+| 變體 | 位置 | As | Bs | 合計位元組 | 是否超過預設 16384 |
+|---|---|---|---|---|---|
+| matmul（平鋪，mmTileWgsl） | gpu_core.js:69–70 | 64×16 | 16×64 | 8192 | 否 |
+| matmul_vec4（mmTileWgslVec4） | gpu_core.js:153–154 | 64×16 | 16×64 | 8192 | 否 |
+| matmul_vec4_ta／_tb／_tt（mmVec4TWgsl） | mm_geom.js:147–148 | 1024 | 1024 | 8192 | 否 |
+| mmPipeWgsl（休眠，未接產品） | mm_geom.js:206–207 | 1152 | 1024 | 8704 | 否 |
+
+結論：產品用的三個變體在預設 16384 位元組的裝置上都能跑；`mmGeomWgsl` 的大小由參數決定，目前未接產品，不列入。
+
+待辦：
+- 評估與對拍要用 `pushErrorScope('validation')` 包住派發，對任何錯誤判失敗。`scripts/eval/gen_step_bench_eval.js` 目前沒有這個包裝，上面 S／M／L 的基線因此不能排除派發被拒絕的可能，需要重跑並補上檢查後才能作為正式基線。
+- 矩陣乘核心的 limits 選擇（依 `device.limits` 在執行時選變體）等 attn 通知 nn_ops.js 那幾行的改動，我同意後再動。
