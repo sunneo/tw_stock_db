@@ -304,6 +304,7 @@ async function fullParamStepDevice(o) {
       const dn = B.matmul(c.a, P('Wd'), T, F, d);
       h = B.axpy(c.h1, dn, 1);
       cache.push(c);
+      B.flush();   // 分段提交：每層前向送出一段（XL 單次提交過長會被 GPU 逾時重置）
     }
     // 頭：norm → logits（與嵌入共用）→ 交叉熵（dl 已含 1/T）
     const nfH = S.P['nf'], embH = S.P['emb'];
@@ -345,6 +346,7 @@ async function fullParamStepDevice(o) {
       const dn1 = B.axpy(B.axpy(B.matmul(dq, P('Wq'), T, d, d, { transB: true }), B.matmul(dk, P('Wk'), T, kd, d, { transB: true }), 1), B.matmul(dvK, P('Wv'), T, kd, d, { transB: true }), 1);
       accum(pre + 'n1', gainGrad(dn1, c.hIn, T, d));
       dh = B.axpy(X.rmsnormBwd(dn1, c.hIn, P('n1'), T, d, EPS), dh1, 1);
+      B.flush();   // 分段提交：每層反向送出一段
     }
     // 嵌入輸入梯度：onehotᵀ · dh
     const gE = B.alloc(V * d);
@@ -353,7 +355,8 @@ async function fullParamStepDevice(o) {
   }
   // 平均（K 條序列）
   const names = Object.keys(gacc);
-  const gavg = {}; for (const nm of names) gavg[nm] = B.scal(gacc[nm], 1 / K);
+  // K=1 時 1/K＝1，逐元素乘以 1 是恆等（逐位相同），直接沿用原緩衝區，省下每個張量一次派發（L 每步 46 次）
+  const gavg = {}; for (const nm of names) gavg[nm] = K === 1 ? gacc[nm] : B.scal(gacc[nm], 1 / K);
   // 總平方和：每個張量 ‖g‖² = onesᵀ·(g∘g)（1×n · n×1）
   const parts = B.alloc(names.length);
   names.forEach((nm, k) => X.sumsqSlot(gavg[nm], S.P[nm].n, parts, k));

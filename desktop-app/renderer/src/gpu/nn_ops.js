@@ -1045,7 +1045,7 @@ const MM_VEC4T_CODE = { 1: MMG.mmVec4TWgsl({ transA: true }), 2: MMG.mmVec4TWgsl
 function createBatch(dev, o) {
   const ts = o && o.timestamps ? o.timestamps : null;
   if (ts) { ts.labels = ts.labels || []; ts.ns = null; }
-  const enc = dev.createCommandEncoder();
+  let enc = dev.createCommandEncoder();
   let submitted = false;
   const pool = GP.poolFor(dev);
   // 這個批次借來的緩衝區；submit 之後整批歸還池（佇列依序執行，之後的寫入排在這次讀取之後，安全）
@@ -1169,6 +1169,16 @@ function createBatch(dev, o) {
       dispatch(WGSL_QDYN_STATS, [x.buf, st], u1, 1);
       dispatch(WGSL_QDYN, [x.buf, st, q], u1, Math.ceil(n / 64));
       return { buf: q, n: n, st: { buf: st, n: 4 } };
+    },
+    // 分段提交（XL 防止裝置遺失）：把目前已排好的命令送出去，開一個新的命令編碼器繼續排。
+    // 之後的運算排在這次提交之後執行（佇列依序），所以中間緩衝區不在這裡歸還，留到最後一次提交才歸還。
+    // 每一段的 GPU 時間都要夠短（Windows 的 GPU 逾時約 2 秒）；呼叫端決定切點。
+    flush() {
+      if (submitted) throw new Error('批次已經提交，不能再分段');
+      if (ts) { ts.flushAt = ts.flushAt || []; ts.flushAt.push(ts.labels.length); }
+      dev.queue.submit([enc.finish()]);
+      stats.submits++;
+      enc = dev.createCommandEncoder();
     },
     // 只提交、不讀回（P1c-2）：命令排進佇列後立刻返回，不等 GPU 完成。之後的批次排在它後面執行。
     // 用在「不需要讀回數值」的步：權重、動量、裁剪係數都留在 GPU，省下每步的映射等待。
