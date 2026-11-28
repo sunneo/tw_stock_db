@@ -2,7 +2,8 @@
 const M = require('./model_types_core.js');
 let ok = 0, bad = 0; const check = (n, c, d) => { if (c) ok++; else { bad++; console.log('FAIL ' + n, d === undefined ? '' : JSON.stringify(d).slice(0, 300)); } };
 const ids = M.TYPES.map((t) => t.id);
-check('十種模型類型都在（建立語言模型、語言模型、離線訓練器、語音合成、音樂作曲、語音辨識、音訊轉音符、圖像生成、看圖說文字、加長上下文）', M.TYPES.length === 10 && ['llm', 'symbolic', 'speech', 'music', 'speech_recognition', 'audio_to_notes', 'image', 'vision', 'llm_scratch', 'context_extend'].every((x) => ids.indexOf(x) >= 0), ids);
+check('十種模型類型都在（建立語言模型、語言模型、離線訓練器、語音合成、音樂作曲、語音辨識、音訊轉音符、圖像生成、看圖說文字、加長上下文）', M.TYPES.length === 11 && ['llm', 'symbolic', 'speech', 'music', 'speech_recognition', 'audio_to_notes', 'image', 'vision', 'llm_scratch', 'context_extend'].every((x) => ids.indexOf(x) >= 0), ids);
+check('小型語言模型（全參數）：狀態 half、cudaweb 覆蓋閘門 dense 可列出、moe 不列出', (() => { const C = require('./cudaweb_coverage.js'); const t = M.find('llm_full'); return t && t.status === 'half' && M.cudawebGate('llm_full', 'dense', C).listed === true && M.cudawebGate('llm_full', 'moe', C).listed === false; })());
 check('id 不重複', new Set(ids).size === ids.length);
 check('狀態只會是 done／half／design', M.TYPES.every((t) => ['done', 'half', 'design'].indexOf(t.status) >= 0));
 check('已完成：語言模型（LoRA 與完整模型都可輸出）', M.find('llm').status === 'done' && M.find('llm').outputs.every((o) => o.available));
@@ -10,7 +11,7 @@ check('語言模型的完整模型寫明格式與手動的第二步', M.find('ll
 check('ext 標記與外部訓練作業的已接線清單一致', (() => { const X = require('./ext_job_core.js'); return M.TYPES.filter((t) => t.ext).every((t) => X.specOf(t.ext).wired) && Object.keys(X.SPECS).filter((k) => X.SPECS[k].wired).every((k) => M.find(k).ext === k); })());
 check('沒有只有設計的類型（都至少有訓練核心）', M.TYPES.every((t) => t.status !== 'design'));
 check('六種接上的類型都是已完成（done），且 ext 標記與 ext_job_core 的已接線清單一致', ['music', 'speech_recognition', 'speech', 'audio_to_notes', 'vision', 'image'].every((id) => M.find(id).status === 'done' && M.find(id).ext === id));
-check('沒有半成品與只有設計的類型（全部接上）', M.TYPES.every((t) => t.status === 'done'));
+check('半成品只有小型語言模型（全參數）（其他全部接上）', M.TYPES.filter((t) => t.status !== 'done').every((t) => t.id === 'llm_full'));
 check('音樂作曲：完整模型可用、LoRA 不可用；語音辨識：LoRA 可用、完整模型不可用', M.canStart('music', 'full', false).level === 'run' && M.canStart('music', 'lora', false).level === 'blocked' && M.canStart('speech_recognition', 'lora', false).level === 'run' && M.canStart('speech_recognition', 'full', false).level === 'blocked');
 check('語音合成：風格偏移小檔可用、完整模型不可用；音訊轉音符：完整模型（ONNX）可用、LoRA 不可用', M.canStart('speech', 'lora', false).level === 'run' && M.canStart('speech', 'full', false).level === 'blocked' && M.canStart('audio_to_notes', 'full', false).level === 'run' && M.canStart('audio_to_notes', 'lora', false).level === 'blocked');
 check('看圖說文字：LoRA 可用、完整模型不可用；圖像生成：LoRA 可用、完整模型不可用', M.canStart('vision', 'lora', false).level === 'run' && M.canStart('vision', 'full', false).level === 'blocked' && M.canStart('image', 'lora', false).level === 'run' && M.canStart('image', 'full', false).level === 'blocked');
