@@ -1,0 +1,19 @@
+{"text": "今天天氣很好，我們去公園散步。"}
+{"text": "The quick brown fox jumps over the lazy dog."}
+{"text": "I'm sure they're going; don't stop, we'll see 'em."}
+{"messages": [{"role": "user", "content": "請用一句話介紹台北。"}, {"role": "assistant", "content": "台北是台灣的首都，位於北部盆地。"}]}
+{"messages": [{"role": "user", "content": "What is 2+2?"}, {"role": "assistant", "content": "2+2 equals 4."}]}
+{"text": "數字 12345 與 3.14159 和 -0.5 都要正確分詞。"}
+{"text": "多行\n第二行\t有 tab 與 \"引號\" 還有反斜線 \\ 的文字。"}
+{"text": "emoji 測試 😀🚀 與 符號 ~!@#$%^&*()_+ 以及全形　空白。"}
+{"text": "   leading and trailing spaces   "}
+{"text": "混合 English 與 中文 mixed sentence, 2026-11-28."}
+{"messages": [{"role": "user", "content": "列出三種水果。"}, {"role": "assistant", "content": "蘋果、香蕉、芒果。"}]}
+{"text": "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor."}
+{"text": "語言模型的訓練需要大量的文字資料，通常會先清理、再分詞，然後打包成固定長度的序列。"}
+{"text": "日本語のテキストも少し入れておきます。こんにちは。"}
+{"text": "Ünïcödé ñ é ü 日本 한국어 русский."}
+{"messages": [{"role": "user", "content": "寫一段程式：print('hi')"}, {"role": "assistant", "content": "print('hi') 會輸出 hi。"}]}
+{"text": "a"}
+{"text": "ab ab ab ab ab ab ab ab ab ab"}
+{"text": "The end. 結束。"}
