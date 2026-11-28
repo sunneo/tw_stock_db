@@ -31,7 +31,7 @@
 
 | 階段 | 名稱 | 狀態 | 依賴 |
 |---|---|---|---|
-| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 進行中（未通過）：已過：JS 對 PyTorch、GPU 矩陣乘＋前向逐元素＋AdamW 對拍、cpu-py 對拍、續訓、差分估計、全有或全無的 probe 缺項。未過：反向逐元素上 GPU、整步一次提交（目前每步 166 次呼叫）、產品頁面打包執行期、四段精確拆解（已改為差分估計）、model_types 閘門 | 無 |
+| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 未通過（2026-11-28，見上節：速度拆解未完成；工作室畫面每步損失與毫秒未完成） | 無 |
 | P2 | 資料入口與預訓練風格：fap 串流、分詞、打包、批次、讀取位置入檢查點；對 HF datasets 逐 token 一致；預訓練在 cpu 與 cudaweb 跑通 | 未開始 | P1 |
 | P3 | 工作室引導入口與資料流水線（最小版，讓 P1／P2 能從 GUI 走完） | 未開始 | P1、P2 |
 | P4 | MoE：路由、負載平衡損失、反向、cudaweb 對拍；接 function call 資料與評量（toolcall） | 未開始 | P1 |
@@ -112,6 +112,61 @@
 - (3) 逐元素運算上 GPU：**部分完成**。前向的 RMSNorm、softmax、SiLU、RoPE（經純資料排列走 nn_ops 的交錯核心，結果等價）與 AdamW 已走 GPU（`full_param_train.js` 的 `gpuOpsFrom`）。GPU 真機對拍：fp64 fixture 20 步，損失最大絕對誤差 1.0e-6、梯度範數最大絕對誤差 9.9e-6（門檻 1e-5，**通過但餘裕很小**，主要來源是 f32 逐元素核心的累積誤差，需要之後再收緊）。**未完成**：反向的逐元素（RMSNorm 反向、SiLU 反向、注意力反向、softmax 反向）仍在 CPU；注意力內的 QKᵀ、PV 小矩陣乘仍是 CPU 迴圈。這兩項要在整步提交（見 (4)）時一併補。
 
 ---
+
+## P1 結論（2026-11-28）：未通過；本節取代本文件中與之矛盾的舊敘述
+
+**狀態：未通過。** 其中兩項未完成：速度拆解、工作室畫面的每步損失與毫秒。以下逐項列出完成標準、結果與證據（證據皆為真 Electron 或真的 PyTorch 比對，除非另註）。
+
+| # | 完成標準 | 結果 | 證據 |
+|---|---|---|---|
+| 1 | 對拍：cudaweb 全參數步對 PyTorch fp64 fixture，dense 與 gqa_qkn，各 20 步 | 通過 | 損失差 6.4e-7 與 3.2e-7，梯度範數差 7.3e-6 與 2.6e-6（門檻 1e-5）。RoPE 改為 rotate-half（57580c904）後重跑結果相同（評估 parity_after_rope） |
+| 2 | 對拍：cpu-py 路徑（llm_scratch.LM）與 fixture | 通過 | 步 1 損失差 4.5e-9、梯度 8.4e-8（full_param_cpu_py_check.py）；llm_full_cpu.py 20 步對 fixture 損失差 <1e-5（1a2d62864） |
+| 3 | 速度拆解（核心、上傳、讀回、同步） | **未通過** | 只有三個規模的總時間，見下節。四段拆解需要 GPU 時間戳查詢，執行期未暴露 |
+| 4 | 可續訓：cudaweb 與 cpu-py | 通過 | GPU 快照續訓 10→存→載→10，最大損失差 6.4e-7（e72a32dd7）；llm_full 真跑 cudaweb 續訓接續步 7–8（932929119）；cpu-py 續訓第 11–20 步差 <1e-5（llm_full_cpu.test.js） |
+| 5 | probe：工作室後端清單能判斷 cudaweb 可用與層級 | 通過 | 真 Electron：cudaweb available，層 T1，能力檔 B（742f82f00，studio_cudaweb_probe） |
+| 6 | 閘門：覆蓋不完整就列缺項、不退回 | 通過 | dense 完整列出；moe 缺 4 項、推理（GRPO）缺取樣（cudaweb_coverage.test.js、model_types_cudaweb_gate.test.js） |
+| 7 | 真跑：工作室選 llm_full，cudaweb 與 cpu-py 各跑一次，有損失、毫秒與檢查點 | 通過（後端與檢查點）；**畫面未通過** | 同設定 6 步，兩條路徑損失逐步一致到 1e-6；兩者都產出檢查點（932929119，studio_llmfull eval）。工作室畫面上的每步損失與毫秒列表尚未做 |
+| 8 | RoPE 慣例一致（與推論、llm_scratch 相同） | 通過 | 真值 PyTorch：GPU 核心對 rotate-half 誤差 ≤3.4e-7、對交錯慣例誤差約 2（57580c904，rope_check_torch） |
+| 9 | 載入修正：主行程工作室 host 能載入 | 通過 | 修正前檔案重現 `Cannot find module './lora_ref_train.js'`；修正後真 Electron 後端清單正常（742f82f00，studio_host_load_test cf607cf1d） |
+
+**未通過項目的處理**
+- 3（速度拆解）：列為 P1 未完成項，不以估計代替量測。
+- 7 的畫面部分：工作室還沒有每步損失與毫秒的畫面，列為 P3（工作室引導入口）的範圍，但 P1 的完成標準包含它，所以 P1 仍未通過。
+- 另有一項不在完成標準內、但與 RoPE 修正相關：LoRA 套用路徑（`lora_apply_core`）未檢查 rope 慣例標記（見 `docs/REPORT.rope-fix.md`）。
+
+## 速度：三個規模、同一台機器、同一次量測（取代本文件所有較早的速度數字）
+
+量測工具：cudaweb 用 `scripts/eval/gen_step_bench_eval.js`（真 Electron、WebGPU）；cpu-py 用 `scripts/eval/bench_cpu_py_steps.js`（llm_full_cpu.py，torch fp32）。兩者都是批次 1 條序列、30 步、前 5 步暖機、取第 6–30 步中位數。
+
+| 規模 | 設定 | cudaweb 中位數 ms/步 | cpu-py 中位數 ms/步 | cudaweb／cpu-py | 第一步（含編譯或配置）cudaweb／cpu-py |
+|---|---|---|---|---|---|
+| S | V258 d32 L2 H4 kvH2 F64 T12（llm_full 真跑的設定） | 32.3 | 15.3 | 2.1 倍慢 | 575.6 ms／21.3 ms |
+| M | V512 d128 L4 H8 kvH4 F256 T64 | 293.6 | 50.9 | 5.8 倍慢 | 340.6 ms／59.1 ms |
+| L | V2048 d256 L4 H8 kvH4 F512 T128（舊報告的大設定） | 1260.7 | 110.6 | 11.4 倍慢 | 1374.8 ms／124.8 ms |
+
+**量測條件（兩次量測都對照這裡）**
+- 機器忙碌度：量測前後 Win32_Processor 負載約 4–5%（幾乎閒置）。
+- 執行緒：cpu-py 以 OMP_NUM_THREADS＝MKL_NUM_THREADS＝4 設定；實際 torch 執行緒數未回讀，只記錄設定值。cudaweb 在 GPU 上執行，不受 CPU 執行緒數影響。
+- 暖機：兩者都去掉前 5 步；第一步欄位列出以說明編譯或配置成本。
+- 資料與初始化：同一組確定性的隨機初始權重（seed 1）與同一條序列。
+- 每步時間口徑：cudaweb 取 `fullParamStepDevice` 回傳的 ms（含一次提交與兩次讀回）；cpu-py 取 llm_full_cpu.py 每步的牆鐘時間（含前向、反向、裁剪與 AdamW）。
+
+**較早的數字的更正（不再保留）**
+- 「cudaweb 約 28 ms／步，比 cpu-py 111 ms／步快約 4 倍」是錯的。它比較的是兩個不同設定：28–30 ms 來自 tiny 對拍 fixture（約與 S 同規模），111 ms 來自 L 規模的 cpu-py。同設定下，cudaweb 不是快 4 倍，而是在所有量過的規模都比 cpu-py 慢。
+- 本文件較早的「cudaweb 每步 3379 ms、比 cpu-py 慢約 30 倍」來自舊的逐運算呼叫路徑（每步 166 次 GPU 呼叫，`full_param_train.js` 的 cudaweb 介面），已被 `fullParamStepDevice` 取代。它的數字仍是該舊路徑的真實量測，但不代表目前的 cudaweb 步。
+- 較早的「穩態約 30 ms／步」（dense 與 gqa_qkn 對拍 fixture）是 S 規模，不可與 cpu-py 的 L 規模比較。
+
+**結論**
+1. 在本次量到的規模（S、M、L），cudaweb 全參數步都比 cpu-py 慢，比值從 2.1 倍擴大到 11.4 倍。
+2. 交叉點：本次量測中沒有交叉。
+3. 屋頂線預測：L 規模每步 2.4 GFLOP（前向加反向），以 0.3 TFLOPS 計，運算下限約 8.1 ms；記憶體下限約 5.0 ms（見 `REPORT.full-param-cudaweb-speed.md`）。若 cudaweb 達到屋頂線，L 規模應約 10–20 ms，低於 cpu-py 的 111 ms，交叉點會落在 M 與 L 之間或更小的規模。實測 L 是 1261 ms，比運算下限慢約 150 倍。
+4. 差距的來源尚未拆解。S 規模的 32 ms 若大部分是每次呼叫的固定開銷（較早量得基準呼叫約 12 ms），那麼規模增加時差距擴大，表示還有隨資料量增長的成本，不只是固定開銷。哪一段佔多少，需要第 3 項的速度拆解（GPU 時間戳或分段計時）才能確認；目前只能說「未拆解」。
+5. 因此，目前不宣稱 cudaweb 比 cpu-py 快。P1 的速度標準未通過，要把 cudaweb 步做到不慢於 cpu-py，需要先拆解 L 規模 1261 ms 的來源。
+
+## llm_full 狀態
+
+`llm_full`（小型語言模型，全參數訓練）維持 **half**。已完成：類型登錄、cudaweb 覆蓋閘門、cudaweb 與 cpu-py 路由、兩條路徑的真跑與續訓（cudaweb）。未完成：工作室畫面的每步損失與毫秒、cpu-py 續訓（檢查點目前只在主行程資料夾）、只計助理回答的損失遮罩。三項都是完成 `done` 前的條件。
+
 
 ## P2 資料入口與預訓練風格
 

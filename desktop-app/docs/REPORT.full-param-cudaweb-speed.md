@@ -1,3 +1,5 @@
+> **更正（2026-11-28）**：本文件下方的數字來自舊的逐運算呼叫路徑（每步 166 次 GPU 呼叫），已被 fullParamStepDevice 取代。目前的 cudaweb 與 cpu-py 比較見 PLAN 的「P1 結論」一節（三個規模、同一次量測）。本文件中「cudaweb 比 cpu-py 慢約 30 倍」只適用於舊路徑，不適用於現在的 cudaweb 步。
+
 # P1 速度與屋頂線（全參數訓練，2026-11-28）
 
 量測方式：Electron 真機（`scripts/eval/gen_full_param_cudaweb_eval.js` 產生的評估檔，獨立 `--user-data-dir`，埠 17931）；cpu-py 用 `llm_scratch.LM`（torch f32，4 執行緒，獨立 Python 行程）。
