@@ -91,6 +91,60 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// 嵌入查表（P1 調校，取代 one-hot(T×V)·emb 的整個矩陣乘）：h[t,j] = emb[ids[t], j]。
+// 結果與 one-hot 矩陣乘逐位相同（一個 1 乘一個數、其餘都是 0）。
+const WGSL_EMB_GATHER = `
+struct P { T: u32, d: u32, V: u32, pad: u32 }
+@group(0) @binding(0) var<storage, read> emb: array<f32>;
+@group(0) @binding(1) var<storage, read> ids: array<u32>;
+@group(0) @binding(2) var<storage, read_write> o: array<f32>;
+@group(0) @binding(3) var<uniform> u: P;
+// @kernel emb_gather
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.T * u.d) { return; }
+  let t = i / u.d; let j = i % u.d;
+  o[i] = emb[ids[t] * u.d + j];
+}
+`;
+// 嵌入梯度的 scatter-add（取代 one-hotᵀ·dh 的矩陣乘）：g[v,j] = Σ_{t: ids[t]=v} dh[t,j]。
+// 每個工作群組負責一個詞彙 v，沿著 CSR（off、pos：依 v 分組、組內 t 由小到大）累加，順序固定、結果可重現。
+// 沒有出現過的 v 得到 0（與 one-hot 矩陣乘相同）。
+const WGSL_EMB_SCATTER = `
+struct P { T: u32, d: u32, V: u32, pad: u32 }
+@group(0) @binding(0) var<storage, read> dh: array<f32>;
+@group(0) @binding(1) var<storage, read> off: array<u32>;
+@group(0) @binding(2) var<storage, read> pos: array<u32>;
+@group(0) @binding(3) var<storage, read_write> g: array<f32>;
+@group(0) @binding(4) var<uniform> u: P;
+// @kernel emb_scatter
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let v = w.x;
+  if (v >= u.V) { return; }
+  let s = off[v]; let e = off[v + 1u];
+  var j = l.x;
+  loop {
+    if (j >= u.d) { break; }
+    var acc: f32 = 0.0;
+    for (var q: u32 = s; q < e; q = q + 1u) { acc = acc + dh[pos[q] * u.d + j]; }
+    g[v * u.d + j] = acc;
+    j = j + 256u;
+  }
+}
+`;
+
+// 依詞彙分組的位置表（counting sort，組內保持 t 由小到大）：off[v]..off[v+1] 是詞彙 v 出現的位置 t 清單 pos。
+function embCsr(ids, V) {
+  const off = new Uint32Array(V + 1);
+  for (let t = 0; t < ids.length; t++) off[ids[t] + 1]++;
+  for (let v = 0; v < V; v++) off[v + 1] += off[v];
+  const cur = off.slice(0, V), pos = new Uint32Array(ids.length);
+  for (let t = 0; t < ids.length; t++) pos[cur[ids[t]]++] = t;
+  return { off: off, pos: pos };
+}
+
 // 批次運算（與 train_step_device.js 的 extend 相同的核心，這裡重新掛上以免改動它）
 function extend(b) {
   const r = {};
@@ -219,10 +273,12 @@ async function fullParamStepDevice(o) {
   const lossRows = [];
   for (const tokens of seqs) {
     const T = tokens.length - 1, inp = tokens.slice(0, T), tgt = tokens.slice(1);
-    // 嵌入查表：one-hot(T×V) · emb(V×d)（one-hot 是輸入，不是中間結果）
-    const oh = new Float32Array(T * V); for (let i = 0; i < T; i++) oh[i * V + inp[i]] = 1;
-    const ohH = B.upload(oh);
-    let h = B.matmul(ohH, S.P['emb'], T, V, d);
+    // 嵌入查表：h[t] = emb[inp[t]]（gather）；反向用同一份 CSR 做 scatter-add
+    const idsH = B.uploadU32(Uint32Array.from(inp));
+    const csr = embCsr(inp, V);
+    const offH = B.uploadU32(csr.off), posH = B.uploadU32(csr.pos);
+    let h = B.alloc(T * d);
+    { const uni = new ArrayBuffer(16); new Uint32Array(uni).set([T, d, V, 0]); B.dispatchRaw(WGSL_EMB_GATHER, [S.P['emb'].buf, idsH.buf, h.buf], uni, Math.ceil(T * d / 64)); }
     const cache = [];
     for (let l = 0; l < L; l++) {
       const pre = 'L' + l + '.'; const P = (k) => S.P[pre + k], c = { hIn: h };
@@ -291,7 +347,9 @@ async function fullParamStepDevice(o) {
       dh = B.axpy(X.rmsnormBwd(dn1, c.hIn, P('n1'), T, d, EPS), dh1, 1);
     }
     // 嵌入輸入梯度：onehotᵀ · dh
-    accum('emb', B.matmul(ohH, dh, V, T, d, { transA: true }));
+    const gE = B.alloc(V * d);
+    { const uni = new ArrayBuffer(16); new Uint32Array(uni).set([T, d, V, 0]); B.dispatchRaw(WGSL_EMB_SCATTER, [dh.buf, offH.buf, posH.buf, gE.buf], uni, V); }
+    accum('emb', gE);
   }
   // 平均（K 條序列）
   const names = Object.keys(gacc);
