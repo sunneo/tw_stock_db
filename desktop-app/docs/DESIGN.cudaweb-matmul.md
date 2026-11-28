@@ -50,3 +50,16 @@ LoRA 路徑（`train_step_device.js`）：
 ## 五、不得外推的紀錄
 
 本檔目前沒有任何效能數字。管理者提供的 L 規模 30.8 ms／步、XL 294.6 ms／步、天花板 100.0 GFLOPS、XL 等效 79.3 GFLOPS 為上游紀錄（HEAD b3c40758d），本 session 尚未在目前版本重新量測確認。
+
+## 六、整步時間基線（2026-11-29，HEAD cf36ee32e，真 Electron WebGPU，GPU 鎖）
+
+量測：`scripts/eval/gen_step_bench_eval.js` 產生的評估檔，`scratchpad/mm/run_step_bench.js` 啟動（不加 --disable-gpu），12 步，前 5 步暖機，取其後中位數（每步時間為 fullParamStepDevice 回傳的 ms）。裝置：NVIDIA Kepler（GT 720），timestamp-query 與 subgroups 功能可用。
+
+| 規模 | 中位數 ms／步 | 最小 | 最大 |
+|---|---|---|---|
+| S | 13.9 | 13.8 | 15.0 |
+| M | 26.9 | 25.9 | 28.1 |
+| L | 93.7 | 93.1 | 95.2 |
+| XL | 未量 | | |
+
+注意：這是整步時間，不是矩陣乘單獨時間。逐形狀時間戳量測與 XL 基線尚未做（XL 可能觸發裝置遺失，待單獨取鎖執行）。上游紀錄的 L 矩陣乘合計 30.8 ms 仍未在本版重測。
