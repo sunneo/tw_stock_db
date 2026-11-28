@@ -71,5 +71,21 @@ const fakeImpl = () => ({ gradient: async () => ({ loss: 0, n: 0, grads: {}, ms:
   check('能力檔缺值 → null（不推估）', pn.cpu === null && pn.cudaweb === null, pn);
 }
 
+// 4. bestCounts：整數、最慢邊最小、每邊至少 1
+{
+  const sum = (a) => a.reduce((s, x) => s + x.count, 0);
+  const b1 = R.bestCounts(4, [{ id: 'g', rate: 1 / 200 }, { id: 'c', rate: 1 / 111 }]);
+  check('bestCounts(4, g:1/200, c:1/111) → g 1、c 3（最慢邊 333 < 2 筆 400）', b1[0].count === 1 && b1[1].count === 3, b1);
+  const b2 = R.bestCounts(2, [{ id: 'a', rate: 1 }, { id: 'b', rate: 1 }]);
+  check('bestCounts(2, 相同速率) → 1:1', b2[0].count === 1 && b2[1].count === 1, b2);
+  const b3 = R.bestCounts(5, [{ id: 'a', rate: 1 }, { id: 'b', rate: 1 }, { id: 'c', rate: 2 }]);
+  check('bestCounts 三資源：總和 5、每邊至少 1、速率 2 的分到最多', sum(b3) === 5 && b3.every((x) => x.count >= 1) && b3[2].count >= b3[0].count, b3);
+  let thrown = false; try { R.bestCounts(3, [{ id: 'a', rate: 0 }]); } catch (e) { thrown = true; }
+  check('速率為 0 會丟錯', thrown);
+  let all = true;
+  for (let n = 1; n <= 20; n++) if (sum(R.bestCounts(n, [{ id: 'a', rate: 3 }, { id: 'b', rate: 1 }])) !== n) all = false;
+  check('20 種樣本數：總和恆等於 n', all);
+}
+
 console.log('\n' + ok + ' passed, ' + bad + ' failed');
 if (bad) process.exit(1);

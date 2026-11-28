@@ -59,7 +59,7 @@ const workers = new Map();
 function getWorker(id) {
   if (!workers.has(id)) {
     const cfg = id === 'par' ? { cfg: fx.cfg, dtype: 'float64' } : { cfg: SIZES.find((z) => z.name === id).cfg, dtype: 'float32' };
-    workers.set(id, CPU.createCpuPyResource(Object.assign({ id, python: PY }, cfg)));
+    workers.set(id, CPU.createCpuPyResource(Object.assign({ id, python: PY }, cfg)).then((r) => Object.assign(r, { dtypeName: id === 'par' ? 'f64' : 'f32' })));
   }
   return workers.get(id);
 }
@@ -69,7 +69,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Expose-Headers', 'X-Loss,X-N,X-Worker-Ms');
+  res.setHeader('Access-Control-Expose-Headers', 'X-Loss,X-N,X-Worker-Ms,X-Phases');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   const u = new URL(req.url, 'http://127.0.0.1');
   const id = u.searchParams.get('w');
@@ -77,7 +77,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && u.pathname === '/ref') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(REF)); }
     if (req.method === 'GET' && u.pathname === '/layout') {
       const w = await getWorker(id);
-      res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ names: w.layout }));
+      res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ names: w.layout, wire: w.dtypeName }));
     }
     if (req.method === 'POST' && u.pathname === '/grad') {
       const chunks = []; for await (const c of req) chunks.push(c);
@@ -86,14 +86,16 @@ const server = http.createServer(async (req, res) => {
       const seqs = JSON.parse(body.slice(4, 4 + sl).toString('utf8'));
       const w = await getWorker(id);
       const pbuf = body.slice(4 + sl);
-      const pall = new Float64Array(pbuf.buffer.slice(pbuf.byteOffset, pbuf.byteOffset + pbuf.length));
+      const WA = w.dtypeName === 'f32' ? Float32Array : Float64Array;
+      const pall = new WA(pbuf.buffer.slice(pbuf.byteOffset, pbuf.byteOffset + pbuf.length));
       const params = {}; let off = 0;
-      for (const [name, len] of w.layout) { params[name] = pall.slice(off, off + len); off += len; }
+      for (const [name, len] of w.layout) { params[name] = Float64Array.from(pall.subarray(off, off + len)); off += len; }
       const r = await w.impl.gradient({ params, seqs });
-      const gall = new Float64Array(off); off = 0;
+      const gall = new WA(off); off = 0;
       for (const [name, len] of w.layout) { gall.set(r.grads[name], off); off += len; }
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('X-Loss', String(r.loss)); res.setHeader('X-N', String(r.n)); res.setHeader('X-Worker-Ms', String(r.workerMs));
+      res.setHeader('X-Phases', Buffer.from(JSON.stringify(r.phases || {})).toString('base64'));
       return res.end(Buffer.from(gall.buffer));
     }
     if (req.method === 'POST' && u.pathname === '/result') {
@@ -167,23 +169,27 @@ const worstRel = (got, ref) => { const per = {}; let worst = 0, wn = null; for (
 const batchFor = (s, k) => { const out = []; for (let j = 0; j < k; j++) out.push(FX.batches[(s * k + j) % FX.batches.length]); return out; };
 const log = (tag, obj) => console.log('[hetero-eval] ' + tag + ' ' + JSON.stringify(obj));
 const ms = (t) => performance.now() - t;
-function cpuProxy(id, layout) {
+function res0Phases(res) { return res.headers.get('X-Phases') || btoa('{}'); }
+function cpuProxy(id, layout, wire) {
   return { gradient: async ({ params, seqs }) => {
     const t0 = performance.now();
     const sj = new TextEncoder().encode(JSON.stringify(seqs));
     const total = layout.reduce((a, x) => a + x[1], 0);
-    const pall = new Float64Array(total); let off = 0;
+    const WA = wire === 'f32' ? Float32Array : Float64Array;
+    const pall = new WA(total); let off = 0;
     for (const [name, len] of layout) { pall.set(params[name], off); off += len; }
-    const body = new Uint8Array(4 + sj.length + total * 8);
+    const body = new Uint8Array(4 + sj.length + total * WA.BYTES_PER_ELEMENT);
     new DataView(body.buffer).setUint32(0, sj.length, true);
     body.set(sj, 4); body.set(new Uint8Array(pall.buffer), 4 + sj.length);
     const res = await fetch(BASE + '/grad?w=' + id, { method: 'POST', body: body, headers: { 'Content-Type': 'application/octet-stream' } });
+    if (!res.ok) throw new Error('cpu 代理失敗 ' + res.status);
     if (!res.ok) throw new Error('cpu 代理失敗 ' + res.status + ' ' + (await res.text()));
     const loss = +res.headers.get('X-Loss'), workerMs = +res.headers.get('X-Worker-Ms');
-    const gall = new Float64Array(await res.arrayBuffer());
+    const ph = JSON.parse(atob(res0Phases(res)));
+    const gall = new WA(await res.arrayBuffer());
     const grads = {}; off = 0;
-    for (const [name, len] of layout) { grads[name] = gall.slice(off, off + len); off += len; }
-    return { loss, n: seqs.length, grads, ms: ms(t0), workerMs };
+    for (const [name, len] of layout) { grads[name] = Float64Array.from(gall.subarray(off, off + len)); off += len; }
+    return { loss, n: seqs.length, grads, ms: ms(t0), workerMs, phases: ph };
   } };
 }
 const REF = await (await fetch(BASE + '/ref')).json();
@@ -202,8 +208,8 @@ log('1a', R.parity.gradCudaweb);
 
 // (1b) 合作 20 步（cudaweb＋cpu-py fp64 經代理，每步 2 序列）vs PyTorch 整批 AdamW 20 步（fp64）
 {
-  const lay = (await (await fetch(BASE + '/layout?w=par')).json()).names;
-  const cpu = cpuProxy('par', lay);
+  const lj = await (await fetch(BASE + '/layout?w=par')).json();
+  const cpu = cpuProxy('par', lj.names, lj.wire);
   const set = RS.createResourceSet();
   set.add({ id: 'gpu', kind: 'cudaweb', rate: null, impl: gpuFx.impl });
   set.add({ id: 'cpu', kind: 'cpu-py', rate: null, impl: cpu });
@@ -226,8 +232,8 @@ for (const sz of SIZE_RUN) {
     const cfg = sz.cfg;
     const init = LD.makeInit(cfg, 1);
     const P = flatten(init);
-    const lay = (await (await fetch(BASE + '/layout?w=' + sz.name)).json()).names;
-    const cpu = cpuProxy(sz.name, lay);
+    const lj = await (await fetch(BASE + '/layout?w=' + sz.name)).json();
+    const cpu = cpuProxy(sz.name, lj.names, lj.wire);
     const St = FS.makeResidentState(g.dev, cfg, init);
     const gres = CW.createCudawebResource({ id: 'gpu', nn: NN, device: g.dev, state: St, clip: 1, fullParamStepDevice: FS.fullParamStepDevice, loadResident: FS.loadResident });
     const set = RS.createResourceSet();
@@ -241,11 +247,11 @@ for (const sz of SIZE_RUN) {
       const row = { i };
       for (const o of order) {
         if (o === 'G') { const r = await gres.impl.gradient({ params: P, seqs }); row.gWall = r.ms; row.gCompute = r.computeMs; }
-        if (o === 'C') { const r = await cpu.gradient({ params: P, seqs }); row.cWall = r.ms; row.cWorker = r.workerMs; }
+        if (o === 'C') { const r = await cpu.gradient({ params: P, seqs }); row.cWall = r.ms; row.cWorker = r.workerMs; row.cPhases = r.phases; }
         if (o === 'K') {
           const t0 = performance.now(); const r = await coord.step(seqs); const wall = ms(t0);
           const mx = Math.max(0, ...r.timing.map((t) => t.ms));
-          row.kWall = wall; row.kOwn = wall - mx; row.shares = r.shares; row.kTiming = r.timing.map((t) => ({ id: t.id, n: t.n, ms: r3(t.ms) }));
+          row.kWall = wall; row.kOwn = wall - mx; row.shares = r.shares; row.kTiming = r.timing.map((t) => ({ id: t.id, n: t.n, ms: r3(t.ms) })); row.kPhases = r.phases; row.kCounts = r.timing.map((t) => [t.id, t.n]);
         }
       }
       rows.push(row);

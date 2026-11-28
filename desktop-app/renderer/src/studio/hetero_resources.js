@@ -15,6 +15,34 @@
 //   sharesFromRates(items) → [{ id, share }] | null   依速率比例；任一筆沒有速率 → null（呼叫端改用等分）
 //   profileRatios(profile) → { cpu, cudaweb }   依能力檔：cpu.best.gflops 與 gpu.matmulGflops；缺值為 null
 
+
+// 依速率求整數切分，使最慢一邊的預測時間（n_r ÷ rate_r）最小。適用於 1～3 個資源（窮舉，n 很小）。
+// items：[{ id, rate }]（rate 必須為正）。n ≥ 資源數時每邊至少 1 筆。
+function bestCounts(n, items) {
+  const R = items.length;
+  if (R === 0) return [];
+  if (R > 3) throw new Error('bestCounts 只支援 1～3 個資源');
+  if (!Number.isInteger(n) || n < 0) throw new Error('樣本數必須是非負整數');
+  if (items.some((x) => !(isNum(x.rate) && x.rate > 0))) throw new Error('bestCounts 需要每個資源的正速率');
+  const lo = n >= R ? 1 : 0;
+  let best = null, bestT = Infinity;
+  const cur = new Array(R);
+  const rec = (i, left) => {
+    if (i === R - 1) {
+      if (left < lo) return;
+      cur[i] = left;
+      let t = 0;
+      for (let k = 0; k < R; k++) t = Math.max(t, cur[k] / items[k].rate);
+      // 同時間取多的那邊較少的，讓結果穩定
+      if (t < bestT - 1e-12) { bestT = t; best = cur.slice(); }
+      return;
+    }
+    for (let c = lo; c <= left - (R - 1 - i) * lo; c++) { cur[i] = c; rec(i + 1, left - c); }
+  };
+  rec(0, n);
+  return items.map((x, k) => ({ id: x.id, count: best ? best[k] : 0 }));
+}
+
 const KINDS = ['cpu-py', 'cudaweb', 'remote'];
 
 const isNum = (x) => typeof x === 'number' && isFinite(x);
@@ -99,5 +127,5 @@ function profileRatios(profile) {
   return { cpu, cudaweb: gpu };
 }
 
-return { createResourceSet, splitCounts, normalizeShares, sharesFromRates, profileRatios, KINDS };
+return { createResourceSet, splitCounts, bestCounts, normalizeShares, sharesFromRates, profileRatios, KINDS };
 });

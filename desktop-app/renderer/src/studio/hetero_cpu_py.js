@@ -61,31 +61,36 @@ function createCpuPyResource(opts) {
     layout = r.names; total = layout.reduce((a, x) => a + x[1], 0);
   });
 
+  // 線上格式：float32 工作者用 f32（一半位元組，工作者本來就以 f32 運算）；float64 工作者用 f64
+  const wireArr = () => (o.dtype === 'float32' ? Float32Array : Float64Array);
   const impl = {
     gradient({ params, seqs }) {
       return serial(async () => {
         await init;
         const t0 = Date.now();
-        const pbuf = Buffer.alloc(total * 8);
+        const W = wireArr(), wb = W.BYTES_PER_ELEMENT;
+        const pbuf = Buffer.alloc(total * wb);
         let off = 0;
         for (const [name, len] of layout) {
           const v = params[name];
           if (!v || v.length !== len) throw new Error('參數 ' + name + ' 長度不符');
-          Buffer.from(Float64Array.from(v).buffer).copy(pbuf, off * 8);
+          Buffer.from(W.from(v).buffer).copy(pbuf, off * wb);
           off += len;
         }
         const pf = path.join(dir, 'params.f64'), sf = path.join(dir, 'seqs.json'), gf = path.join(dir, 'grads.f64');
         fs.writeFileSync(pf, pbuf);
         fs.writeFileSync(sf, JSON.stringify(seqs));
+        const t1 = Date.now();
         const r = await call({ op: 'grad', params_file: pf, seqs_file: sf, grads_file: gf });
         if (!r.ok) throw new Error('cpu-py 梯度失敗：' + r.error);
         const gb = fs.readFileSync(gf);
-        if (gb.length !== total * 8) throw new Error('梯度檔長度 ' + gb.length + ' 與佈局 ' + total * 8 + ' 不符');
-        const all = new Float64Array(total);
-        Buffer.from(all.buffer).set(gb);
+        if (gb.length !== total * wb) throw new Error('梯度檔長度 ' + gb.length + ' 與佈局 ' + total * wb + ' 不符');
+        const wall = new W(total);
+        Buffer.from(wall.buffer).set(gb);
+        const all = Float64Array.from(wall);
         const grads = {}; off = 0;
         for (const [name, len] of layout) { grads[name] = all.slice(off, off + len); off += len; }
-        return { loss: r.loss, n: r.n, grads, ms: Date.now() - t0, workerMs: r.ms };
+        return { loss: r.loss, n: r.n, grads, ms: Date.now() - t0, workerMs: r.ms, phases: { load: r.tLoad, fwdBwd: r.tFwdBwd, export: r.tExport, reqWrite: t1 - t0, reqRead: Date.now() - t1 } };
       });
     },
     close() {

@@ -4,7 +4,7 @@
   {"op":"init","id":0,"cfg":{V,d,L,H,kvH,F,T},"dtype":"float64"|"float32"}
       → {"id":0,"ok":true,"names":[["emb",長度],["nf",長度],["L0.n1",長度],...]}   回傳參數順序（協調端依此打包）
   {"op":"grad","id":1,"params_file":"...","seqs_file":"...","grads_file":"..."}
-      params_file：float64 小端序，依 init 回傳的 names 順序連續排列（JS 佈局）
+      params_file：小端序，依 init 回傳的 names 順序連續排列（JS 佈局）；dtype 為 float32 時線上格式也是 f32（一半的位元組），float64 時是 f64
       seqs_file：JSON，[[T+1 個詞元], ...]
       grads_file：寫出 float64 小端序，同樣的順序（JS 佈局，平均後、裁剪前）
       → {"id":1,"ok":true,"loss":平均損失,"n":序列數}
@@ -17,8 +17,8 @@ import json
 import os
 import sys
 import time
-from array import array
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -57,18 +57,21 @@ def main():
                 if st["model"] is None:
                     raise RuntimeError("尚未 init")
                 model, names, sd, cfg, dtype = st["model"], st["names"], st["sd"], st["cfg"], st["dtype"]
+                t0 = time.perf_counter()
                 with open(req["params_file"], "rb") as f:
                     raw_bytes = f.read()
-                flat64 = torch.frombuffer(bytearray(raw_bytes), dtype=torch.float64)
+                wire = "<f4" if dtype == torch.float32 else "<f8"
+                flat64 = np.frombuffer(raw_bytes, dtype=wire)
                 flat = {}
                 off = 0
                 for js, tn, _tr in names:
                     n = int(sd[tn].numel())
-                    flat[js] = flat64[off:off + n].clone()
+                    flat[js] = torch.from_numpy(np.array(flat64[off:off + n], dtype=np.float64))
                     off += n
-                if off != flat64.numel():
-                    raise RuntimeError("參數長度 %d 與佈局 %d 不符" % (flat64.numel(), off))
+                if off != flat64.size:
+                    raise RuntimeError("參數長度 %d 與佈局 %d 不符" % (flat64.size, off))
                 C.load_params(model, names, flat)
+                t1 = time.perf_counter()
                 with open(req["seqs_file"], encoding="utf-8") as f:
                     seqs = json.load(f)
                 if not seqs:
@@ -76,7 +79,6 @@ def main():
                 T = cfg["T"]
                 pos = torch.arange(T).reshape(1, T)
                 am = torch.ones(1, T, dtype=dtype)
-                t0 = time.perf_counter()
                 model.zero_grad(set_to_none=True)
                 n = len(seqs)
                 loss_sum = 0.0
@@ -88,15 +90,20 @@ def main():
                     loss = F.cross_entropy(logits[0], toks[1:])
                     (loss / n).backward()
                     loss_sum += float(loss.detach())
-                out = array("d")
+                t2 = time.perf_counter()
+                parts = []
                 for js, tn, tr in names:
                     p = sd[tn]
                     g = p.grad if p.grad is not None else torch.zeros_like(p)
                     v = g.detach().t().reshape(-1) if tr else g.detach().reshape(-1)
-                    out.extend(v.double().tolist())
+                    parts.append(v.to(torch.float32 if wire == "<f4" else torch.float64).contiguous().numpy())
+                out = np.concatenate(parts).astype(wire, copy=False)
                 with open(req["grads_file"], "wb") as f:
                     f.write(out.tobytes())
-                write_reply({"id": rid, "ok": True, "loss": loss_sum / n, "n": n, "ms": (time.perf_counter() - t0) * 1000.0})
+                t3 = time.perf_counter()
+                write_reply({"id": rid, "ok": True, "loss": loss_sum / n, "n": n,
+                             "ms": (t3 - t0) * 1000.0,
+                             "tLoad": (t1 - t0) * 1000.0, "tFwdBwd": (t2 - t1) * 1000.0, "tExport": (t3 - t2) * 1000.0})
             else:
                 raise RuntimeError("未知的 op：%s" % op)
         except Exception as e:  # 錯誤走協定回應，協調端會把這個資源標記離線

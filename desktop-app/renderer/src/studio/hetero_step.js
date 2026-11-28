@@ -80,6 +80,8 @@ function createCoordinator(opts) {
   async function step(seqs) {
     if (!Array.isArray(seqs) || seqs.length === 0) throw new Error('一步至少要有 1 個序列');
     const N = seqs.length;
+    const ph = { tSchedWall: 0, tAccum: 0, tNorm: 0, tAdamW: 0 };
+    const tA0 = performance.now();
     const acc = {}; names.forEach((k) => { acc[k] = new Float64Array(P[k].length); });
     let lossAcc = 0, counted = 0;
     const timing = [], failures = [];
@@ -92,7 +94,11 @@ function createCoordinator(opts) {
       if (live.length === 0) throw new Error('沒有在線的訓練資源；這一步未完成（序列未丟失，可稍後重試）');
       const cur = initShares(live);
       shareMap = {}; cur.forEach((s) => { shareMap[s.id] = s.share; });
-      const assign = HR.splitCounts(pending.length, cur);
+      // 有實測速率（每個在線資源都有）→ 整數切分使最慢一邊的預測時間最小；否則用份額切分
+      const haveAll = live.every((e) => rates[e.id] > 0);
+      const assign = (haveAll && live.length <= 3)
+        ? HR.bestCounts(pending.length, live.map((e) => ({ id: e.id, rate: rates[e.id] })))
+        : HR.splitCounts(pending.length, cur);
       const jobs = []; let cursor = 0;
       for (const a of assign) {
         if (a.count <= 0) continue;
@@ -116,10 +122,12 @@ function createCoordinator(opts) {
             pending.push(...x.j.seqs);
             continue;
           }
-          const n = x.j.seqs.length;
-          for (const k of names) { const g = x.r.grads[k], a = acc[k]; for (let i = 0; i < a.length; i++) a[i] += n * g[i]; }
-          lossAcc += n * x.r.loss; counted += n;
-          timing.push({ id: x.j.id, n, ms: typeof x.r.ms === 'number' ? x.r.ms : x.wall });
+          const w = x.j.seqs.length / N;
+          const tA = performance.now();
+          for (const k of names) { const g = x.r.grads[k], a = acc[k]; for (let i = 0; i < a.length; i++) a[i] += w * g[i]; }
+          ph.tAccum += performance.now() - tA;
+          lossAcc += w * N * x.r.loss; counted += x.j.seqs.length;
+          timing.push({ id: x.j.id, n: x.j.seqs.length, ms: typeof x.r.ms === 'number' ? x.r.ms : x.wall });
         } else {
           const msg = String(x.err && x.err.message ? x.err.message : x.err);
           failures.push({ id: x.j.id, error: msg });
@@ -131,8 +139,11 @@ function createCoordinator(opts) {
     if (counted !== N) throw new Error('內部錯誤：計入序列 ' + counted + ' 與總數 ' + N + ' 不符');
 
     // 加權平均梯度（依序列數；每個序列權重相同）→ 裁剪 → AdamW
+    const tN = performance.now();
     let sq = 0;
-    for (const k of names) { const a = acc[k]; for (let i = 0; i < a.length; i++) { a[i] /= N; sq += a[i] * a[i]; } }
+    for (const k of names) { const a = acc[k]; for (let i = 0; i < a.length; i++) sq += a[i] * a[i]; }
+    ph.tNorm = performance.now() - tN;
+    const tW = performance.now();
     const gradNorm = Math.sqrt(sq);
     const coef = (o.clip > 0 && gradNorm > 0) ? Math.min(1, o.clip / (gradNorm + 1e-6)) : 1;
     t += 1;
@@ -149,6 +160,9 @@ function createCoordinator(opts) {
         p[i] -= (o.lr / bc1) * m[i] / denom;
       }
     }
+
+    ph.tAdamW = performance.now() - tW;
+    ph.tTotal = performance.now() - tA0;
 
     // 速率與份額自適應（只用這一步實際有量到的資源）
     for (const tm of timing) {
@@ -168,6 +182,7 @@ function createCoordinator(opts) {
       loss: lossAcc / N,
       gradNorm,
       grads: acc,            // 平均後、裁剪前的梯度（供對拍；acc 在這一步之後不再被改動）
+      phases: ph,            // 協調端各段時間（毫秒）：tAccum 梯度加權累加、tNorm 範數、tAdamW 更新、tTotal 整步（不含等資源）
       t,
       n: N,
       shares: Object.assign({}, shareMap),
