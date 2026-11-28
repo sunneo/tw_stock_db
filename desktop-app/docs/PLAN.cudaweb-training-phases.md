@@ -130,7 +130,7 @@
 | 9 | 載入修正：主行程工作室 host 能載入 | 通過 | 修正前檔案重現 `Cannot find module './lora_ref_train.js'`；修正後真 Electron 後端清單正常（742f82f00，studio_host_load_test cf607cf1d） |
 
 **未通過項目的處理**
-- 3（速度拆解）：列為 P1 未完成項，不以估計代替量測。
+- 3（速度拆解）：列為 P1 未完成項，不以估計代替量測。P1 的效率標準已改為「正確性＋可解釋的效能」：可攜量測工具已交付（`scripts/bench/portable_bench.js`，在本機已端到端跑過 S、M、L，結束後無殘留行程），屋頂線對實測表已列於上節。效率的誠實結論是：本機 cudaweb 比 cpu-py 慢 2.1–11.3 倍，原因尚未拆解。拆解與加速列為 P1b（不阻擋 P2）。
 - 7 的畫面部分：工作室還沒有每步損失與毫秒的畫面，列為 P3（工作室引導入口）的範圍，但 P1 的完成標準包含它，所以 P1 仍未通過。
 - 另有一項不在完成標準內、但與 RoPE 修正相關：LoRA 套用路徑（`lora_apply_core`）未檢查 rope 慣例標記（見 `docs/REPORT.rope-fix.md`）。
 
@@ -156,8 +156,23 @@
 - 本文件較早的「cudaweb 每步 3379 ms、比 cpu-py 慢約 30 倍」來自舊的逐運算呼叫路徑（每步 166 次 GPU 呼叫，`full_param_train.js` 的 cudaweb 介面），已被 `fullParamStepDevice` 取代。它的數字仍是該舊路徑的真實量測，但不代表目前的 cudaweb 步。
 - 較早的「穩態約 30 ms／步」（dense 與 gqa_qkn 對拍 fixture）是 S 規模，不可與 cpu-py 的 L 規模比較。
 
+**屋頂線 vs 實測（可攜工具 `scripts/bench/portable_bench.js` 的輸出，峰值 0.3 TFLOPS、14 GB/s，30 步取中位數）**
+
+| 規模 | T | FLOPs／步 | 屋頂線預測 ms | cudaweb 實測 ms | cudaweb÷屋頂線 | cpu-py 實測 ms | cudaweb÷cpu-py |
+|---|---|---|---|---|---|---|---|
+| S | 12 | 2.03e6 | 0.046 | 32.1 | 697× | 15.6 | 2.1× |
+| M | 64 | 2.77e8 | 1.126 | 289.7 | 257× | 51.6 | 5.6× |
+| L | 128 | 2.42e9 | 8.053 | 1262.3 | 157× | 111.9 | 11.3× |
+| XL | 256 | 未量 | — | 裝置遺失（DXGI_ERROR_DEVICE_HUNG，TDR） | — | 620.2 | — |
+
+- 固定開銷（S 實測減 S 屋頂線）：約 32 ms／步，是上界。
+- 實測有效速率：cudaweb 約 2.2 GFLOP/s（M 到 L 的斜率）；cpu-py 約 21.6 GFLOP/s（L 的平均）。
+- 交叉點：實測斜率下不存在（cudaweb 斜率比 cpu-py 平緩）。若 cudaweb 達到屋頂線，假設固定開銷不隨規模增長，交叉點約每步 7.5e8 FLOPs（介於 M 與 L 之間）。
+- 差距未拆解：屋頂線與實測之間約 157 倍（L），來源包括每步派發數、JS 陣列轉換、讀回與頻寬利用率，各自佔比待 P1b 量測。XL 的 cudaweb 會讓 GPU 裝置遺失，因此不納入 cudaweb 的 P1 量測；cpu-py 的 XL 另外量到 620 ms。
+- 工具的已知限制：`bench_cpu_py_steps.js` 目前不接受規模篩選，所以 cpu-py 會跑全部四個規模（包含 XL），摘要表只列 cudaweb 有量到的規模。
+
 **結論**
-1. 在本次量到的規模（S、M、L），cudaweb 全參數步都比 cpu-py 慢，比值從 2.1 倍擴大到 11.4 倍。
+1. 在本次量到的規模（S、M、L），cudaweb 全參數步都比 cpu-py 慢，比值從 2.1 倍擴大到 11.3 倍。
 2. 交叉點：本次量測中沒有交叉。
 3. 屋頂線預測：L 規模每步 2.4 GFLOP（前向加反向），以 0.3 TFLOPS 計，運算下限約 8.1 ms；記憶體下限約 5.0 ms（見 `REPORT.full-param-cudaweb-speed.md`）。若 cudaweb 達到屋頂線，L 規模應約 10–20 ms，低於 cpu-py 的 111 ms，交叉點會落在 M 與 L 之間或更小的規模。實測 L 是 1261 ms，比運算下限慢約 150 倍。
 4. 差距的來源尚未拆解。S 規模的 32 ms 若大部分是每次呼叫的固定開銷（較早量得基準呼叫約 12 ms），那麼規模增加時差距擴大，表示還有隨資料量增長的成本，不只是固定開銷。哪一段佔多少，需要第 3 項的速度拆解（GPU 時間戳或分段計時）才能確認；目前只能說「未拆解」。
