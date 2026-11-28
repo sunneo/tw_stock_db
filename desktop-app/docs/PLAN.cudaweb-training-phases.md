@@ -512,6 +512,21 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 
 已知對照：JS cpu 矩陣乘 19.7 GFLOPS；cudaweb 矩陣乘 62–105 GFLOPS，約 3–5 倍。cudaweb 步時間比 cpu-py 慢，代表有東西遠低於裝置能力，不是「GPU 本來就慢」。
 
+### P1c-2 異質分工：第二半（cpu-py ＋ cudaweb 分擔同一步）— 2026-11-28 盤點
+
+現況盤點（讀碼，尚未實作）：
+- **cpu-py**（`renderer/src/studio/llm_full_cpu.py` 的 `run(job)`）：每步內部做完整的 zero_grad、clip、optimizer.step，**沒有把梯度匯出的路徑**。要分擔，必須新增「只算梯度、回傳梯度」的模式。
+- **cudaweb**（`fullParamStepDevice`）：梯度在 GPU 上直接做 AdamW（`X.adamw`），**沒有梯度匯出**。要分擔，必須新增「算梯度、讀回（或留在 GPU）、不更新」的變體。
+- 協調端不存在：兩邊要共用同一批資料切分、比例、梯度平均與同步的更新。
+- 既有可沿用：`hetero_split.js`（分攤公式）、`cpu_share.js`（矩陣乘列切分，只限矩陣乘，不是整步）。
+
+最小版的設計（待實作）：
+1. 資料並行：批次切成兩半（比例由能力檔決定：cpu-py 與 cudaweb 的實測單步時間），各自算梯度；梯度按 token 數加權平均後，兩邊套用同一個 AdamW 更新。
+2. 數值等價：加權平均梯度要與單一資源整批的梯度一致（對拍 PyTorch，門檻 ≤ 1e-5 相對）。
+3. 量測：S／M／L 各一欄：單 cpu-py、單 cudaweb、兩者合作三種每步時間。若合作輸給單 cpu-py，如實寫，保持預設關。
+
+**阻礙與下一步**：這需要兩個新能力（cpu-py 梯度匯出模式、cudaweb 梯度匯出模式）與一個協調端；沒有一個可以在單一小改動內完成。下一步：先做 cudaweb 的梯度匯出（在 fullParamStepDevice 加 `o.applyUpdate=false`，讀回梯度），用單核心對拍確認匯出的梯度等於 PyTorch 梯度。
+
 ### P1c-2 異質分工（狀態：未開始）
 
 依使用者要求：cpu 與 cudaweb 以資料並行分擔同一訓練步，比例由能力檔決定、並線上自適應；梯度平均須與單一資源數值一致（對拍 PyTorch，門檻不緊於 f32 地板，同時比 f32 參考）；量 S/M/L 的單 cpu、單 cudaweb、合作三種時間，與屋頂線對照。既有 `cpu_share.js`（矩陣乘列切分）與 `hetero_split.js`（分攤公式）可沿用，設計見 `docs/DESIGN.cudaweb-hetero.md`。
