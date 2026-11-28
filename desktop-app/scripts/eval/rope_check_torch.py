@@ -60,9 +60,9 @@ def main():
         }
         out["cases"].append({"T": T, "H": H, "hd": hd, **d})
         print("%-14s %-14.3e %-14.3e %-14.3e %-14.3e" % ("%d,%d,%d" % (T, H, hd), d["gpu_plus_vs_interleaved"], d["gpu_plus_vs_rotate_half"], d["gpu_minus_vs_interleaved"], d["gpu_minus_vs_rotate_half"]))
-    ok_interleaved = all(c["gpu_plus_vs_interleaved"] < 1e-5 and c["gpu_minus_vs_interleaved"] < 1e-5 for c in out["cases"])
-    differs_rotate = all(c["gpu_plus_vs_rotate_half"] > 1e-2 for c in out["cases"])
-    out["verdict"] = {"GPU核心等於交錯慣例(門檻1e-5)": ok_interleaved, "GPU核心與rotate-half不同(>1e-2)": differs_rotate}
+    ok_rotate = all(c["gpu_plus_vs_rotate_half"] < 1e-5 and c["gpu_minus_vs_rotate_half"] < 1e-5 for c in out["cases"])
+    differs_interleaved = all(c["gpu_plus_vs_interleaved"] > 1e-2 for c in out["cases"])
+    out["verdict"] = {"GPU核心等於 rotate-half（門檻1e-5，正向與反向）": ok_rotate, "GPU核心與交錯慣例不同（>1e-2，確認已改掉）": differs_interleaved}
     print("結論：", out["verdict"])
     json.dump(out, open(sys.argv[1] + ".verdict.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 

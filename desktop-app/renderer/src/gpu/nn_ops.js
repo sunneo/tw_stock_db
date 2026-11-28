@@ -527,16 +527,20 @@ async function silu(x, opts) {
 
 // ---------- RoPE（旋轉位置編碼）----------
 // x 為 T×(H·hd) 列主序；每個 head 內相鄰兩維一組，角度 θ = t · 10000^(−2i/hd)；dir=−1 為反向（轉置旋轉）
+// 慣例：rotate-half（與 llm_scratch.py 的 rot_half、Qwen 推論 qwen_decode.js 一致）。每個 head 內第 i 維與第 i+hd/2 維成一對，
+// θ_i = t · 10000^(−2i/hd)；y_i = x_i·cos − x_{i+h}·sin，y_{i+h} = x_{i+h}·cos + x_i·sin（sin 乘 dir；dir=−1 為反向）。
+// 舊版是交錯成對（2i、2i+1），與推論不一致；LoRA 檢查點以 ROPE_CONVENTION 標記版本，舊版拒絕載入（見 backend_cudaweb.js、lora_ref_train.js）。
+const ROPE_CONVENTION = 'rotate-half-v1';
 function ropeRef(x, T, H, hd, dir) {
   if (x.length !== T * H * hd) throw new Error('rope：x 的長度 ' + x.length + ' 與 T×H×hd=' + (T * H * hd) + ' 不符');
   if (hd % 2 !== 0) throw new Error('rope：hd 必須是偶數（收到 ' + hd + '）');
-  const y = new Float64Array(x.length), d = H * hd;
-  for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < hd / 2; i++) {
+  const y = new Float64Array(x.length), d = H * hd, half = hd / 2;
+  for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) {
     const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th);
-    const o = t * d + h * hd + 2 * i;
-    const a = x[o], b = x[o + 1];
-    y[o] = a * c - b * s;
-    y[o + 1] = a * s + b * c;
+    const o = t * d + h * hd;
+    const a = x[o + i], b = x[o + i + half];
+    y[o + i] = a * c - b * s;
+    y[o + i + half] = b * c + a * s;
   }
   return y;
 }
@@ -549,26 +553,26 @@ struct P { T: u32, H: u32, hd: u32, dir: f32 }
 // @kernel rope
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let hp = p.hd / 2u;
-  let total = p.T * p.H * hp;
+  let half = p.hd / 2u;
+  let total = p.T * p.H * half;
   let k = gid.x;
   if (k >= total) { return; }
-  let i = k % hp;
-  let h = (k / hp) % p.H;
-  let t = k / (hp * p.H);
+  let i = k % half;
+  let h = (k / half) % p.H;
+  let t = k / (half * p.H);
   let d = p.H * p.hd;
   let th = f32(t) * pow(10000.0, -2.0 * f32(i) / f32(p.hd));
   let c = cos(th);
   let s = p.dir * sin(th);
-  let o = t * d + h * p.hd + 2u * i;
+  let o = t * d + h * p.hd + i;
   let a = x[o];
-  let b = x[o + 1u];
+  let b = x[o + half];
   y[o] = a * c - b * s;
-  y[o + 1u] = a * s + b * c;
+  y[o + half] = b * c + a * s;
 }
 `;
 
-// WebGL2 片段著色器：每個輸出元素依自己在 (t, h, 對) 中的位置，取出同一對的兩個輸入做旋轉
+// WebGL2 片段著色器：每個輸出元素依自己在 (t, h, 維) 中的位置，取出自己與配對維（i±hd/2）做旋轉
 const FS_ROPE = `#version 300 es
 precision highp float;
 precision highp int;
@@ -587,15 +591,16 @@ void main() {
   if (idx >= uT * d) { fragColor = vec4(0.0); return; }
   int t = idx / d;
   int rem = idx - t * d;
-  int r2 = rem % uHd;
-  int i = r2 / 2;
-  int o = idx - (r2 - 2 * i);
+  int r = rem % uHd;
+  int half = uHd / 2;
+  int i = r < half ? r : r - half;
+  int partner = r < half ? idx + half : idx - half;
   float th = float(t) * pow(10000.0, -2.0 * float(i) / float(uHd));
   float c = cos(th);
   float s = uDir * sin(th);
-  float a = fetchX(o);
-  float b = fetchX(o + 1);
-  float v = (r2 == 2 * i) ? (a * c - b * s) : (a * s + b * c);
+  float self = fetchX(idx);
+  float other = fetchX(partner);
+  float v = (r < half) ? (self * c - other * s) : (self * c + other * s);
   fragColor = vec4(v, 0.0, 0.0, 1.0);
 }
 `;
@@ -1183,4 +1188,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, crossEntropy, crossEntropyRef, WGSL_CE, f32ToF16Bits, f16ToF32, WGSL_AXPY_B, WGSL_MUL_B, WGSL_SCAL_B, MM_F16_CODE, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };
+module.exports = { ROPE_CONVENTION, ropeRef, trainerOps, crossEntropy, crossEntropyRef, WGSL_CE, f32ToF16Bits, f16ToF32, WGSL_AXPY_B, WGSL_MUL_B, WGSL_SCAL_B, MM_F16_CODE, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };

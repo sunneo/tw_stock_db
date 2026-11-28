@@ -108,8 +108,6 @@ function makeResidentState(device, cfg, init) {
   const maxN = Math.max(...list.map((x) => x[1]), cfg.T * D.d, cfg.T * D.F, cfg.T * D.V, cfg.T * D.H * D.hd);
   const ones = mk(maxN, new Float32Array(maxN).fill(1));
   // RoPE 排列（寬度 d 用 H 頭；寬度 kd 用 KVH 頭）：把 rotate-half 配對換成核心的交錯配對（精確的 0/1 排列）
-  const permD = mk(D.d * D.d, permMatrix(D.d, D.H));
-  const permKd = mk(D.kd * D.kd, permMatrix(D.kd, D.KVH));
   // GQA 擴張矩陣 E（kd×d）：E[g·hd+u][h·hd+u] = 1，g = floor(h / rep)
   let expand = null;
   if (D.gqa) {
@@ -117,16 +115,7 @@ function makeResidentState(device, cfg, init) {
     for (let h = 0; h < D.H; h++) { const g = Math.floor(h / D.rep); for (let u = 0; u < D.hd; u++) E[(g * D.hd + u) * D.d + (h * D.hd + u)] = 1; }
     expand = mk(D.kd * D.d, E);
   }
-  return { P: P, M: M, V: Vv, ones: ones, permD: permD, permKd: permKd, expand: expand, t: 0, cfg: cfg, D: D };
-}
-// perm[src·d + j] = 1，j 是交錯位置、src 是 rotate-half 來源位置（每個頭內）
-function permMatrix(width, Hn) {
-  const hd = width / Hn, half = hd / 2, Pm = new Float32Array(width * width);
-  for (let h = 0; h < Hn; h++) for (let i = 0; i < half; i++) {
-    Pm[(h * hd + i) * width + (h * hd + 2 * i)] = 1;
-    Pm[(h * hd + i + half) * width + (h * hd + 2 * i + 1)] = 1;
-  }
-  return Pm;
+  return { P: P, M: M, V: Vv, ones: ones, expand: expand, t: 0, cfg: cfg, D: D };
 }
 function initFor(init, name) {
   if (name === 'emb') return init.emb;
@@ -149,12 +138,8 @@ async function fullParamStepDevice(o) {
     return B.matmul(onesRow(rows), B.mul(dy, y1), 1, rows, width);
   };
   const gacc = {}; const accum = (name, h) => { gacc[name] = gacc[name] ? B.axpy(gacc[name], h, 1) : h; };
-  // rotate-half RoPE：排列 → 交錯 RoPE 核心（Hn 頭、寬度 width、方向 dir）→ 反排列
-  const rp = (x, dir, T, Hn, width, perm) => {
-    const xp = B.matmul(x, perm, T, width, width);
-    const z = B.rope(xp, T, Hn, width / Hn, dir);
-    return B.matmul(z, perm, T, width, width, { transB: true });
-  };
+  // RoPE：核心本身就是 rotate-half（nn_ops.ROPE_CONVENTION），不再需要排列矩陣包裝（省下每層每步 4 次矩陣乘）
+  const rp = (x, dir, T, Hn, width) => B.rope(x, T, Hn, width / Hn, dir);
   const lossRows = [];
   for (const tokens of seqs) {
     const T = tokens.length - 1, inp = tokens.slice(0, T), tgt = tokens.slice(1);
@@ -173,8 +158,8 @@ async function fullParamStepDevice(o) {
         c.qIn = q0; qx = B.rmsnorm(q0, P('qn'), T * H, hd, EPS); c.qN = qx;
         c.kIn = k0; kx = B.rmsnorm(k0, P('kn'), T * KVH, hd, EPS); c.kN = kx;
       }
-      c.q = rp(qx, 1, T, H, d, S.permD);
-      c.kR = rp(kx, 1, T, KVH, kd, S.permKd);
+      c.q = rp(qx, 1, T, H, d);
+      c.kR = rp(kx, 1, T, KVH, kd);
       // 分組查詢：k、v 擴成 H 個頭（矩陣乘 with E）
       c.k = gqa ? B.matmul(c.kR, S.expand, T, kd, d) : c.kR;
       c.v = gqa ? B.matmul(v0, S.expand, T, kd, d) : v0;
@@ -211,10 +196,10 @@ async function fullParamStepDevice(o) {
       const dao = B.matmul(dh1, P('Wo'), T, d, d, { transB: true });
       const ab = X.attnBwd(dao, c.q, c.k, c.v, c.ao, c.pm, T, H, hd);
       // q：RoPE 反向（H 頭）→ qk-norm 反向（T·H 列）
-      let dq = rp(ab.dq, -1, T, H, d, S.permD);
+      let dq = rp(ab.dq, -1, T, H, d);
       // k：先從 H 個頭加總回 KVH 個頭（Eᵀ），再 RoPE 反向（KVH 頭）→ qk-norm 反向（T·KVH 列）
       let dkR = gqa ? B.matmul(ab.dk, S.expand, T, d, kd, { transB: true }) : ab.dk;
-      let dk = rp(dkR, -1, T, KVH, kd, S.permKd);
+      let dk = rp(dkR, -1, T, KVH, kd);
       let dvK = gqa ? B.matmul(ab.dv, S.expand, T, d, kd, { transB: true }) : ab.dv;
       if (qkn) {
         accum(pre + 'qn', gainGrad(dq, c.qIn, T * H, hd));

@@ -154,9 +154,10 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
   await check('ropeRef：位置 0 不旋轉（θ=0）；每對維度的長度保持不變（正交）', async () => {
     const y = NN.ropeRef(rx, RT, RH, Rhd, 1);
     for (let i = 0; i < RH * Rhd; i++) assert.ok(Math.abs(y[i] - rx[i]) < 1e-12, '位置 0 第 ' + i);
+    // rotate-half：每對是 (i, i+hd/2)
     for (let t = 0; t < RT; t++) for (let h = 0; h < RH; h++) for (let i = 0; i < Rhd / 2; i++) {
-      const o = t * RH * Rhd + h * Rhd + 2 * i;
-      const n0 = Math.hypot(rx[o], rx[o + 1]), n1 = Math.hypot(y[o], y[o + 1]);
+      const o = t * RH * Rhd + h * Rhd + i, p = o + Rhd / 2;
+      const n0 = Math.hypot(rx[o], rx[p]), n1 = Math.hypot(y[o], y[p]);
       assert.ok(Math.abs(n0 - n1) < 1e-9, '第 t=' + t + ' 對 ' + i + ' 長度改變');
     }
   });

@@ -4,6 +4,8 @@
 // 只涵蓋 JS 訓練器；llm_scratch.py 走它自己的 torch 路徑，不經過這裡。
 // probe 依真實能力回報：有可用的 WebGPU 裝置或 WebGL2 上下文、且拿得到運算執行期時才 available:true，reason 寫明實際層。
 const B = require('./backend_core.js');
+// RoPE 慣例版本（與 lora_ref_train.js 的 ROPE_CONVENTION 相同；這裡不 require 它，因為主行程扁平套件沒有該檔，測試會核對兩者一致）
+const ROPE_CONVENTION = 'rotate-half-v1';
 // 訓練用的模組（lora_ref_train、gpu/nn_ops、gpu/train_step_device）只在真的要訓練時才載入：主行程的工作室宿主是扁平打包的，載不到 ../gpu/，probe 與清單不可因此失敗。
 let _deps = null;
 function D() { if (!_deps) _deps = { T: require('./lora_ref_train.js'), NN: require('../gpu/nn_ops.js'), TS: require('../gpu/train_step_device.js') }; return _deps; }
@@ -102,10 +104,12 @@ function createCudawebBackend(o) {
     async saveCheckpoint() {
       if (!st) throw new Error('cudaweb：尚未 init');
       const lora = st.m.lora.map((lo) => { const o2 = {}; for (const k of ['q', 'k', 'v', 'o']) o2[k] = { A: Array.from(lo[k].A), B: Array.from(lo[k].B) }; return o2; });
-      return { cfg: st.m.cfg, lora, t: st.adam.t };
+      return { cfg: st.m.cfg, lora, t: st.adam.t, rope: ROPE_CONVENTION };
     },
     async loadCheckpoint(ck) {
       if (!st) throw new Error('cudaweb：尚未 init');
+      // RoPE 慣例防護：舊版（交錯成對）或沒有標記的 LoRA 檢查點，套用到 rotate-half 的基礎模型會得到壞結果，一律拒絕並說明要重訓
+      if (!ck || ck.rope !== ROPE_CONVENTION) throw new Error('LoRA 檢查點的 RoPE 慣例是' + (ck && ck.rope ? '「' + ck.rope + '」' : '未標記（舊版交錯成對）') + '，目前需要「' + ROPE_CONVENTION + '」（與推論的 rotate-half 一致）。舊檢查點不能載入，請以目前版本重新訓練。');
       st.m.lora.forEach((lo, l) => { for (const k of ['q', 'k', 'v', 'o']) { lo[k].A.set(ck.lora[l][k].A); lo[k].B.set(ck.lora[l][k].B); } });
       st.adam.t = ck.t || 0;
       return { ok: true };

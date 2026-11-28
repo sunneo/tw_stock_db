@@ -365,10 +365,12 @@ function fakeGl(opts) {
           const W = gl.uniforms.uW, T = gl.uniforms.uT, H = gl.uniforms.uH, hd = gl.uniforms.uHd, dir = gl.uniforms.uDir, X = tex('uX');
           const d = H * hd, idx = y * ow + x;
           if (idx < T * d) {
-            const t = Math.floor(idx / d), rem = idx - t * d, r2 = rem % hd, i = Math.floor(r2 / 2), o = idx - (r2 - 2 * i);
+            // rotate-half：r < hd/2 取配對 idx+hd/2，否則 idx−hd/2（與 nn_ops.FS_ROPE 同一組索引）
+            const half = hd / 2, t = Math.floor(idx / d), rem = idx - t * d, r = rem % hd, i = r < half ? r : r - half;
+            const partner = r < half ? idx + half : idx - half;
             const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th);
-            const a = at(X, o % W, Math.floor(o / W)), b = at(X, (o + 1) % W, Math.floor((o + 1) / W));
-            v = (r2 === 2 * i) ? (a * c - b * s) : (a * s + b * c);
+            const self = at(X, idx % W, Math.floor(idx / W)), other = at(X, partner % W, Math.floor(partner / W));
+            v = (r < half) ? (self * c - other * s) : (self * c + other * s);
           }
         } else if (k === 'adamw_p' || k === 'adamw_m' || k === 'adamw_v') {
           // 逐像素重現 fsAdamw 的三個輸出（同一組公式）

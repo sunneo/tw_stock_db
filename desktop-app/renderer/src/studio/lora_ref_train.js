@@ -31,8 +31,10 @@ function mmAt(A, B, m, k, n, R) { const C = new Float64Array(m * n); for (let p 
 function rmsFwd(x, g, T, d, R) { const y = new Float64Array(T * d), inv = new Float64Array(T); for (let t = 0; t < T; t++) { let s = 0; for (let i = 0; i < d; i++) s += x[t * d + i] ** 2; const iv = 1 / Math.sqrt(s / d + 1e-6); inv[t] = iv; for (let i = 0; i < d; i++) { const v = x[t * d + i] * iv * g[i]; y[t * d + i] = R ? R(v) : v; } } return { y, inv }; }
 function rmsBwd(dy, x, g, inv, T, d) { const dx = new Float64Array(T * d); for (let t = 0; t < T; t++) { let md = 0; for (let i = 0; i < d; i++) md += dy[t * d + i] * g[i] * x[t * d + i] * inv[t]; md /= d; for (let i = 0; i < d; i++) { const xh = x[t * d + i] * inv[t]; dx[t * d + i] = inv[t] * (dy[t * d + i] * g[i] - xh * md); } } return dx; }
 
-// RoPE：每個 head 內相鄰兩維為一對；dir=-1 即反向（轉置旋轉）
-function rope(x, T, H, hd, dir) { const y = new Float64Array(x.length); const d = H * hd; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < hd / 2; i++) { const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th); const o = t * d + h * hd + 2 * i; const a = x[o], b = x[o + 1]; y[o] = a * c - b * s; y[o + 1] = a * s + b * c; } return y; }
+// RoPE：rotate-half（與 llm_scratch、Qwen 推論一致）：每個 head 內第 i 維與第 i+hd/2 維成一對；dir=-1 即反向（轉置旋轉）。
+// 與 nn_ops.ropeRef 相同（ROPE_CONVENTION = 'rotate-half-v1'）。舊版交錯成對的 LoRA 檢查點不能再載入（見 ROPE_CONVENTION 檢查）。
+const ROPE_CONVENTION = 'rotate-half-v1';
+function rope(x, T, H, hd, dir) { const y = new Float64Array(x.length); const d = H * hd, half = hd / 2; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) { const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th); const o = t * d + h * hd; const a = x[o + i], b = x[o + i + half]; y[o + i] = a * c - b * s; y[o + i + half] = b * c + a * s; } return y; }
 
 const sig = (x) => 1 / (1 + Math.exp(-x));
 
@@ -405,5 +407,5 @@ function cudawebMatmulBackend(rt) {
     return be;
 }
 
-module.exports = { makeModel, lossAndGrads, adamInit, adamStep, estimate06B, makeRng,
+module.exports = { ROPE_CONVENTION, makeModel, lossAndGrads, adamInit, adamStep, estimate06B, makeRng,
     lossAndGradsAsync, adamStepAsync, cpuMatmulBackend, cpuNnOps, cudawebMatmulBackend };

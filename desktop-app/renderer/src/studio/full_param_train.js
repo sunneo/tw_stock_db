@@ -135,13 +135,11 @@ const CPU_OPS = {
 // RoPE：nn_ops.rope 是交錯成對，本模組是 rotate-half；兩者用純資料排列（無算術）互換，結果等價。
 function gpuOpsFrom(NN, navigator) {
   const base = NN.trainerOps({ navigator });
-  const toPairs = (x, T, H, hd) => { const y = new Float64Array(x.length), half = hd / 2; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) { const o = t * H * hd + h * hd; for (let i = 0; i < half; i++) { y[o + 2 * i] = x[o + i]; y[o + 2 * i + 1] = x[o + i + half]; } } return y; };
-  const fromPairs = (z, T, H, hd) => { const y = new Float64Array(z.length), half = hd / 2; for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) { const o = t * H * hd + h * hd; for (let i = 0; i < half; i++) { y[o + i] = z[o + 2 * i]; y[o + i + half] = z[o + 2 * i + 1]; } } return y; };
   return {
     rmsnorm: async (x, g, rows, width) => base.rmsnorm(Float32Array.from(x), Float32Array.from(g), rows, width, EPS),
     softmax: async (x, rows, cols) => base.softmax(Float32Array.from(x), rows, cols),
     silu: async (x) => base.silu(Float32Array.from(x)),
-    rope: async (x, T, H, hd, dir) => fromPairs(Float64Array.from(await base.rope(Float32Array.from(toPairs(x, T, H, hd)), T, H, hd, dir)), T, H, hd),
+    rope: async (x, T, H, hd, dir) => Float64Array.from(await base.rope(Float32Array.from(x), T, H, hd, dir)),
     adamw: async (p, g, m, v, t, lr, b1, b2, eps, wd) => base.adamw(Float32Array.from(p), Float32Array.from(g), Float32Array.from(m), Float32Array.from(v), t, lr, b1, b2, eps, wd),
   };
 }

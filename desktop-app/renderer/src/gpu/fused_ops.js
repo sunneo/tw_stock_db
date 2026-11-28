@@ -116,12 +116,13 @@ function ropeQkvRef(q, k, v, T, H, Hkv, hd) {
   if (q.length !== T * H * hd || k.length !== T * Hkv * hd || v.length !== T * Hkv * hd) throw new Error('rope_qkv：q／k／v 的長度與 T、H、Hkv、hd 不符');
   const qo = new Float32Array(q.length), ko = new Float32Array(k.length), vo = Float32Array.from(v);
   const hp = hd / 2;
+  // rotate-half：第 i 維與第 i+hp 維成一對（與 nn_ops.ROPE_CONVENTION 相同）
   const rot = (src, dst, heads, t, h, i) => {
     const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = Math.sin(th);
-    const o = t * heads * hd + h * hd + 2 * i;
-    const a = src[o], b = src[o + 1];
+    const o = t * heads * hd + h * hd + i;
+    const a = src[o], b = src[o + hp];
     dst[o] = a * c - b * s;
-    dst[o + 1] = a * s + b * c;
+    dst[o + hp] = b * c + a * s;
   };
   for (let t = 0; t < T; t++) {
     for (let h = 0; h < H; h++) for (let i = 0; i < hp; i++) rot(q, qo, H, t, h, i);
@@ -154,11 +155,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let th = f32(t) * pow(10000.0, -2.0 * f32(i) / f32(p.hd));
     let c = cos(th);
     let s = sin(th);
-    let o = t * p.H * p.hd + h * p.hd + 2u * i;
+    // rotate-half：第 i 維與第 i+hp 維成一對（與 nn_ops.ROPE_CONVENTION 相同）
+    let o = t * p.H * p.hd + h * p.hd + i;
     let a = qin[o];
-    let b = qin[o + 1u];
+    let b = qin[o + hp];
     qout[o] = a * c - b * s;
-    qout[o + 1u] = a * s + b * c;
+    qout[o + hp] = b * c + a * s;
   }
   if (k >= qRot && k < qRot + kRot) {
     let kk = k - qRot;
@@ -168,11 +170,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let th = f32(t) * pow(10000.0, -2.0 * f32(i) / f32(p.hd));
     let c = cos(th);
     let s = sin(th);
-    let o = t * p.Hkv * p.hd + h * p.hd + 2u * i;
+    let o = t * p.Hkv * p.hd + h * p.hd + i;
     let a = kin[o];
-    let b = kin[o + 1u];
+    let b = kin[o + hp];
     kout[o] = a * c - b * s;
-    kout[o + 1u] = a * s + b * c;
+    kout[o + hp] = b * c + a * s;
   }
   if (k < p.T * p.Hkv * p.hd) { vout[k] = vin[k]; }
 }

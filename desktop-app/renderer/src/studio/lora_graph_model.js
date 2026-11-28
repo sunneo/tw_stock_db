@@ -8,8 +8,11 @@ const Gm = require('./onnx_grad_core.js');
 
 function ropeMats(T, d, H) {
     const hd = d / H, C = new Float64Array(T * d), S = new Float64Array(T * d), R = new Float64Array(d * d);
-    for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < hd / 2; i++) { const th = t * Math.pow(10000, -2 * i / hd); const o = t * d + h * hd + 2 * i; C[o] = C[o + 1] = Math.cos(th); S[o] = S[o + 1] = Math.sin(th); }
-    for (let i = 0; i < d; i += 2) { R[i * d + i + 1] = 1; R[(i + 1) * d + i] = -1; }   // (x·R)[2i] = -x[2i+1]，(x·R)[2i+1] = x[2i]
+    // rotate-half（與 nn_ops.ROPE_CONVENTION 相同）：第 i 維與第 i+hd/2 維成一對，y = x·C + (x·R)·S
+    const half = hd / 2;
+    for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) { const th = t * Math.pow(10000, -2 * i / hd); const o = t * d + h * hd + i; C[o] = C[o + half] = Math.cos(th); S[o] = S[o + half] = Math.sin(th); }
+    // (x·R)[i] = −x[i+hd/2]，(x·R)[i+hd/2] = x[i]（每個 head 內）
+    for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) { const a = h * hd + i, b = a + half; R[b * d + a] = -1; R[a * d + b] = 1; }
     return { C, S, R };
 }
 
