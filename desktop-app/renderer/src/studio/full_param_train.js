@@ -15,6 +15,18 @@ function tr(X, r, c) {
   for (let i = 0; i < r; i++) for (let j = 0; j < c; j++) Y[j * r + i] = X[i * c + j];
   return Y;
 }
+// cudaweb 矩陣乘後端：所有線性層與注意力的矩陣乘都走 rt.matmul（cudaweb 執行期）。
+// 其餘逐元素運算（RMSNorm、softmax、SiLU、RoPE、AdamW）目前仍在 CPU（f64），盤點見 INVENTORY §1。
+// rt.matmul 回傳 { result, info:{ layer, reason } }，與 lora_ref_train.js 的 cudawebMatmulBackend 相同介面。
+function cudawebBackend(rt) {
+  const be = { id: 'cudaweb', layer: null, reason: null, calls: 0 };
+  be.matmul = async (A, B, m, k, n) => {
+    const r = await rt.matmul(Array.from(A), Array.from(B), m, k, n);
+    be.calls++; be.layer = r.info.layer; be.reason = r.info.reason || null;
+    return Float64Array.from(r.result);
+  };
+  return be;
+}
 // 矩陣乘（A: m×k，B: k×n）。be.matmul 可以是 async；這裡一律 await。
 async function mm(be, A, B, m, k, n) {
   return Float64Array.from(await be.matmul(A, B, m, k, n));
@@ -240,4 +252,39 @@ async function trainStep(m, tokens, st, o) {
   return { loss: f.loss, gradNorm: clip.norm, grads: g };
 }
 
-module.exports = { fromInit, zeroGrads, forward, backward, clipGrads, adamInit, adamStep, trainStep, rmsFwd, rmsBwd, rope, tr, cpuBackend, LAYER_KEYS, eachParam, EPS };
+// ---- 檢查點（P1 S5）：沿用 checkpoint_core.js 的 fa-f32 張量容器與 sha256 校驗 ----
+// 與 LoRA 檢查點不同：三個張量檔 params.f32、opt_m.f32、opt_v.f32（全參數，檔名固定）。
+// 存的是 f32（容器格式），所以續訓與不停的版本只在 f32 捨入的程度內一致，測試以相對誤差判定。
+const CK = require('./checkpoint_core.js');
+
+function saveState(m, st, nextBatch, meta) {
+  const lp = [], lm = [], lv = [];
+  eachParam(m, st.m, (p, _mm, name) => lp.push({ name, data: p, shape: [p.length] }));
+  eachParam(m, st.m, (_p, mm1, name) => lm.push({ name, data: mm1, shape: [mm1.length] }));
+  eachParam(m, st.v, (_p, vv, name) => lv.push({ name, data: vv, shape: [vv.length] }));
+  const files = { 'params.f32': CK.encodeTensors(lp), 'opt_m.f32': CK.encodeTensors(lm), 'opt_v.f32': CK.encodeTensors(lv) };
+  const sha256 = {}; Object.keys(files).forEach((f) => { sha256[f] = CK.sha256(files[f]); });
+  const ckpt = {
+    format: CK.FORMAT, version: CK.VERSION, step: st.t, next_batch: nextBatch, dtype: 'float32',
+    cfg: m.cfg, optimizer: { name: 'adamw', lr: meta.lr, b1: 0.9, b2: 0.999, eps: 1e-8, wd: meta.wd, clip: meta.clip },
+    sha256, produced_by: (meta && meta.produced_by) || 'full_param_train.js',
+  };
+  return { ckpt, files };
+}
+
+// 載入：先校驗 sha256 與格式，不符就拒絕（不寫入任何狀態）
+function loadState(m, st, cp) {
+  const bad = [];
+  Object.keys(cp.ckpt.sha256 || {}).forEach((f) => { if (!cp.files[f]) bad.push(f + '（檔案不見）'); else if (CK.sha256(cp.files[f]) !== cp.ckpt.sha256[f]) bad.push(f + '（sha256 不符）'); });
+  if (cp.ckpt.format !== CK.FORMAT || cp.ckpt.version !== CK.VERSION) bad.push('格式或版本不合');
+  if (bad.length) throw new Error('檢查點拒絕載入：' + bad.join('；'));
+  const toMap = (buf) => { const mp = new Map(); CK.decodeTensors(buf).forEach((t) => mp.set(t.name, t.data)); return mp; };
+  const P = toMap(cp.files['params.f32']), M = toMap(cp.files['opt_m.f32']), V = toMap(cp.files['opt_v.f32']);
+  eachParam(m, st.m, (p, _mm, name) => { const src = P.get(name); if (!src || src.length !== p.length) throw new Error('參數 ' + name + ' 形狀不符'); p.set(src); });
+  eachParam(m, st.m, (_p, mm1, name) => mm1.set(M.get(name)));
+  eachParam(m, st.v, (_p, vv, name) => vv.set(V.get(name)));
+  st.t = cp.ckpt.step;
+  return { nextBatch: cp.ckpt.next_batch };
+}
+
+module.exports = { fromInit, zeroGrads, forward, backward, clipGrads, adamInit, adamStep, trainStep, rmsFwd, rmsBwd, rope, tr, cpuBackend, cudawebBackend, LAYER_KEYS, eachParam, EPS, saveState, loadState };

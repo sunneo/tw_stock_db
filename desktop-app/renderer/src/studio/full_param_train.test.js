@@ -69,6 +69,30 @@ function cmp(a, b) {
   });
   ok(worstW < 1e-8, '最後權重（全部參數）對 PyTorch', 'max abs=' + worstW.toExponential(2) + ' 最差=' + worstName);
 
+  // 續訓（S5）：不停跑 20 步的損失 vs「跑 10 步、存檔、全新物件載入、再跑 10 步」
+  {
+    const aM = T.fromInit(cfg, fx.init), aS = T.adamInit(aM);
+    const full = [];
+    for (let s = 0; s < 20; s++) full.push((await T.trainStep(aM, fx.batches[s], aS, opt)).loss);
+    const bM = T.fromInit(cfg, fx.init), bS = T.adamInit(bM);
+    const first = [];
+    for (let s = 0; s < 10; s++) first.push((await T.trainStep(bM, fx.batches[s], bS, opt)).loss);
+    const cp = T.saveState(bM, bS, 10, { lr: fx.lr, wd: fx.wd, clip: fx.clip, produced_by: 'test' });
+    const cM = T.fromInit(cfg, fx.init), cS = T.adamInit(cM);
+    const { nextBatch } = T.loadState(cM, cS, cp);
+    ok(nextBatch === 10 && cS.t === 10, '續訓從正確的資料位置接上（載入後）', 'next_batch=' + nextBatch + ' t=' + cS.t);
+    const second = [];
+    for (let s = nextBatch; s < 20; s++) second.push((await T.trainStep(cM, fx.batches[s], cS, opt)).loss);
+    let worstRel = 0;
+    for (let i = 0; i < 10; i++) worstRel = Math.max(worstRel, Math.abs(second[i] - full[10 + i]) / Math.abs(full[10 + i]));
+    ok(worstRel < 1e-5, '續訓後損失曲線連續（第 11–20 步對不停的版本）', 'max rel=' + worstRel.toExponential(2) + '（f32 容器的捨入）');
+    // 竄改檢查：改一個位元組，載入必須拒絕且不寫入
+    const bad = { ckpt: cp.ckpt, files: { ...cp.files } };
+    const tampered = Buffer.from(bad.files['params.f32']); tampered[tampered.length - 1] ^= 0xff; bad.files['params.f32'] = tampered;
+    let rejected = false; try { T.loadState(T.fromInit(cfg, fx.init), T.adamInit(m2), bad); } catch (e) { rejected = /sha256 不符/.test(String(e.message)); }
+    ok(rejected, '竄改的檢查點被拒絕（sha256 不符）');
+  }
+
   console.log(fail === 0 ? '全部通過' : fail + ' 項失敗');
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.log('FAIL 例外：' + (e && e.stack || e)); process.exit(1); });

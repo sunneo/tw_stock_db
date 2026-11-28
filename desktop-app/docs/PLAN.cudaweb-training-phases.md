@@ -21,7 +21,7 @@
 
 | 階段 | 名稱 | 狀態 | 依賴 |
 |---|---|---|---|
-| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 進行中（盤點完成，c1e19f053） | 無 |
+| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 進行中：CPU 全參數 JS 對 PyTorch 已過（S1、S2、S5），GPU 對拍、cpu-py 對拍、屋頂線、真機未做（見證據） | 無 |
 | P2 | 資料入口與預訓練風格：fap 串流、分詞、打包、批次、讀取位置入檢查點；對 HF datasets 逐 token 一致；預訓練在 cpu 與 cudaweb 跑通 | 未開始 | P1 |
 | P3 | 工作室引導入口與資料流水線（最小版，讓 P1／P2 能從 GUI 走完） | 未開始 | P1、P2 |
 | P4 | MoE：路由、負載平衡損失、反向、cudaweb 對拍；接 function call 資料與評量（toolcall） | 未開始 | P1 |
@@ -69,7 +69,25 @@
 
 **go／no-go**：S1 至 S7 全過才進 P2。
 
-**證據**：（待填）
+**證據**（2026-11-28，提交見 git log；未通過，見「狀態」）：
+
+- 模型：P1 採用 `lora_ref_train.js` 的架構（RMSNorm、交錯成對 RoPE、因果注意力、SiLU 閘控 MLP、綁定輸出頭）。**與 llm_scratch 密集模型的差距**：缺 qk-norm 與分組查詢注意力（GQA）兩個運算（盤點 §1a）；這兩項列為 P1 待補項 S3b，未做。
+- 檔案：`renderer/src/studio/full_param_train.js`（全參數前向、反向、裁剪、AdamW、檢查點）、`full_param_ref_torch.py`（PyTorch 真值，用 autograd）、`fixtures/full_param_parity_f64.json`（PyTorch fp64 產生）、`full_param_train.test.js`、`full_param_cudaweb_adapter.test.js`。
+- S1／S2（JS 純 CPU f64 對 PyTorch fp64）：步 1 全部參數梯度最大絕對誤差 **2.0e-15**（相對 3.4e-12）；20 步損失最大絕對誤差 **1.8e-15**；梯度範數 4.2e-14；20 步後權重 2.4e-16。
+- 數學正確性另外用有限差分驗證（中央差分，h=1e-6，抽樣每個參數 3 個元素）：最差相對誤差 3.2e-7（在差分雜訊內）。
+- 量出的 f32 誤差（PyTorch f32 對 PyTorch f64，同一份 fixture）：20 步損失最大絕對誤差 **1.4e-6**；梯度範數 **1.0e-5**；步 1 梯度最大絕對誤差 **6.7e-7**；20 步後權重 **9.0e-7**。**GPU 門檻先定為**：損失與梯度範數絕對誤差 ≤ 1e-5（約為量到的 f32 誤差 7 倍餘裕）；梯度絕對誤差 ≤ 1e-5；相對誤差只在分母 ≥ 1e-3 的元素上比（因為極小梯度的相對誤差會被分母放大，f32 相對誤差在 4e-3 量級，見實測）。
+- S5（續訓）：跑 10 步、`saveState` 存檔（fa-f32 容器＋sha256，沿用 `checkpoint_core.js` 的 `encodeTensors`／`sha256`；**偏離**：不用 `makeCheckpoint`，因為它的檔名寫死為 LoRA 的 `lora_A.f32` 等，改用 `params.f32`、`opt_m.f32`、`opt_v.f32`），全新物件載入後再跑 10 步。第 11–20 步損失對不停的版本：最大相對誤差 **1.1e-8**。竄改一個位元組的檢查點被拒絕（sha256 不符）。
+- S6 接線（cudaweb 矩陣乘）：`cudawebBackend(rt)` 把所有 45 次每步矩陣乘經 `rt.matmul`。**只用假執行期（內部是 CPU 矩陣乘）測試接線**，結果與 CPU 後端逐位元相同；這不是 GPU 結果。
+
+**未完成（P1 不能宣告通過的原因）**：
+
+1. **真 GPU 對拍（S1、S2 在 cudaweb 上）**：未做。需要在 Electron 渲染行程裡用真的 `cudaweb_runtime` 跑 `fixtures/full_param_parity_f64.json`，逐步比對上面的門檻。目前只有 CPU 版對 PyTorch。
+2. **逐元素運算仍在 CPU**：RMSNorm、softmax、SiLU、RoPE、AdamW 目前都在 CPU（f64）。對 cudaweb 的「全部在 GPU」要求，這些要改用 `nn_ops` 的 GPU 版並另外對拍；未做。
+3. **S3（cpu-py 對 PyTorch）**：未做。cpu-py 跑的是 `llm_scratch.py`，它的模型含 qk-norm 與 GQA（待補 S3b），所以要先補這兩項，再做 cpu-py 對拍。
+4. **S4（屋頂線與耗時拆解）**：未做。尚未量測 GPU 時間戳，也沒有拆成核心、上傳、讀回、同步四段。
+5. **S7 與本機真跑**：未做。需要 Electron 真機（獨立 user-data-dir、非 17923 埠、結束用 Win32_Process 確認無殘留）。
+6. **probe 全有或全無（工作項 7）**：未做。目前 `backend_cudaweb.js` 的 probe 還不列缺項。
+7. **工作項 8（model_types_core）**：未做，因為目前 P1 尚未有 cudaweb 可用的全參數路徑（前項未通過前不應列出 cudaweb）。
 
 ---
 
