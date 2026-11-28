@@ -59,7 +59,16 @@ function createStudioHost(d) {
   registry.register(cpuPy);
   ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
   // cudaweb：主行程沒有 GPU 上下文，probe 會說明原因；渲染行程另由 envProbe 注入實際狀態
-  registry.register(require('./backend_cudaweb.js').createCudawebBackend({}));
+  // getRuntime：渲染行程若有 cudaweb 執行期（self.FaCudawebRuntime，需先把 gpu/cudaweb_runtime.js 與其相依打包進頁面）就回傳它；
+  // 主行程沒有 self，回傳 null，probe 照舊說明原因。目前頁面尚未打包該執行期，所以這裡仍是 null（見 PLAN 坑 4）。
+  const cudawebRuntime = () => {
+    try {
+      if (typeof self === 'undefined' || !self.FaCudawebRuntime || !self.FaGpuNn || !self.FaMmOps) return null;
+      if (!self.__faCudawebRt) self.__faCudawebRt = self.FaCudawebRuntime.createRuntime({ nn: self.FaGpuNn, navigator: self.navigator, mm: self.FaMmOps });
+      return self.__faCudawebRt;
+    } catch (e) { return null; }
+  };
+  registry.register(require('./backend_cudaweb.js').createCudawebBackend({ getRuntime: cudawebRuntime }));
   const benchCache = BC.createBenchCache({ load: () => readJson(jf('bench-cache.json'), null), save: (o) => writeJson(jf('bench-cache.json'), o) }, now);
   const ctxOf = (p) => ({ hw, modelSha256: (p && p.modelSha256) || null });
 
