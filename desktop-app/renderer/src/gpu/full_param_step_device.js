@@ -32,6 +32,48 @@ fn main() {
 }
 `;
 
+// 平方和（並行歸約）：每個張量一個工作群組（256 執行緒跨步累加＋樹狀歸約），結果寫進 parts[slot]。
+// 取代先前的 matmul(1×n×1)：那個形狀只有一個輸出，整個 K=n 的迴圈落在單一工作群組上，L 規模慢到幾百 ms。
+const WGSL_SUMSQ = `
+struct P { n: u32, slot: u32, pad0: u32, pad1: u32 }
+@group(0) @binding(0) var<storage, read> g: array<f32>;
+@group(0) @binding(1) var<storage, read_write> parts: array<f32>;
+@group(0) @binding(2) var<uniform> u: P;
+var<workgroup> sh: array<f32, 256>;
+// @kernel sumsq_slot
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  var s: f32 = 0.0;
+  var i: u32 = lid.x;
+  loop { if (i >= u.n) { break; } let v = g[i]; s = s + v * v; i = i + 256u; }
+  sh[lid.x] = s;
+  workgroupBarrier();
+  var st: u32 = 128u;
+  loop { if (st == 0u) { break; } if (lid.x < st) { sh[lid.x] = sh[lid.x] + sh[lid.x + st]; } workgroupBarrier(); st = st / 2u; }
+  if (lid.x == 0u) { parts[u.slot] = sh[0]; }
+}
+`;
+// 把各張量的平方和加總成單一純量（1 個工作群組）
+const WGSL_SUMSLOTS = `
+struct P { k: u32, pad0: u32, pad1: u32, pad2: u32 }
+@group(0) @binding(0) var<storage, read> parts: array<f32>;
+@group(0) @binding(1) var<storage, read_write> tot: array<f32>;
+@group(0) @binding(2) var<uniform> u: P;
+var<workgroup> sh: array<f32, 256>;
+// @kernel sumsq_total
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  var s: f32 = 0.0;
+  var i: u32 = lid.x;
+  loop { if (i >= u.k) { break; } s = s + parts[i]; i = i + 256u; }
+  sh[lid.x] = s;
+  workgroupBarrier();
+  var st: u32 = 128u;
+  loop { if (st == 0u) { break; } if (lid.x < st) { sh[lid.x] = sh[lid.x] + sh[lid.x + st]; } workgroupBarrier(); st = st / 2u; }
+  if (lid.x == 0u) { tot[0] = sh[0]; }
+}
+`;
+
 // 批次運算（與 train_step_device.js 的 extend 相同的核心，這裡重新掛上以免改動它）
 function extend(b) {
   const r = {};
@@ -60,6 +102,17 @@ function extend(b) {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = n;
     b.dispatchRaw(TS.WGSL_MLP_BWD, [da.buf, g.buf, u.buf, dg.buf, du.buf], uni, Math.ceil(n / 64));
     return { dg: dg, du: du };
+  };
+  // 平方和寫入 parts[slot]（n 個元素）；sumslots 把 k 個槽加總成 1 個純量句柄
+  r.sumsqSlot = (g, n, parts, slot) => {
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([n, slot]);
+    b.dispatchRaw(WGSL_SUMSQ, [g.buf, parts.buf], uni, 1);
+  };
+  r.sumslots = (parts, k) => {
+    const tot = b.alloc(1);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = k;
+    b.dispatchRaw(WGSL_SUMSLOTS, [parts.buf, tot.buf], uni, 1);
+    return tot;
   };
   r.clipCoef = (tot, maxNorm) => {
     const coef = b.alloc(1);
@@ -221,12 +274,9 @@ async function fullParamStepDevice(o) {
   const names = Object.keys(gacc);
   const gavg = {}; for (const nm of names) gavg[nm] = B.scal(gacc[nm], 1 / K);
   // 總平方和：每個張量 ‖g‖² = onesᵀ·(g∘g)（1×n · n×1）
-  let total = null;
-  for (const nm of names) {
-    const n = S.P[nm].n;
-    const s = B.matmul(ONES(n), B.mul(gavg[nm], gavg[nm]), 1, n, 1);
-    total = total ? B.axpy(total, s, 1) : s;
-  }
+  const parts = B.alloc(names.length);
+  names.forEach((nm, k) => X.sumsqSlot(gavg[nm], S.P[nm].n, parts, k));
+  const total = X.sumslots(parts, names.length);
   const coef = X.clipCoef(total, clip);
   // 梯度乘裁剪係數：廣播 coef（n×1 · 1×1 → n×1）後逐元素相乘
   const t = S.t + 1, b1 = 0.9, b2 = 0.999, eps = 1e-8;
