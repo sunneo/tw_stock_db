@@ -1,3 +1,5 @@
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else (root.FaCudawebCoverage = factory()); })(typeof self !== 'undefined' ? self : this, function () {
+'use strict';
 'use strict';
 // cudaweb 全參數訓練的運算覆蓋（設計 §4f：全有或全無）。
 // 每個運算標明「是否在 GPU 上執行」；只要有一個不在 GPU，覆蓋就不完整，probe 必須回報缺項，不可悄悄退回 CPU。
@@ -43,4 +45,5 @@ function reasonFor(kind) {
   if (c.complete) return '';
   return 'cudaweb 還缺 ' + c.missing.length + ' 項運算在 GPU 上執行（' + c.missing.join('、') + '）；全有或全無，缺任何一項都不啟用，不退回 CPU 假裝是 GPU 訓練。';
 }
-module.exports = { DENSE_FULL_PARAM_OPS, MOE_FULL_PARAM_OPS, REASONING_GRPO_OPS, coverageFor, reasonFor };
+return { DENSE_FULL_PARAM_OPS, MOE_FULL_PARAM_OPS, REASONING_GRPO_OPS, coverageFor, reasonFor };
+});

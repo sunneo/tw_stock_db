@@ -28,6 +28,11 @@
     const Ev = (typeof module === 'object' && module.exports) ? require('./eval_core.js') : root.FaStudioEval;
     const Sy = (typeof module === 'object' && module.exports) ? require('./sym_suites_core.js') : root.FaStudioSym;
     const ST = (typeof module === 'object' && module.exports) ? require('./sym_train_core.js') : root.FaStudioSymTrain;
+    const LFD = (typeof module === 'object' && module.exports) ? require('./llm_full_data.js') : root.FaLlmFullData;
+    const LFR = (typeof module === 'object' && module.exports) ? require('./llm_full_run.js') : root.FaLlmFullRun;
+    const CKC = (typeof module === 'object' && module.exports) ? require('./checkpoint_core.js') : root.FaCheckpointCore;
+    const CovM = (typeof module === 'object' && module.exports) ? require('./cudaweb_coverage.js') : root.FaCudawebCoverage;
+    const TypesM = (typeof module === 'object' && module.exports) ? require('./model_types_core.js') : root.FaStudioModelTypes;
     const Si = (typeof module === 'object' && module.exports) ? require('./source_input_core.js') : root.FaStudioSourceInput;
     const Te = (typeof module === 'object' && module.exports) ? require('./teacher_core.js') : root.FaStudioTeacher;
     const PPl = (typeof module === 'object' && module.exports) ? require('./pipeline_core.js') : root.FaStudioPipeline;
@@ -39,9 +44,9 @@
     const DEd = (typeof module === 'object' && module.exports) ? require('./dataset_edit_core.js') : root.FaStudioDatasetEdit;
     const MEv = (typeof module === 'object' && module.exports) ? require('./model_eval_core.js') : root.FaStudioModelEval;
     const EGr = (typeof module === 'object' && module.exports) ? require('./eval_groups_core.js') : root.FaStudioEvalGroups;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, LoraBuiltin, LoraRoute, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval, EvalGroups) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr, LFD, LFR, CKC, CovM, TypesM);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr, LFD, LFR, CKC, CovM, TypesM);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, LoraBuiltin, LoraRoute, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval, EvalGroups, LFD, LFR, CKC, CovM, TypesM) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA', llm: 'LLM 模型（匯出）' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -607,6 +612,59 @@
                 if (method === 'GET' && P === '/api/train/status') { const r = await callHost('studio_train_status', { jobId: Q('jobId') || S.lastTrain, tail: 30 }); return r.ok === false ? bad(502, r.error) : ok(r); }
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
                 // ---- 外部訓練作業（作曲、語音辨識…；ext_job_core.js）：只有桌面版（主行程跑子行程）----
+                // ---- llm_full（小型語言模型，全參數）：cudaweb（渲染行程、WebGPU）或 cpu-py（主行程跑 llm_full_cpu.py）。兩條共用同一份工作檔（初始權重、資料列、超參數）----
+                if (P.indexOf('/api/llmfull/') === 0) {
+                    const LF = S.llmfull || (S.llmfull = { backend: null, name: null, state: 'idle', error: null, records: [], ckpt: null, checkpoint: null, jobId: null, run: null });
+                    if (method === 'GET' && P === '/api/llmfull/status') {
+                        if (LF.backend === 'cpu-py' && LF.jobId && LF.state === 'running') { const r = await callHost('studio_llmfull_status', { jobId: LF.jobId }, 20000); if (r.ok !== false) { LF.records = r.records || LF.records; LF.state = r.state || LF.state; LF.error = r.error || LF.error; LF.ckpt = r.ckpt || LF.ckpt; } }
+                        return ok({ backend: LF.backend, name: LF.name, state: LF.state, error: LF.error, records: LF.records.slice(-500), ckpt: LF.ckpt });
+                    }
+                    if (method === 'POST' && P === '/api/llmfull/start') {
+                        if (LF.state === 'running') return bad(409, '已有一個 llm_full 訓練在跑，請等它結束');
+                        const name = String(body.name || ''); if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
+                        const backend = String(body.backend || 'cudaweb');
+                        if (backend !== 'cudaweb' && backend !== 'cpu-py') return bad(400, '未知的後端：' + backend + '（可選 cudaweb、cpu-py）');
+                        // 全有或全無：cudaweb 的覆蓋表不完整時寫明缺項、不退回（型態登錄的閘門）
+                        const gate = TypesM.cudawebGate('llm_full', 'dense', CovM);
+                        if (backend === 'cudaweb' && !gate.listed) return bad(409, '不能用 cudaweb：' + gate.reason);
+                        if (body.resume && backend === 'cpu-py') return bad(409, 'cpu-py 的續訓尚未接上（檢查點目前只在主行程的資料夾，見 PLAN）');
+                        let job, data, init;
+                        try {
+                            job = LFD.makeJob({ cfg: body.cfg || {}, lr: body.lr, wd: body.wd, clip: body.clip, steps: body.steps, seed: body.seed });
+                            data = LFD.rowsFromJsonl(String(body.trainText || ''), job.cfg.T, job.cfg.V);
+                            init = LFD.makeInit(job.cfg, job.seed);
+                        } catch (e) { return bad(400, String((e && e.message) || e)); }
+                        if (!String(body.trainText || '').trim()) return bad(400, '請提供訓練資料（每行一筆 messages 或 text 的 jsonl）');
+                        if (!data.rows.length) return bad(400, '資料沒有可用的列（共 ' + data.lines + ' 行，略過 ' + data.skipped + ' 行）');
+                        if (body.resume && !LF.checkpoint) return bad(409, '沒有可續訓的檢查點（先跑完一次訓練）');
+                        const note = { rows: data.rows.length, skipped: data.skipped, lines: data.lines, steps: job.steps, seed: job.seed, rowsWindow: job.cfg.T + 1 };
+                        LF.name = name; LF.backend = backend; LF.records = []; LF.error = null; LF.ckpt = null; LF.jobId = null;
+                        if (backend === 'cudaweb') {
+                            const G = h.llmFullGpu ? await h.llmFullGpu() : null;
+                            if (!G || !G.device) return bad(409, 'cudaweb 不可用：' + ((G && G.reason) || '這個環境沒有 WebGPU 裝置（需要在渲染行程裡執行）'));
+                            LF.state = 'running'; LF.checkpoint = LF.checkpoint || null;
+                            LF.run = LFR.runCudaweb({
+                                job, rows: data.rows, nn: G.nn, device: G.device, cfg: job.cfg, init,
+                                fullParamStep: G.fullParamStep, makeResidentState: G.makeResidentState, readResident: G.readResident, loadResident: G.loadResident,
+                                onStep: (rec) => { LF.records.push(rec); }, saveCheckpoint: true,
+                                resumeCkpt: body.resume ? LF.checkpoint : null,
+                                sha256: CKC.sha256, encodeTensors: CKC.encodeTensors, decodeTensors: CKC.decodeTensors,
+                            }).then((res) => {
+                                LF.checkpoint = res.checkpoint; LF.ckpt = { step: res.checkpoint.ckpt.step, next_batch: res.checkpoint.ckpt.next_batch, sha256: res.checkpoint.ckpt.sha256 };
+                                LF.state = 'done'; log('llm_full（cudaweb）完成：' + name + '，step=' + res.checkpoint.ckpt.step);
+                            }).catch((e) => { LF.state = 'error'; LF.error = String((e && e.message) || e); log('llm_full（cudaweb）失敗：' + LF.error, { level: 'error' }); });
+                            log('llm_full（cudaweb）開始：' + name + '，' + job.steps + ' 步' + (body.resume ? '（續訓）' : ''));
+                            return ok(Object.assign({ started: true, backend: 'cudaweb', resumed: !!body.resume }, note));
+                        }
+                        // cpu-py：工作檔（初始權重、資料列、超參數）交給主行程，由 llm_full_cpu.py 跑
+                        if (!h.desktop) return bad(400, NOT_DESKTOP);
+                        const r = await callHost('studio_llmfull_start', { name, job, rows: data.rows, init }, 60000);
+                        if (r.ok === false) return bad(409, r.error);
+                        LF.jobId = r.jobId; LF.state = 'running'; log('llm_full（cpu-py）開始：' + name + '，' + job.steps + ' 步');
+                        return ok(Object.assign({ started: true, backend: 'cpu-py', jobId: r.jobId }, note));
+                    }
+                    return bad(404, '沒有這個 llm_full 路由');
+                }
                 if (P.indexOf('/api/ext/') === 0) {
                     if (!h.desktop) return bad(400, NOT_DESKTOP);
                     if (method === 'GET' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: Q('type'), params: {} }, 120000); return ok(r); }

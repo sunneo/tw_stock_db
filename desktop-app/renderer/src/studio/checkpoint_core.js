@@ -1,3 +1,5 @@
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else (root.FaCheckpointCore = factory()); })(typeof self !== 'undefined' ? self : this, function () {
+'use strict';
 'use strict';
 // 規範化 float32 檢查點（DESIGN.TODO.offline-training-studio.md §3.1）：與後端無關的暫停／續訓格式。
 // 純核心、不碰 window／檔案系統：檔案以 { 檔名: Buffer } 表示，由呼叫端決定存到記憶體或資料夾。
@@ -131,4 +133,5 @@ function resumeRecord(ckpt, toBackend, evalResult) {
     text: '由 ' + ckpt.produced_by.backend + ' 後端暫停、' + toBackend + ' 後端續訓（step=' + ckpt.step + '）' };
 }
 
-module.exports = { FORMAT, VERSION, TENSOR_FILES, COMPAT_FIELDS, TOL, sha256, PCG32, shuffleIndices, createCursor, nextIndices, encodeTensors, decodeTensors, makeCheckpoint, verifyChecksums, validateCkptJson, checkCompat, rel, compareLoss, maxRelDiff, compareSameBackendRun, trendWarning, resumeRecord };
+return { FORMAT, VERSION, TENSOR_FILES, COMPAT_FIELDS, TOL, sha256, PCG32, shuffleIndices, createCursor, nextIndices, encodeTensors, decodeTensors, makeCheckpoint, verifyChecksums, validateCkptJson, checkCompat, rel, compareLoss, maxRelDiff, compareSameBackendRun, trendWarning, resumeRecord };
+});

@@ -1,3 +1,4 @@
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else (root.FaLlmFullRun = factory()); })(typeof self !== 'undefined' ? self : this, function () {
 'use strict';
 // llm_full 的 cudaweb 訓練迴圈（純函式核心）：GPU 相關函式由呼叫端注入（fullParamStepDevice、makeResidentState、readResident、loadResident），
 // 所以這個檔在 node 可測；真的 WebGPU 由 Electron 實測負責。
@@ -72,4 +73,5 @@ function validate(resumeCkpt, sha256) {
   return { ok: errors.length === 0, errors };
 }
 
-module.exports = { CKPT_FORMAT, CKPT_VERSION, batchIndex, packCheckpoint, runCudaweb, validate, toMap };
+return { CKPT_FORMAT, CKPT_VERSION, batchIndex, packCheckpoint, runCudaweb, validate, toMap };
+});

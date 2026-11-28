@@ -177,6 +177,39 @@ function mk(desktop, hostOps) {
   cw2.h.cudawebEnvProbe = async () => { throw new Error('取不到執行期'); };
   r = await cw2.req('GET', '/api/backends?kind=lora'); const cwF = r.j.backends.find((b) => b.id === 'cudaweb');
   check('執行期取不到：cudaweb 不可用且原因含具體錯誤', !!cwF && cwF.available === false && /取不到執行期/.test(cwF.reason), cwF);
+  // llm_full：cudaweb 路由（假的 GPU）與 cpu-py 路由（假的主行程）
+  const LFT = 'trainText';
+  const LFdata = '{"text":"你好世界"}\n{"messages":[{"role":"user","content":"嗨"},{"role":"assistant","content":"你好"}]}\n';
+  const lf0 = mk(true, { studio_probe: () => ({ ok: true, backends: [] }), studio_select: () => ({ ok: false, chosen: null, reason: 'x' }) });
+  r = await lf0.req('POST', '/api/llmfull/start', { name: 'lf1', backend: 'cudaweb', trainText: LFdata, steps: 2, cfg: { V: 258, d: 8, L: 1, H: 2, kvH: 1, F: 16, T: 4 } });
+  check('llm_full：沒有 WebGPU 裝置時 cudaweb 拒絕並寫原因', r.s === 409 && /cudaweb 不可用/.test(r.j.error), r.j);
+  r = await lf0.req('POST', '/api/llmfull/start', { name: 'lf1', backend: 'cudaweb', steps: 2 });
+  check('llm_full：沒有資料時拒絕', r.s === 400 && /請提供訓練資料/.test(r.j.error), r.j);
+  r = await lf0.req('POST', '/api/llmfull/start', { name: '../x', backend: 'cudaweb', trainText: LFdata });
+  check('llm_full：名稱不合法被擋', r.s === 400, r.j);
+  // 假的 GPU：每步損失遞減、回傳快照
+  const gpuSt = {};
+  const fakeG = { nn: {}, device: {}, fullParamStep: async ({ state }) => { state.t = (state.t || 0) + 1; return { loss: 5 - state.t * 0.1, gradNorm: 1, ms: 3 }; },
+    makeResidentState: (dev, c, init) => ({ P: { emb: Float32Array.from([1, 2]) }, M: { emb: new Float32Array(2) }, V: { emb: new Float32Array(2) }, t: 0 }),
+    readResident: async (dev, S) => ({ t: S.t, P: S.P, M: S.M, V: S.V }), loadResident: (dev, S, snap) => { S.t = snap.t; } };
+  const lf1 = mk(true, { studio_probe: () => ({ ok: true, backends: [] }), studio_select: () => ({ ok: false, chosen: null, reason: 'x' }) });
+  lf1.h.llmFullGpu = async () => fakeG;
+  r = await lf1.req('POST', '/api/llmfull/start', { name: 'lf1', backend: 'cudaweb', trainText: LFdata, steps: 3, cfg: { V: 258, d: 8, L: 1, H: 2, kvH: 1, F: 16, T: 4 } });
+  check('llm_full cudaweb：開始回報列數與步數', r.s === 200 && r.j.started && r.j.steps === 3 && r.j.rows >= 1, r.j);
+  for (let i = 0; i < 50 && lf1.h && (await lf1.req('GET', '/api/llmfull/status')).j.state === 'running'; i++) await new Promise((res) => setTimeout(res, 10));
+  r = await lf1.req('GET', '/api/llmfull/status');
+  check('llm_full cudaweb：每步有損失與毫秒、完成後有檢查點步數', r.j.state === 'done' && r.j.records.length === 3 && r.j.records.every((x) => typeof x.ms === 'number') && r.j.ckpt && r.j.ckpt.step === 3, r.j);
+  r = await lf1.req('POST', '/api/llmfull/start', { name: 'lf1', backend: 'cudaweb', trainText: LFdata, steps: 2, resume: true, cfg: { V: 258, d: 8, L: 1, H: 2, kvH: 1, F: 16, T: 4 } });
+  check('llm_full cudaweb：續訓從記憶中的檢查點接續', r.s === 200 && r.j.resumed === true, r.j);
+  for (let i = 0; i < 50 && (await lf1.req('GET', '/api/llmfull/status')).j.state === 'running'; i++) await new Promise((res) => setTimeout(res, 10));
+  r = await lf1.req('GET', '/api/llmfull/status');
+  check('llm_full cudaweb：續訓步號接續為 4、5', r.j.records.map((x) => x.step).join() === '4,5' && r.j.ckpt.step === 5, r.j.records);
+  // cpu-py：主行程假的 start／status
+  const lf2 = mk(true, { studio_probe: () => ({ ok: true, backends: [] }), studio_select: () => ({ ok: false, chosen: null, reason: 'x' }), studio_llmfull_start: (p) => ({ ok: true, jobId: 'pj1', rowsSeen: p.rows.length }), studio_llmfull_status: () => ({ ok: true, state: 'done', records: [{ step: 1, loss: 4.2, ms: 12 }], ckpt: { step: 1 } }) });
+  r = await lf2.req('POST', '/api/llmfull/start', { name: 'lf2', backend: 'cpu-py', trainText: LFdata, steps: 1, cfg: { V: 258, d: 8, L: 1, H: 2, kvH: 1, F: 16, T: 4 } });
+  check('llm_full cpu-py：交給主行程並回 jobId', r.s === 200 && r.j.jobId === 'pj1' && r.j.backend === 'cpu-py', r.j);
+  r = await lf2.req('GET', '/api/llmfull/status');
+  check('llm_full cpu-py：狀態取自主行程的每步紀錄', r.j.state === 'done' && r.j.records[0].ms === 12, r.j);
   r = await w2.req('POST', '/api/train/start', { name: 'ck', backend: 'wasm-web', cfg: { steps: 10, fromAsset: 'lora/a' } }); check('網頁版開始訓練走 h.webTrain', r.j.ok && r.j.web && r.j.jobId === 'web1_x' && wlog[0][1].cfg.steps === 10, r.j);
   r = await w2.req('POST', '/api/train/start', { name: 'bad name/..', backend: 'wasm-web' }); check('名稱不合法被擋', r.s === 400);
   r = await w2.req('POST', '/api/train/start', { name: 'f', backend: 'wasm-web', cfg: { fail: 1 } }); check('宿主回失敗時 409 並帶原因', r.s === 409 && /沒有可用資料/.test(r.j.error), r.j);

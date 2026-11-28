@@ -1,3 +1,4 @@
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else (root.FaLlmFullData = factory()); })(typeof self !== 'undefined' ? self : this, function () {
 'use strict';
 // 「小型語言模型（全參數訓練）」的共用工作檔（llm_full）：兩條後端（cudaweb、cpu-py）讀同一份。
 //   · 詞元：位元組級（UTF-8 位元組 0–255）＋ BOS=256、EOS=257；cfg.V 至少要 258。
@@ -51,4 +52,23 @@ function makeJob(o) {
 // 資料列的指紋（續訓相容欄位 data_sha256）：對 rows JSON 字串做 sha256（呼叫端注入雜湊函式）
 function dataSha256(rows, sha256Fn) { return sha256Fn(JSON.stringify(rows)); }
 
-module.exports = { BOS, EOS, utf8Bytes, flattenRow, rowsFromJsonl, makeJob, dataSha256 };
+
+// 共用初始權重（與後端無關）：mulberry32＋Box–Muller，權重 N(0, 0.02)，norm 增益為 1（與 llm_scratch 的初始化方向一致）。
+// 由 JS 產生一次，寫成 fa-f32 檔（params.f32），cudaweb 與 cpu-py 都讀它，所以兩條路徑從同一組權重開始。
+function rngOf(seed) {
+  let a = seed >>> 0;
+  return function () { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function makeInit(cfg, seed) {
+  const r = rngOf(seed == null ? 1 : seed);
+  const gauss = () => { let u = 0; while (u === 0) u = r(); const v = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const n = (k) => Array.from({ length: k }, () => 0.02 * gauss());
+  const ones = (k) => new Array(k).fill(1);
+  const d = cfg.d, hd = d / cfg.H, kd = cfg.kvH * hd;
+  const layers = [];
+  for (let l = 0; l < cfg.L; l++) layers.push({ n1: ones(d), n2: ones(d), Wq: n(d * d), Wk: n(d * kd), Wv: n(d * kd), Wo: n(d * d), qn: ones(hd), kn: ones(hd), Wg: n(d * cfg.F), Wu: n(d * cfg.F), Wd: n(cfg.F * d) });
+  return { emb: n(cfg.V * d), nf: ones(d), layers };
+}
+
+return { makeInit, BOS, EOS, utf8Bytes, flattenRow, rowsFromJsonl, makeJob, dataSha256 };
+});
