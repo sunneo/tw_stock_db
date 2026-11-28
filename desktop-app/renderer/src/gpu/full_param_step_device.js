@@ -74,6 +74,34 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }
 `;
 
+// AdamW＋裁剪係數融合（P1 融合）：與 train_fused 的 WGSL_ADAMW_ACCUM 同一更新式，但梯度先乘裁剪係數 cf[0]（取代每個張量一次 scale_buf）。
+// 運算順序與「scale_buf 再 adamw」逐位相同：g = (0＋gg)·cf，再 ·scale。K 固定為 1（完整參數路徑）。
+const WGSL_ADAMW_COEF = `
+struct P { n: u32, k: u32, lr: f32, b1: f32, omb1: f32, b2: f32, omb2: f32, eps: f32, wd: f32, c1: f32, c2: f32, scale: f32 }
+@group(0) @binding(0) var<storage, read_write> pp: array<f32>;
+@group(0) @binding(1) var<storage, read> gg: array<f32>;
+@group(0) @binding(2) var<storage, read_write> mm: array<f32>;
+@group(0) @binding(3) var<storage, read_write> vv: array<f32>;
+@group(0) @binding(4) var<storage, read> cf: array<f32>;
+@group(0) @binding(5) var<uniform> u: P;
+// @kernel adamw_coef
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.n) { return; }
+  var g: f32 = 0.0;
+  g = g + gg[i];
+  g = g * cf[0];
+  g = g * u.scale;
+  let m2 = u.b1 * mm[i] + u.omb1 * g;
+  let v2 = u.b2 * vv[i] + u.omb2 * g * g;
+  let p0 = pp[i];
+  mm[i] = m2;
+  vv[i] = v2;
+  pp[i] = p0 - u.lr * u.wd * p0 - u.lr * (m2 / u.c1) / (sqrt(v2 / u.c2) + u.eps);
+}
+`;
+
 // 逐元素乘以單一純量緩衝（裁剪係數）：o[i] = g[i]·c[0]。取代先前的 matmul(ONES(n), coef, n, 1, 1)＋逐元素乘：
 // 那個 1 次內積的矩陣乘用 64×64 平鋪核心，每個張量白跑一整塊，ablation 量到約 114 ms／步（L）。
 const WGSL_SCALE_BUF = `
@@ -202,6 +230,11 @@ function extend(b) {
   r.adamw = (p, g, m, v, n, fl) => {
     const uni = new ArrayBuffer(48); new Uint32Array(uni, 0, 2).set([n, 1]); new Float32Array(uni, 8, 10).set(fl);
     b.dispatchRaw(TF.WGSL_ADAMW_ACCUM, [p.buf, g.buf, m.buf, v.buf], uni, Math.ceil(n / 64));
+  };
+  // AdamW＋裁剪係數（融合，見 WGSL_ADAMW_COEF）：g 為未裁剪的平均梯度，cf 為裁剪係數句柄
+  r.adamwCoef = (p, g, cf, m, v, n, fl) => {
+    const uni = new ArrayBuffer(48); new Uint32Array(uni, 0, 2).set([n, 1]); new Float32Array(uni, 8, 10).set(fl);
+    b.dispatchRaw(WGSL_ADAMW_COEF, [p.buf, g.buf, m.buf, v.buf, cf.buf], uni, Math.ceil(n / 64));
   };
   return Object.assign(r, { b: b });
 }
@@ -379,7 +412,7 @@ async function fullParamStepDevice(o) {
   const fl = [lr, b1, 1 - b1, b2, 1 - b2, eps, wd, c1, c2, 1].map(f32);
   for (const nm of names) {
     const n = S.P[nm].n;
-    X.adamw(S.P[nm], X.scaleBuf(gavg[nm], coef, n), S.M[nm], S.V[nm], n, fl);
+    X.adamwCoef(S.P[nm], gavg[nm], coef, S.M[nm], S.V[nm], n, fl);
   }
   // 不需要數值的步（readLoss=false）：只提交，不讀回；參數與動量全在 GPU，下一步直接接著算
   if (o.readLoss === false) {

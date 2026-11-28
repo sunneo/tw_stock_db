@@ -539,6 +539,13 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 - L 與 XL 的差距都在 GPU 通道：L 的 GPU 合計 133.5 ms、XL 1285 ms（見上一節）。attention 是主要部分。
 - cpu-py M 兩輪差 16 ms，中位數不穩；M 的勝負以第一輪與第二輪都勝來判斷（52.8 與 68.8 都高於 cudaweb 的 31）。
 
+### 融合 1：AdamW＋裁剪係數（2026-11-28）
+
+- 改動：`full_param_step_device.js` 新增 `WGSL_ADAMW_COEF`（梯度先乘裁剪係數再進 AdamW，取代每個張量一次 `scale_buf`）；運算順序與舊路徑逐位相同（(0＋g)·c 再 ·scale）。
+- 整步對拍（真 Electron，四個 fixture）：與改動前數字完全相同。
+- 派發數：L 每步 −46（scale_buf 46 → 0）。
+- 整步 A／B（L，10 步中位數，交錯三次）：每步讀回 133.1 → 130.4 ms（−2.0%）；不讀回 128.7 → 124.8 ms（−3.0%）。三次新的全部低於三次舊的。
+
 ### 硬目標：cudaweb 每步時間 < 同機 cpu-py（2026-11-28，使用者指示）
 
 目標：L ≤ 100 ms（cpu-py 約 112）、M ≤ 45 ms（約 52）、S ≤ 13 ms（約 15.6）；先 L，再 M，再 S。XL 另列（見下）。
