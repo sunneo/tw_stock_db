@@ -1,0 +1,13 @@
+{
+  "source": "scripts/bench/calibration/nbody_cpu_numpy.py（與 python/gpgpu/nbody3d.py 的 pairwise_cpu 逐字相同，外加同一積分）",
+  "python": "3.10.4",
+  "numpy": "2.2.6",
+  "machine": "i5-2320（4 執行緒）＋ GT 720，同一台",
+  "flopsPerPair": 20,
+  "results": [
+    { "N": 1024, "msPerFrameMedian": 37.264, "msMin": 36.854, "msMax": 41.585, "gflopsAt20perPair": 0.563 },
+    { "N": 3072, "msPerFrameMedian": 359.521, "msMin": 342.139, "msMax": 389.549, "gflopsAt20perPair": 0.525 },
+    { "N": 4096, "msPerFrameMedian": 672.635, "msMin": 637.662, "msMax": 874.055, "gflopsAt20perPair": 0.499 }
+  ],
+  "note": "一幀＝pairwise（O(N²)）＋積分；中位數 7 次，暖機 1 次。"
+}
