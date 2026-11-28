@@ -261,4 +261,34 @@ async function fullParamStepDevice(o) {
   return { loss: loss, gradNorm: Math.sqrt(outs[lossRows.length][0]), ms: ms, stats: B.stats || null };
 }
 
-module.exports = { fullParamStepDevice, makeResidentState, paramList, dimsOf, WGSL_CLIP_COEF, extend };
+// 檢查點（GPU 路徑）：把常駐的參數、m、v 與步數讀回 CPU（只在存檔時做，不在訓練迴圈裡）。
+// 讀回用暫存緩衝區（MAP_READ），每個張量一次複製＋一次映射；存成 Float32Array 副本，格式同 fa-f32 的內容。
+async function readResident(device, S) {
+  const readOne = async (h) => {
+    const bytes = h.n * 4;
+    const stage = device.createBuffer({ size: bytes, usage: 0x1 | 0x8 });  // MAP_READ | COPY_DST
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(h.buf, 0, stage, 0, bytes);
+    device.queue.submit([enc.finish()]);
+    await stage.mapAsync(0x1);                                              // GPUMapMode.READ
+    const out = new Float32Array(stage.getMappedRange().slice(0));
+    stage.unmap(); stage.destroy();
+    return out;
+  };
+  const snap = { t: S.t, P: {}, M: {}, V: {} };
+  for (const k of Object.keys(S.P)) { snap.P[k] = await readOne(S.P[k]); snap.M[k] = await readOne(S.M[k]); snap.V[k] = await readOne(S.V[k]); }
+  return snap;
+}
+// 載入檢查點：寫回同一組常駐緩衝區（形狀必須相同）
+function loadResident(device, S, snap) {
+  for (const k of Object.keys(S.P)) {
+    if (!snap.P[k] || snap.P[k].length !== S.P[k].n) throw new Error('檢查點參數 ' + k + ' 形狀不符');
+    device.queue.writeBuffer(S.P[k].buf, 0, snap.P[k]);
+    device.queue.writeBuffer(S.M[k].buf, 0, snap.M[k]);
+    device.queue.writeBuffer(S.V[k].buf, 0, snap.V[k]);
+  }
+  S.t = snap.t;
+  return S;
+}
+
+module.exports = { fullParamStepDevice, makeResidentState, readResident, loadResident, paramList, dimsOf, WGSL_CLIP_COEF, extend };

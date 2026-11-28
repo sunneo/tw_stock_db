@@ -68,6 +68,20 @@ for (const name of Object.keys(FX)) {
   }
   R.fixtures[name] = { steps: fx.steps, maxLossAbsDiff: maxLoss, maxGradNormAbsDiff: maxGn, msPerStep: ms, lossDiffByStep: per, statsStep1: calls0 };
 }
+// ---- 續訓（GPU 路徑）：跑 10 步 → 讀回檢查點（參數、m、v、步數）→ 全新狀態載入 → 再跑 10 步；對不停的 fixture 第 11–20 步 ----
+{
+  const fx = FX['full_param_parity_f64.json'];
+  const S1 = FS.makeResidentState(g.dev, fx.cfg, fx.init);
+  const l1 = [];
+  for (let s = 0; s < 10; s++) l1.push((await FS.fullParamStepDevice({ nn: NN, device: g.dev, state: S1, seqs: [fx.batches[s]], lr: fx.lr, wd: fx.wd, clip: fx.clip })).loss);
+  const snap = await FS.readResident(g.dev, S1);
+  const S2 = FS.makeResidentState(g.dev, fx.cfg, null);
+  FS.loadResident(g.dev, S2, snap);
+  const l2 = [];
+  for (let s = 10; s < 20; s++) l2.push((await FS.fullParamStepDevice({ nn: NN, device: g.dev, state: S2, seqs: [fx.batches[s]], lr: fx.lr, wd: fx.wd, clip: fx.clip })).loss);
+  let worst = 0; for (let i = 0; i < 10; i++) worst = Math.max(worst, Math.abs(l2[i] - fx.perStep[10 + i].loss));
+  R.resume = { savedAtStep: 10, tAfterLoad: S2.t, lossSteps1to10: l1, lossSteps11to20: l2, maxLossAbsDiffVsUninterrupted: worst, checkpointBytes: Object.keys(snap.P).reduce((a, k) => a + snap.P[k].length * 12, 0) };
+}
 return R;
 `;
 fs.mkdirSync(path.dirname(out), { recursive: true });
