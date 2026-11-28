@@ -116,6 +116,27 @@ const cpuAdamw = async (p, g, m, v, t, lr, b1, b2, eps, wd) => { const P2 = new 
 const cpuOpsFull = Object.assign({}, T.CPU_OPS, { adamw: cpuAdamw });
 R.speed.cpuJs = await speedRun('純 JS（CPU，f64）', T.cpuBackend(), cpuOpsFull);
 
+// ---- 固定開銷與資料搬移的差分估計（不是逐項精確計時；執行期沒有 GPU 時間戳查詢）----
+// 同一個 rt.matmul 呼叫，只改資料量：A(m×k)、B(k×n)，輸出 m×n。
+// base：1×1×1（幾乎沒有運算）；inBig：輸入共 2048 個元素、輸出 1 個；outBig：輸入 2 個元素、輸出 1024 個。
+// 每種重複 60 次取中位數；差分 = (該組 − base) / 增加的元素數，得到「每元素」的近似搬移成本（ms）。
+const med = (xs) => { const a = xs.slice().sort((p, q) => p - q); return a[Math.floor(a.length / 2)]; };
+const timeCfg = async (m, k, n, reps) => {
+  const A = new Float64Array(m * k).fill(0.5), B = new Float64Array(k * n).fill(0.5);
+  await rt.matmul(Array.from(A), Array.from(B), m, k, n);   // 暖機
+  const xs = [];
+  for (let r = 0; r < reps; r++) { const t = performance.now(); await rt.matmul(Array.from(A), Array.from(B), m, k, n); xs.push(performance.now() - t); }
+  return med(xs);
+};
+const ov = {};
+ov.base_1x1x1_ms = await timeCfg(1, 1, 1, 60);
+ov.inBig_2048in_1out_ms = await timeCfg(2048, 1, 1, 60);   // 輸入 2048+1，輸出 1
+ov.outBig_2in_1024out_ms = await timeCfg(1024, 1, 1, 60); // 輸入 1024+1，輸出 1024（同時多搬輸出）
+ov.compute_128x256x512_ms = await timeCfg(128, 256, 512, 20);
+ov.perInputElem_ms = (ov.inBig_2048in_1out_ms - ov.base_1x1x1_ms) / 2047;
+ov.perOutputElem_ms = (ov.outBig_2in_1024out_ms - ov.base_1x1x1_ms) / 1023;
+ov.note = '差分估計：每元素成本＝（大組 − 基準）／增加的元素數；上傳與讀回無法在 API 層分開，perInputElem 與 perOutputElem 各自含該方向的搬移與共同的提交成本。';
+R.overhead = ov;
 R.msAll = Math.round(performance.now() - t0);
 return R;
 `;
