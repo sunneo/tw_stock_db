@@ -74,6 +74,23 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }
 `;
 
+// 逐元素乘以單一純量緩衝（裁剪係數）：o[i] = g[i]·c[0]。取代先前的 matmul(ONES(n), coef, n, 1, 1)＋逐元素乘：
+// 那個 1 次內積的矩陣乘用 64×64 平鋪核心，每個張量白跑一整塊，ablation 量到約 114 ms／步（L）。
+const WGSL_SCALE_BUF = `
+struct P { n: u32, pad0: u32, pad1: u32, pad2: u32 }
+@group(0) @binding(0) var<storage, read> g: array<f32>;
+@group(0) @binding(1) var<storage, read> c: array<f32>;
+@group(0) @binding(2) var<storage, read_write> o: array<f32>;
+@group(0) @binding(3) var<uniform> u: P;
+// @kernel scale_buf
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.n) { return; }
+  o[i] = g[i] * c[0];
+}
+`;
+
 // 批次運算（與 train_step_device.js 的 extend 相同的核心，這裡重新掛上以免改動它）
 function extend(b) {
   const r = {};
@@ -102,6 +119,13 @@ function extend(b) {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = n;
     b.dispatchRaw(TS.WGSL_MLP_BWD, [da.buf, g.buf, u.buf, dg.buf, du.buf], uni, Math.ceil(n / 64));
     return { dg: dg, du: du };
+  };
+  // g·c（c 是單一元素的裁剪係數句柄）：一次派發、輸出新的 n 個元素
+  r.scaleBuf = (g, c, n) => {
+    const o = b.alloc(n);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = n;
+    b.dispatchRaw(WGSL_SCALE_BUF, [g.buf, c.buf, o.buf], uni, Math.ceil(n / 64));
+    return o;
   };
   // 平方和寫入 parts[slot]（n 個元素）；sumslots 把 k 個槽加總成 1 個純量句柄
   r.sumsqSlot = (g, n, parts, slot) => {
@@ -183,7 +207,6 @@ async function fullParamStepDevice(o) {
   const D = S.D; const { V, d, L, H, F, hd, KVH, kd, gqa, qkn } = D; const K = seqs.length;
   const B = nn.createBatch(device), X = extend(B);
   const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
-  const ONES = (n) => ({ buf: S.ones.buf, n: n });
   const onesRow = (rows) => ({ buf: S.ones.buf, n: rows });
   // 增益梯度：列加總(dy ∘ x̂)，x̂ = rmsnorm(x, 1)；rows 列、寬度 width
   const gainGrad = (dy, x, rows, width) => {
@@ -284,8 +307,7 @@ async function fullParamStepDevice(o) {
   const fl = [lr, b1, 1 - b1, b2, 1 - b2, eps, wd, c1, c2, 1].map(f32);
   for (const nm of names) {
     const n = S.P[nm].n;
-    const bc = B.matmul(ONES(n), coef, n, 1, 1);
-    X.adamw(S.P[nm], B.mul(gavg[nm], bc), S.M[nm], S.V[nm], n, fl);
+    X.adamw(S.P[nm], X.scaleBuf(gavg[nm], coef, n), S.M[nm], S.V[nm], n, fl);
   }
   // 步末唯一讀回：損失列與總平方和
   const specs = lossRows.map((r) => [r.rows, r.T]); specs.push([total, 1]);
