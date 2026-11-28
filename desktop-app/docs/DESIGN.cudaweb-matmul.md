@@ -183,3 +183,107 @@ LoRA 路徑（`train_step_device.js`）：
 | 1 | 256 | 512 | 無 | matmul_vec4 | 13 | 3.408 |
 | 1 | 2048 | 64 | 無 | matmul_vec4 | 6 | 1.573 |
 | 1 | 1024 | 64 | 無 | matmul_vec4 | 6 | 0.786 |
+
+## 九、矩陣乘形狀與變體（實際派發紀錄，取代第八節的推算變體欄）
+
+來源：`scratchpad/mm/record_shapes2.js`，假裝置 queue.submit 時讀取每個 matmul 派發的管線核心名稱（pipe.kernel，來自 WGSL 的 @kernel 標記）與 uniform（M、K、N、flags）。每格來源：核心名稱＝實際派發；轉置＝uniform 的 flags；次數＝一步內派發次數。
+
+### S（每步 63 次矩陣乘，合計 2.22 MFLOP）
+
+| M | K | N | 轉置 | 實際核心 | 每步次數 | 每步 FLOP（百萬） |
+|---|---|---|---|---|---|---|
+| 12 | 258 | 32 | 無 | matmul | 2 | 0.396 |
+| 12 | 32 | 258 | transB | matmul | 1 | 0.198 |
+| 258 | 12 | 32 | transA | matmul | 1 | 0.198 |
+| 12 | 32 | 64 | 無 | matmul_vec4 | 4 | 0.197 |
+| 32 | 12 | 64 | transA | matmul_vec4_ta | 4 | 0.197 |
+| 12 | 64 | 32 | transB | matmul_vec4_tb | 4 | 0.197 |
+| 12 | 32 | 32 | 無 | matmul_vec4 | 4 | 0.098 |
+| 12 | 64 | 32 | 無 | matmul_vec4 | 2 | 0.098 |
+| 12 | 32 | 64 | transB | matmul_vec4_tb | 2 | 0.098 |
+| 64 | 12 | 32 | transA | matmul_vec4_ta | 2 | 0.098 |
+| 32 | 12 | 32 | transA | matmul_vec4_ta | 4 | 0.098 |
+| 12 | 32 | 32 | transB | matmul_vec4_tb | 4 | 0.098 |
+| 12 | 32 | 16 | 無 | matmul_vec4 | 4 | 0.049 |
+| 12 | 16 | 32 | 無 | matmul_vec4 | 4 | 0.049 |
+| 12 | 32 | 16 | transB | matmul_vec4_tb | 4 | 0.049 |
+| 32 | 12 | 16 | transA | matmul_vec4_ta | 4 | 0.049 |
+| 12 | 16 | 32 | transB | matmul_vec4_tb | 4 | 0.049 |
+| 1 | 12 | 32 | 無 | matmul_vec4 | 5 | 0.004 |
+| 1 | 48 | 8 | 無 | matmul_vec4 | 2 | 0.002 |
+| 1 | 24 | 8 | 無 | matmul_vec4 | 2 | 0.001 |
+
+### M（每步 121 次矩陣乘，合計 277.07 MFLOP）
+
+| M | K | N | 轉置 | 實際核心 | 每步次數 | 每步 FLOP（百萬） |
+|---|---|---|---|---|---|---|
+| 64 | 128 | 256 | 無 | matmul_vec4 | 8 | 33.554 |
+| 128 | 64 | 256 | transA | matmul_vec4_ta | 8 | 33.554 |
+| 64 | 256 | 128 | transB | matmul_vec4_tb | 8 | 33.554 |
+| 64 | 128 | 128 | 無 | matmul_vec4 | 8 | 16.777 |
+| 64 | 256 | 128 | 無 | matmul_vec4 | 4 | 16.777 |
+| 64 | 512 | 128 | 無 | matmul_vec4 | 2 | 16.777 |
+| 64 | 128 | 256 | transB | matmul_vec4_tb | 4 | 16.777 |
+| 256 | 64 | 128 | transA | matmul_vec4_ta | 4 | 16.777 |
+| 128 | 64 | 128 | transA | matmul_vec4_ta | 8 | 16.777 |
+| 64 | 128 | 128 | transB | matmul_vec4_tb | 8 | 16.777 |
+| 64 | 128 | 64 | 無 | matmul_vec4 | 8 | 8.389 |
+| 64 | 64 | 128 | 無 | matmul_vec4 | 8 | 8.389 |
+| 64 | 128 | 512 | transB | matmul_vec4_tb | 1 | 8.389 |
+| 512 | 64 | 128 | transA | matmul_vec4_ta | 1 | 8.389 |
+| 64 | 128 | 64 | transB | matmul_vec4_tb | 8 | 8.389 |
+| 128 | 64 | 64 | transA | matmul_vec4_ta | 8 | 8.389 |
+| 64 | 64 | 128 | transB | matmul_vec4_tb | 8 | 8.389 |
+| 1 | 64 | 128 | 無 | matmul_vec4 | 9 | 0.147 |
+| 1 | 512 | 16 | 無 | matmul_vec4 | 4 | 0.066 |
+| 1 | 256 | 16 | 無 | matmul_vec4 | 4 | 0.033 |
+
+### L（每步 121 次矩陣乘，合計 2484.01 MFLOP）
+
+| M | K | N | 轉置 | 實際核心 | 每步次數 | 每步 FLOP（百萬） |
+|---|---|---|---|---|---|---|
+| 128 | 256 | 512 | 無 | matmul_vec4 | 8 | 268.435 |
+| 128 | 2048 | 256 | 無 | matmul_vec4 | 2 | 268.435 |
+| 256 | 128 | 512 | transA | matmul_vec4_ta | 8 | 268.435 |
+| 128 | 512 | 256 | transB | matmul_vec4_tb | 8 | 268.435 |
+| 128 | 256 | 256 | 無 | matmul_vec4 | 8 | 134.218 |
+| 128 | 512 | 256 | 無 | matmul_vec4 | 4 | 134.218 |
+| 128 | 256 | 2048 | transB | matmul_vec4_tb | 1 | 134.218 |
+| 2048 | 128 | 256 | transA | matmul_vec4_ta | 1 | 134.218 |
+| 128 | 256 | 512 | transB | matmul_vec4_tb | 4 | 134.218 |
+| 512 | 128 | 256 | transA | matmul_vec4_ta | 4 | 134.218 |
+| 256 | 128 | 256 | transA | matmul_vec4_ta | 8 | 134.218 |
+| 128 | 256 | 256 | transB | matmul_vec4_tb | 8 | 134.218 |
+| 128 | 256 | 128 | 無 | matmul_vec4 | 8 | 67.109 |
+| 128 | 128 | 256 | 無 | matmul_vec4 | 8 | 67.109 |
+| 128 | 256 | 128 | transB | matmul_vec4_tb | 8 | 67.109 |
+| 256 | 128 | 128 | transA | matmul_vec4_ta | 8 | 67.109 |
+| 128 | 128 | 256 | transB | matmul_vec4_tb | 8 | 67.109 |
+| 1 | 128 | 256 | 無 | matmul_vec4 | 9 | 0.590 |
+| 1 | 1024 | 32 | 無 | matmul_vec4 | 4 | 0.262 |
+| 1 | 512 | 32 | 無 | matmul_vec4 | 4 | 0.131 |
+
+### XL（每步 179 次矩陣乘，合計 25507.14 MFLOP）
+
+| M | K | N | 轉置 | 實際核心 | 每步次數 | 每步 FLOP（百萬） |
+|---|---|---|---|---|---|---|
+| 256 | 512 | 1024 | 無 | matmul_vec4 | 12 | 3221.225 |
+| 512 | 256 | 1024 | transA | matmul_vec4_ta | 12 | 3221.225 |
+| 256 | 1024 | 512 | transB | matmul_vec4_tb | 12 | 3221.225 |
+| 256 | 512 | 512 | 無 | matmul_vec4 | 12 | 1610.613 |
+| 256 | 1024 | 512 | 無 | matmul_vec4 | 6 | 1610.613 |
+| 256 | 512 | 1024 | transB | matmul_vec4_tb | 6 | 1610.613 |
+| 1024 | 256 | 512 | transA | matmul_vec4_ta | 6 | 1610.613 |
+| 512 | 256 | 512 | transA | matmul_vec4_ta | 12 | 1610.613 |
+| 256 | 512 | 512 | transB | matmul_vec4_tb | 12 | 1610.613 |
+| 256 | 2048 | 512 | 無 | matmul_vec4 | 2 | 1073.742 |
+| 256 | 512 | 256 | 無 | matmul_vec4 | 12 | 805.306 |
+| 256 | 256 | 512 | 無 | matmul_vec4 | 12 | 805.306 |
+| 256 | 512 | 256 | transB | matmul_vec4_tb | 12 | 805.306 |
+| 512 | 256 | 256 | transA | matmul_vec4_ta | 12 | 805.306 |
+| 256 | 256 | 512 | transB | matmul_vec4_tb | 12 | 805.306 |
+| 256 | 512 | 2048 | transB | matmul_vec4_tb | 1 | 536.871 |
+| 2048 | 256 | 512 | transA | matmul_vec4_ta | 1 | 536.871 |
+| 1 | 256 | 512 | 無 | matmul_vec4 | 13 | 3.408 |
+| 1 | 2048 | 64 | 無 | matmul_vec4 | 6 | 1.573 |
+| 1 | 1024 | 64 | 無 | matmul_vec4 | 6 | 0.786 |
