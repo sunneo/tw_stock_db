@@ -77,6 +77,19 @@ embed('renderer/src/gpu/gpu_core.js', 'GPUCORE-BEGIN', 'GPUCORE-END', 'FA_GPU_CO
 embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_PRELOAD_SRC');
 // GPU 版 lm_head 服務（離線模型推論接線，DESIGN.webgpu-cuda.md §7.3）：gpu_core（已有 window.FaGpuCore）＋nn_ops＋infer_ops＋head_service 串成一段 CommonJS 原始碼，
 // 用最小 require 墊片執行，new Function(FA_HEAD_SRC)() 回傳 FaHeadService（./gpu_core.js 對應到呼叫端先載入好的 window.FaGpuCore）。
+// llm_full 的 cudaweb 全參數步（nn_ops＋full_param_step_device 串成一段 CommonJS，require 墊片；gpu_core 取已載入的 window.FaGpuCore）。
+// new Function(FA_LLMFULL_GPU_SRC)() 回傳 { nn, fps }。見 renderer/src/studio/llm_full_run.js 的注入點。
+(function embedLlmFullGpu() {
+    const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    let s = 'const MODS = {};\n';
+    for (const n of ['gpu_pool', 'nn_ops', 'train_fused', 'train_step_device', 'full_param_step_device']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
+    s += "return { nn: req('nn_ops'), fps: req('full_param_step_device') };";
+    const a = src.indexOf('/* LLMFULLGPU-BEGIN */'), b = src.indexOf('/* LLMFULLGPU-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 LLMFULLGPU 標記');
+    src = src.slice(0, a) + '/* LLMFULLGPU-BEGIN */\nconst FA_LLMFULL_GPU_SRC = ' + lit(s) + ';\n' + src.slice(b);
+    console.log('已更新 FA_LLMFULL_GPU_SRC（' + s.length + ' 字元）');
+})();
 (function embedHeadSvc() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     let s = 'const MODS = {};\n';
@@ -710,6 +723,8 @@ function embedStudio() {
     code += 'const FA_WEBTRAIN_WORKER_SRC = ' + lit(tsrc) + ';\n';
     const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'backend_cudaweb', 'cudaweb_coverage', 'checkpoint_core', 'studio_config_core', 'llm_export_core', 'asset_core', 'ext_job_core', 'llm_scratch_core', 'studio_host'];
     const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
+    // llm_full 的 cpu-py 路徑：訓練腳本與它 import 的 llm_scratch 一起放進主行程資料夾
+    files['llm_full_cpu.py'] = rd('renderer/src/studio/llm_full_cpu.py'); files['llm_scratch.py'] = rd('renderer/src/studio/llm_scratch.py');
     // requirements.txt 也要帶：安裝指令（installHint）指向 <studio-host>/lora-train/requirements.txt，沒帶就「File not found」（2026-11-12 使用者實測）
     for (const n of ['train_lora.py', 'lora_common.py', 'requirements.txt', 'train_full.py', 'merge_and_export.py', 'export_onnx.py', 'export_gguf.py']) files['lora-train/' + n] = rd('lora-train/' + n);
     code += 'const FA_STUDIO_HOST_FILES = ' + lit(files) + ';';

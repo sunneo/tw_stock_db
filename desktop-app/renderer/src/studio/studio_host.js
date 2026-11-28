@@ -6,6 +6,7 @@
 const BackendCore = require('./backend_core.js');
 const BC = require('./bench_core.js');
 const SC = require('./studio_config_core.js');
+const CKc = require('./checkpoint_core.js');
 const CpuJs = require('./backend_cpu_js.js');
 const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
@@ -301,6 +302,38 @@ function createStudioHost(d) {
     out.ok = out.errors.length === 0;
     return out;
   }
+  // ---- llm_full（cpu-py）：工作檔寫到 <hostDir>/llmfull/<名稱>-<時間>/，由 llm_full_cpu.py 跑；stdout 每行一個 JSON（步或事件）----
+  const llmFullJobs = new Map(); let llmFullSeq = 0;
+  async function llmFullStart(p) {
+    const name = String(p.name || 'llm').replace(/[^\w一-龥-]/g, '_');
+    const dir = jf('llmfull/' + name + '-' + now());
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return { ok: false, error: '無法建立工作資料夾：' + String(e.message || e) }; }
+    const lst = [];
+    const I = p.init || {}; const pushT = (n, a) => lst.push({ name: n, shape: [a.length], data: Float64Array.from(a) });
+    pushT('emb', I.emb); pushT('nf', I.nf);
+    (I.layers || []).forEach((Lw, l) => ['n1', 'n2', 'Wq', 'Wk', 'Wv', 'Wo', 'qn', 'kn', 'Wg', 'Wu', 'Wd'].forEach((k) => pushT('L' + l + '.' + k, Lw[k])));
+    const rowsPath = P.join(dir, 'rows.json'), initPath = P.join(dir, 'params_init.f32'), outDir = P.join(dir, 'ckpt');
+    fs.writeFileSync(initPath, Buffer.from(CKc.encodeTensors(lst)));
+    fs.writeFileSync(rowsPath, JSON.stringify(p.rows));
+    const job = Object.assign({}, p.job, { rows_file: rowsPath, init_file: initPath, out_dir: outDir, resume_dir: null });
+    const jobPath = P.join(dir, 'job.json'); fs.writeFileSync(jobPath, JSON.stringify(job));
+    const py = await extPython({}, 'llm_full');
+    const id = 'llmfull-' + (++llmFullSeq);
+    const J = { id, name, dir, state: 'running', error: null, records: [], ckpt: null, stderr: '', buf: '' };
+    const child = spawnLow(py, [P.join(hostDir, 'llm_full_cpu.py'), '--job', jobPath], { cwd: hostDir });
+    J.child = child; llmFullJobs.set(id, J);
+    child.stdout.on('data', (d) => { J.buf += String(d); let i; while ((i = J.buf.indexOf('\n')) >= 0) { const ln = J.buf.slice(0, i).trim(); J.buf = J.buf.slice(i + 1); if (!ln) continue; let o = null; try { o = JSON.parse(ln); } catch (e) { o = null; } if (!o) continue; if (o.event === 'done') J.ckpt = { step: o.step, next_batch: o.next_batch, dir: o.ckpt || null, sha256: o.sha256 || null }; else if (o.event === undefined && o.step !== undefined) J.records.push({ step: o.step, loss: o.loss, ms: o.ms }); } });
+    child.stderr.on('data', (d) => { J.stderr = (J.stderr + String(d)).slice(-2000); });
+    child.on('exit', (code) => { if (J.state === 'stopped') return; if (code === 0 && J.ckpt) J.state = 'done'; else { J.state = 'error'; J.error = (code === 0 ? '沒有收到完成事件' : '退出碼 ' + code) + '：' + J.stderr.slice(-600); } });
+    child.on('error', (e) => { J.state = 'error'; J.error = '無法啟動 Python：' + String(e.message || e); });
+    return { ok: true, jobId: id, dir, python: py };
+  }
+  function llmFullStatus(p) {
+    const J = llmFullJobs.get(String((p && p.jobId) || ''));
+    if (!J) return { ok: false, error: '找不到這個 llm_full 作業' };
+    return { ok: true, state: J.state, error: J.error, records: J.records.slice(-500), ckpt: J.ckpt };
+  }
+
   async function extStart(p) {
     if (activeExt && activeExt.job.state === 'running') return { ok: false, error: '已有外部訓練在執行（' + activeExt.id + '）' };
     if (activeTrain && activeTrain.state === 'running') return { ok: false, error: '內建訓練進行中，請先等它結束或停止' };
@@ -447,6 +480,8 @@ function createStudioHost(d) {
     async studio_ext_check(p) { return extCheck(p || {}); },
     async studio_ext_start(p) { return extStart(p || {}); },
     async studio_ext_status(p) { return extStatus(p || {}); },
+    async studio_llmfull_start(p) { return llmFullStart(p || {}); },
+    async studio_llmfull_status(p) { return llmFullStatus(p || {}); },
     async studio_ext_stop(p) { return extStop(p || {}); },
     async studio_dispose() { try { if (activeExt && activeExt.job.state === 'running') activeExt.job.stop(); } catch (e) {} try { if (activeBench) { activeBench.ac.aborted = true; activeBench.ac.listeners.forEach((f) => f()); } if (activeTrain && activeTrain.run && activeTrain.run.state === 'running') await activeTrain.run.stop(); } catch (e) {} return { ok: true }; },
   };
