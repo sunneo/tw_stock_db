@@ -369,3 +369,21 @@
 
 - 2026-11-28：盤點完成（`docs/INVENTORY.cudaweb-training.md`，提交 c1e19f053）。
 - 2026-11-28：本計畫建立。P1 仍在進行中，尚未做對拍。
+
+
+**2026-11-28 第四輪：執行順序（領導指示，設計輸入）與現成零件**
+
+設計原則：張量常駐 GPU（權重、激活、梯度都在 GPU buffer，禁止中間經 JS 陣列）；整步編譯成一個派發清單，只在需要時讀回損失與抽樣；每次提交 ≤300 ms（避免顯卡逾時被重置）。速度目標：先比現在（3379 ms/步）快 10 倍以上，再逼近屋頂線（≥8 ms/步）。
+
+現成零件（已用檔名查證）：
+- `renderer/src/gpu/nn_ops.js` 的 `createBatch(dev)`：一個命令編碼器內可串接多個派發，`upload` 只寫一次，中間結果以緩衝區句柄傳遞，不回讀；`submit` 後才讀回。
+- `renderer/src/gpu/train_step_device.js` 的 `trainStepDevice`：**整步單次提交**的 LoRA 版本，已含 RMSNorm、注意力、SiLU 閘控的反向核心（`rms_bwd`、`attn_bwd_q/kv`、`mlp_bwd`）與 LoRA 反向。它是全參數版的起點，但目前只產生 LoRA 的 dA、dB，沒有基底權重的 dW、嵌入梯度、RMSNorm 增益梯度，也沒有交叉熵反向的 GPU 版接入。
+
+下一步的具體工作（一步一提交）：
+1. **全參數的整步路徑**：複製 `trainStepDevice` 的結構，改成對 Wq／Wk／Wv／Wo／Wg／Wu／Wd、嵌入、RMSNorm 增益求梯度（用 `loraBwd` 的 `dW = Xᵀ·dY` 形式，基底權重不再凍結）。對拍：fixture dense 與 gqa_qkn，20 步，門檻 1e-5。
+2. **反向逐元素核心**：RMSNorm 增益梯度、交叉熵反向（`nn_ops.crossEntropy` 已有 dl）、RoPE 反向（`dir=-1`，已有）、softmax 反向（注意力，併在 `attn_bwd_*`）；每個單獨對 PyTorch 對拍後接入。
+3. **整步單次提交**：整步 ≤ 300 ms 的提交數（目標 1–3 次），量每次提交的牆鐘。
+4. **AdamW 在 GPU**：已有 `nn_ops.adamw`，接入整步派發清單。
+5. 之後：渲染頁打包（d）、選單閘門（e 的 model_types 部分）。
+
+本輪未開始實作（這是規劃，不是完成）。P1 狀態不變：未通過。
