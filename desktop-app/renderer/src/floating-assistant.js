@@ -11850,7 +11850,7 @@ return { CKPT_FORMAT, CKPT_VERSION, batchIndex, packCheckpoint, runCudaweb, vali
                                 fullParamStep: G.fullParamStep, makeResidentState: G.makeResidentState, readResident: G.readResident, loadResident: G.loadResident,
                                 onStep: (rec) => { LF.records.push(rec); }, saveCheckpoint: true,
                                 resumeCkpt: body.resume ? LF.checkpoint : null,
-                                sha256: CKC.sha256, encodeTensors: CKC.encodeTensors, decodeTensors: CKC.decodeTensors,
+                                sha256: (b) => Asset.sha256Hex(b instanceof Uint8Array ? b : new Uint8Array(b)), encodeTensors: CKC.encodeTensors, decodeTensors: CKC.decodeTensors,
                             }).then((res) => {
                                 LF.checkpoint = res.checkpoint; LF.ckpt = { step: res.checkpoint.ckpt.step, next_batch: res.checkpoint.ckpt.next_batch, sha256: res.checkpoint.ckpt.sha256 };
                                 LF.state = 'done'; log('llm_full（cudaweb）完成：' + name + '，step=' + res.checkpoint.ckpt.step);
