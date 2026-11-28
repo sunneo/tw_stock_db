@@ -309,7 +309,13 @@ async function fullParamStepDevice(o) {
     const n = S.P[nm].n;
     X.adamw(S.P[nm], X.scaleBuf(gavg[nm], coef, n), S.M[nm], S.V[nm], n, fl);
   }
-  // 步末唯一讀回：損失列與總平方和
+  // 不需要數值的步（readLoss=false）：只提交，不讀回；參數與動量全在 GPU，下一步直接接著算
+  if (o.readLoss === false) {
+    B.submit();
+    S.t = t;
+    return { loss: null, gradNorm: null, ms: (typeof performance !== 'undefined' ? performance : Date).now() - t0, stats: B.stats || null };
+  }
+  // 步末讀回：損失列與總平方和（每次讀回都要等 GPU 把這一步算完）
   const specs = lossRows.map((r) => [r.rows, r.T]); specs.push([total, 1]);
   const outs = await B.read(specs);
   let loss = 0; lossRows.forEach((r, k) => { let sr = 0; for (let i = 0; i < r.T; i++) sr += outs[k][i]; loss += (sr / r.T) / K; });

@@ -1133,6 +1133,16 @@ function createBatch(dev) {
       dispatch(WGSL_QDYN, [x.buf, st, q], u1, Math.ceil(n / 64));
       return { buf: q, n: n, st: { buf: st, n: 4 } };
     },
+    // 只提交、不讀回（P1c-2）：命令排進佇列後立刻返回，不等 GPU 完成。之後的批次排在它後面執行。
+    // 用在「不需要讀回數值」的步：權重、動量、裁剪係數都留在 GPU，省下每步的映射等待。
+    submit() {
+      if (submitted) throw new Error('批次已經提交過');
+      submitted = true;
+      dev.queue.submit([enc.finish()]);
+      stats.submits++;
+      for (const t of temps) pool.release(t);
+      temps.length = 0;
+    },
     // 一次 submit，整批的回讀都在這裡；specs = [[handle, n], ...]，回傳 Float32Array 陣列
     async read(specs) {
       if (submitted) throw new Error('批次已經提交過');

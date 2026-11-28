@@ -258,6 +258,23 @@ function fakeNavigator(opts) {
       // 綁定 0 x、1 y、2 uniform（rows、cols u32）
       const rows = u32(e[2])[0], cols = u32(e[2])[1];
       f32(e[1], rows * cols).set(FO().softmaxOnlineRef(f32(e[0], rows * cols), rows, cols));
+    } else if (k === 'clip_coef') {
+      // 綁定 0 tot(讀)、1 coef(寫)、2 uniform（maxn 為 f32，位元組 0）：coef[0] = min(1, maxn / (√tot[0] + 1e-6))
+      const maxn = new Float32Array(e[2].data, 0, 1)[0];
+      f32(e[1], 1)[0] = Math.min(1, maxn / (Math.sqrt(f32(e[0], 1)[0]) + 1e-6));
+    } else if (k === 'sumsq_slot') {
+      // 綁定 0 g(讀)、1 parts(寫)、2 uniform（n、slot 為 u32）：parts[slot] = Σ g²
+      const pu = u32(e[2]); const n = pu[0], slot = pu[1];
+      const g = f32(e[0], n); let s = 0; for (let i = 0; i < n; i++) s += g[i] * g[i];
+      f32(e[1], slot + 1)[slot] = Math.fround(s);
+    } else if (k === 'sumsq_total') {
+      // 綁定 0 parts(讀)、1 tot(寫)、2 uniform（k 為 u32）：tot[0] = Σ parts[0..k)
+      const kk = u32(e[2])[0]; const p = f32(e[0], kk); let s = 0; for (let i = 0; i < kk; i++) s += p[i];
+      f32(e[1], 1)[0] = Math.fround(s);
+    } else if (k === 'scale_buf') {
+      // 綁定 0 g(讀)、1 c(讀，單一元素)、2 o(寫)、3 uniform（n 為 u32）：o[i] = g[i]·c[0]
+      const n = u32(e[3])[0]; const g = f32(e[0], n), c = f32(e[1], 1)[0], o = f32(e[2], n);
+      for (let i = 0; i < n; i++) o[i] = Math.fround(g[i] * c);
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }
