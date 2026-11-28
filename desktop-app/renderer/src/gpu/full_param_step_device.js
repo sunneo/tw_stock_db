@@ -13,6 +13,7 @@
 // 限制（明寫）：f32。注意力核心仍假設 H 個頭（GQA 是用擴張矩陣實現，不是核心改寫）。
 const TS = require('./train_step_device.js');
 const TF = require('./train_fused.js');
+const FUSED = require('./full_param_fused.js');
 
 const USAGE_STORAGE = 0x80, USAGE_COPY_SRC = 0x4, USAGE_COPY_DST = 0x8;
 const f32 = Math.fround;
@@ -419,7 +420,8 @@ async function fullParamStepDevice(o) {
   const gavg = {}; for (const nm of names) gavg[nm] = K === 1 ? gacc[nm] : B.scal(gacc[nm], 1 / K);
   // 總平方和：每個張量 ‖g‖² = onesᵀ·(g∘g)（1×n · n×1）
   const parts = B.alloc(names.length);
-  names.forEach((nm, k) => X.sumsqSlot(gavg[nm], S.P[nm].n, parts, k));
+  // 批次平方和（full_param_fused.js）：每次派發的張量數依 device.limits 決定；每個張量的歸約順序與原核心相同（逐位相同）
+  FUSED.sumsqMultiDispatch(B, names.map((nm) => ({ buf: gavg[nm].buf, n: S.P[nm].n })), parts, FUSED.bindLimit(device));
   const total = X.sumslots(parts, names.length);
   // 梯度匯出（P1c-2）：不做 AdamW、不改參數與動量、S.t 不前進；回傳平均後、裁剪前的梯度（逐名稱的 Float32Array）。
   // 用於多資源分擔：各資源匯出梯度，由協調端加權平均後再統一更新。

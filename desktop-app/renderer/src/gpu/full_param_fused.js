@@ -90,11 +90,11 @@ function wgslAdamwMulti(K) {
   decl += '@group(0) @binding(' + (4 * K + 1) + ') var<uniform> u: P;\n';
   // 與 full_param_step_device.js 的 WGSL_ADAMW_COEF 逐運算相同（順序、括號都一樣）
   const upd = (j) => '{ var gg: f32 = 0.0; gg = gg + g' + j + '[i]; gg = gg * cf[0]; gg = gg * u.scale;\n' +
-    '    let m2 = u.b1 * m' + j + '[i] + u.omb1 * gg;\n' +
-    '    let v2 = u.b2 * v' + j + '[i] + u.omb2 * gg * gg;\n' +
-    '    let p0 = p' + j + '[i];\n' +
-    '    m' + j + '[i] = m2; v' + j + '[i] = v2;\n' +
-    '    p' + j + '[i] = p0 - u.lr * u.wd * p0 - u.lr * (m2 / u.c1) / (sqrt(v2 / u.c2) + u.eps); }';
+    '    let mn = u.b1 * m' + j + '[i] + u.omb1 * gg;\n' +
+    '    let vn = u.b2 * v' + j + '[i] + u.omb2 * gg * gg;\n' +
+    '    let pv = p' + j + '[i];\n' +
+    '    m' + j + '[i] = mn; v' + j + '[i] = vn;\n' +
+    '    p' + j + '[i] = pv - u.lr * u.wd * pv - u.lr * (mn / u.c1) / (sqrt(vn / u.c2) + u.eps); }';
   let br = '';
   for (let j = 0; j < K; j++) br += (j === 0 ? '  if' : '  else if') + ' (slot == ' + j + 'u) ' + upd(j) + '\n';
   const code = 'struct P { ns: array<vec4<u32>, 4>, pre: array<vec4<u32>, 4>, cnt: u32, pad0: u32, pad1: u32, pad2: u32, lr: f32, b1: f32, omb1: f32, b2: f32, omb2: f32, eps: f32, wd: f32, c1: f32, c2: f32, scale: f32 }\n' + decl +
