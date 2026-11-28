@@ -525,7 +525,18 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 2. 數值等價：加權平均梯度要與單一資源整批的梯度一致（對拍 PyTorch，門檻 ≤ 1e-5 相對）。
 3. 量測：S／M／L 各一欄：單 cpu-py、單 cudaweb、兩者合作三種每步時間。若合作輸給單 cpu-py，如實寫，保持預設關。
 
-**阻礙與下一步**：這需要兩個新能力（cpu-py 梯度匯出模式、cudaweb 梯度匯出模式）與一個協調端；沒有一個可以在單一小改動內完成。下一步：先做 cudaweb 的梯度匯出（在 fullParamStepDevice 加 `o.applyUpdate=false`，讀回梯度），用單核心對拍確認匯出的梯度等於 PyTorch 梯度。
+**阻礙與下一步**：這需要兩個新能力（cpu-py 梯度匯出模式、cudaweb 梯度匯出模式）與一個協調端；沒有一個可以在單一小改動內完成。
+
+**已完成：cudaweb 梯度匯出（`fullParamStepDevice({applyUpdate:false})`）**
+- 改動：`renderer/src/gpu/full_param_step_device.js`。匯出平均後、裁剪前的梯度，不做 AdamW、不改參數與動量、步計數 S.t 不前進。
+- 對拍（真 Electron，fixture dense fp64 的第 1 步，對 PyTorch fp64 參考）：20 個名稱全部匯出，逐名稱相對誤差 max|g−ref|÷max|ref| 最大 **1.2e-6**（最差 L1.Wk），絕對誤差最大 8.0e-7，參考梯度最大 0.76。
+- 副作用檢查：執行匯出後參數、動量、方差變化量 = 0；步計數 = 0；損失 4.2599549（參考 4.2599548）；梯度範數 7.3826273（參考 7.3826284）。
+- 評估檔產生器：`scripts/eval/gen_grad_export_eval.js`（引數：renderer/src、輸出檔、fixture 路徑）。
+
+**還沒做（P1c-2 第二半剩餘）**
+1. cudaweb 的「套用外部梯度」：接收協調端的加權平均梯度，做裁剪與 AdamW（目前 AdamW 只接自己算出的梯度）。
+2. cpu-py 的梯度匯出模式（`llm_full_cpu.py` 的 run 目前整步內部更新）。
+3. 協調端（切批次、依能力比例分配、token 數加權平均、同步更新）與 S／M／L 三欄量測（單 cpu-py、單 cudaweb、合作）。
 
 ### P1c-2 異質分工（狀態：未開始）
 

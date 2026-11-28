@@ -300,6 +300,17 @@ async function fullParamStepDevice(o) {
   const parts = B.alloc(names.length);
   names.forEach((nm, k) => X.sumsqSlot(gavg[nm], S.P[nm].n, parts, k));
   const total = X.sumslots(parts, names.length);
+  // 梯度匯出（P1c-2）：不做 AdamW、不改參數與動量、S.t 不前進；回傳平均後、裁剪前的梯度（逐名稱的 Float32Array）。
+  // 用於多資源分擔：各資源匯出梯度，由協調端加權平均後再統一更新。
+  if (o.applyUpdate === false) {
+    const specsG = lossRows.map((r) => [r.rows, r.T]);
+    specsG.push([total, 1]);
+    for (const nm of names) specsG.push([gavg[nm], S.P[nm].n]);
+    const outG = await B.read(specsG);
+    let lossG = 0; lossRows.forEach((r, k) => { let sr = 0; for (let i = 0; i < r.T; i++) sr += outG[k][i]; lossG += (sr / r.T) / K; });
+    const grads = {}; names.forEach((nm, k) => { grads[nm] = outG[lossRows.length + 1 + k]; });
+    return { loss: lossG, gradNorm: Math.sqrt(outG[lossRows.length][0]), grads: grads, applied: false, ms: (typeof performance !== 'undefined' ? performance : Date).now() - t0, stats: B.stats || null };
+  }
   const coef = X.clipCoef(total, clip);
   // 梯度乘裁剪係數：廣播 coef（n×1 · 1×1 → n×1）後逐元素相乘
   const t = S.t + 1, b1 = 0.9, b2 = 0.999, eps = 1e-8;
