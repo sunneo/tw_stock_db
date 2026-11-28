@@ -36,6 +36,11 @@ function createCudawebBackend(o) {
   return {
     id, planned: false, capabilities: { perStep: true, run: false, fp16: false }, kinds: B.KIND_BACKENDS,
     async probe(ctx) {
+      // 全有或全無（§4f）：要求全參數訓練（ctx.kind）時，運算覆蓋不完整就回報缺項，不論 GPU 是否可用
+      const COV = require('./cudaweb_coverage.js');
+      if (ctx && ctx.kind && COV.coverageFor(ctx.kind).complete === false) {
+        return B.probeResult(false, COV.reasonFor(ctx.kind), { name: id }, { backend: id, kind: ctx.kind, coverage: COV.coverageFor(ctx.kind) });
+      }
       let bi = null;
       try {
         if (opts.envProbe) bi = await opts.envProbe();

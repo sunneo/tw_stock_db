@@ -31,7 +31,7 @@
 
 | 階段 | 名稱 | 狀態 | 依賴 |
 |---|---|---|---|
-| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 進行中：CPU 全參數 JS 對 PyTorch 已過（S1、S2、S5），GPU 對拍、cpu-py 對拍、屋頂線、真機未做（見證據） | 無 |
+| P1 | 密集 transformer 全參數 SFT：cpu-py 與 cudaweb 對 PyTorch 對拍、屋頂線與耗時拆解、續訓 | 進行中（未通過）：已過：JS 對 PyTorch、GPU 矩陣乘＋前向逐元素＋AdamW 對拍、cpu-py 對拍、續訓、差分估計、全有或全無的 probe 缺項。未過：反向逐元素上 GPU、整步一次提交（目前每步 166 次呼叫）、產品頁面打包執行期、四段精確拆解（已改為差分估計）、model_types 閘門 | 無 |
 | P2 | 資料入口與預訓練風格：fap 串流、分詞、打包、批次、讀取位置入檢查點；對 HF datasets 逐 token 一致；預訓練在 cpu 與 cudaweb 跑通 | 未開始 | P1 |
 | P3 | 工作室引導入口與資料流水線（最小版，讓 P1／P2 能從 GUI 走完） | 未開始 | P1、P2 |
 | P4 | MoE：路由、負載平衡損失、反向、cudaweb 對拍；接 function call 資料與評量（toolcall） | 未開始 | P1 |
@@ -105,6 +105,8 @@
 - (1) qk-norm 與分組查詢注意力：**已完成**。`full_param_train.js` 與 `full_param_ref_torch.py` 新增 `kvH`、`qkNorm`（variant `gqa_qkn`，kvH=2、H=4、qk-norm）；RoPE 改為 rotate-half（對齊 `llm_scratch.py` 的 `rot_half`；先前交錯成對是錯的，已修正）。JS 對 PyTorch fp64：步1梯度 ≤2.3e-15、20 步損失 ≤8.9e-16（dense 與 gqa_qkn 兩個 fixture）。
 - (3) cpu-py 對拍（S3）：**通過**。`full_param_cpu_py_check.py` 用 `llm_scratch.LM` 自己的模型跑 gqa_qkn 的同一批資料與初始權重，步1損失差 4.5e-9、梯度最大絕對誤差 8.4e-8（門檻 1e-5，f32 門檻）。診斷：`--rope64` 把 llm_scratch 的 RoPE 表改用 float64 重建後，差距降到 8.9e-16 與 6.7e-16。來源是 llm_scratch 的 RoPE 表在建構時用 float32，`.double()` 不會還原精度。這是 llm_scratch 既有的精度選擇，記錄在此，不改它。
 - (2) cudaweb 真 GPU 逐步對拍：**已完成（評估檔，真 Electron，WebGPU 第 1 層 T1）**。結果：fp64 fixture 的 dense 與 gqa_qkn 兩份各 20 步、各 900 次矩陣乘都走 T1；對 PyTorch 的損失最大絕對誤差 2.0e-7、2.5e-7；梯度範數最大絕對誤差 1.9e-6、2.8e-6；門檻 1e-5 通過。注意：目前只有矩陣乘在 GPU，其餘逐元素仍在 CPU（見 (3)）。產品接線缺口仍在（見坑 4），評估檔不是產品路徑。原始紀錄：`scripts/eval/gen_full_param_cudaweb_eval.js`；(a) `renderer/src/studio/studio_host.js:62` 註冊 cudaweb 時是 `createCudawebBackend({})`，沒有傳入 `getRuntime`，所以 probe 永遠回報不可用；要接上必須改 studio 的源模組，再用 `scripts/embed-code-ui.js` 重新嵌入 floating-assistant.js（依 feedback_embedded_source_modules）。(b) 評估檔要在渲染行程裡讀 fixture（1.4MB），目前沒有已確認的讀檔方式（待查 `fa` 是否提供讀檔）。(c) 真 GPU 的 `rt.matmul` 結果尚未在 Electron 裡驗過。這三件要先做完，才能跑門檻 1e-5 的逐步對拍。
+- (c) 差分估計（2026-11-28 第三輪，`REPORT` 第二節）：基準 1×1×1 呼叫 12.3 ms；輸入 2048 元素或輸出 1024 元素各增 ~4 ms；每元素約 2–4 µs，主要是 JS 陣列轉換。結論：瓶頸是每次呼叫的固定開銷與陣列往返，不是 GPU 頻寬。
+- (e) 全有或全無：`renderer/src/studio/cudaweb_coverage.js` 列出 14 項運算、7 項不在 GPU（RMSNorm 反向、softmax 反向、SiLU 反向、注意力小矩陣乘、嵌入梯度、交叉熵、梯度裁剪）。probe 收到 `kind:"dense-full-param"` 時回報缺項、`available:false`，已有測試。**未完成**：model_types 的選單閘門（目前 llm_scratch 本來就只列 cpu-py，所以不會誤列 cudaweb；閘門本身還沒接）。
 - (4) 屋頂線與耗時拆解：**部分完成**。數字與結論見 `docs/REPORT.full-param-cudaweb-speed.md`。量得：cudaweb 每步 3379 ms、純 JS 3924 ms、cpu-py 111 ms（同一設定，V2048 d256 L4 T128）；屋頂線每步 ≥8.1 ms（2.4 GFLOP、0.3 TFLOPS）。cudaweb 比 cpu-py 慢約 30 倍，瓶頸是每步 166 次 GPU 呼叫、每次約 15–20 ms 的固定開銷。**未完成**：核心／上傳／讀回／同步四段的精確拆解（需要 GPU 時間戳查詢，執行期未暴露）。
 - (5) 本機 Electron 真跑：**已完成**（三次 Electron 執行，獨立 user-data-dir、埠 17931，結束後無殘留；評估檔在暫存資料夾）。原為：依 `memory/reference_real_electron_eval_verification.md` 的做法：`scripts/eval/<名稱>.eval.js`、`FA_DEBUG_EVAL_FILE`、全新 `--user-data-dir`、寫入 `main-ext-rev.txt` 防止更新對話框、`FA_BROWSER_CONTROL_PORT` 換埠、`FA_DISABLE_MAIN_OVERLAY=1`。electron.exe 已在 `node_modules/electron/dist/electron.exe`。依賴 (2)(a)(b)。
 - (3) 逐元素運算上 GPU：**部分完成**。前向的 RMSNorm、softmax、SiLU、RoPE（經純資料排列走 nn_ops 的交錯核心，結果等價）與 AdamW 已走 GPU（`full_param_train.js` 的 `gpuOpsFrom`）。GPU 真機對拍：fp64 fixture 20 步，損失最大絕對誤差 1.0e-6、梯度範數最大絕對誤差 9.9e-6（門檻 1e-5，**通過但餘裕很小**，主要來源是 f32 逐元素核心的累積誤差，需要之後再收緊）。**未完成**：反向的逐元素（RMSNorm 反向、SiLU 反向、注意力反向、softmax 反向）仍在 CPU；注意力內的 QKᵀ、PV 小矩陣乘仍是 CPU 迴圈。這兩項要在整步提交（見 (4)）時一併補。
