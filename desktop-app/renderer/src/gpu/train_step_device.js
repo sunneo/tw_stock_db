@@ -538,6 +538,10 @@ const WGSL_ATTN_BWD_KV_DI = (() => {
   rep('      var di: f32 = 0.0;\n', '');
   rep('        di = di + go * ao[i * d + h * u.hd + u2];\n', '');
   rep('sds[i] = p * (dp - di) * u.sc;', 'sds[i] = p * (dp - dio[h * u.T + i]) * u.sc;');
+  // dao 轉置（[H][hd][T]）：第一階段 lane 沿 i，dP 的 dao 讀取改成 daoT[(h·hd+u2)·T+i]，合併；第二階段仍讀原 dao（lane 沿 tt 已合併）
+  rep('        let go = dao[i * d + h * u.hd + u2];', '        let go = daoT[(h * u.hd + u2) * u.T + i];');
+  rep('@group(0) @binding(7) var<uniform> u: P;', '@group(0) @binding(7) var<storage, read> daoT: array<f32>;\n@group(0) @binding(8) var<uniform> u: P;');
+  rep('// @kernel attn_bwd_kv\n', '// @kernel attn_bwd_kv_dit\n');
   return s;
 })();
 

@@ -210,7 +210,8 @@ function extend(b) {
     const dio = b.alloc(H * T);   // 每列的 di（[H][T]）：dQ 核心寫入，dK／dV 核心讀取（不再每個 (j,h) 重算）
     // 順序：先 dQ（寫 dio、dq），再 dK／dV（讀 dio）；同一批次的派發依序執行
     b.dispatchRaw(TS.WGSL_ATTN_BWD_Q_VT, [k.buf, vt.buf, dao.buf, pm.buf, ao.buf, dq.buf, dio.buf], uni, T * H);
-    b.dispatchRaw(TS.WGSL_ATTN_BWD_KV_DI, [q.buf, v.buf, dao.buf, pm.buf, dio.buf, dk.buf, dv.buf], uni, T * H);
+    const daoT = r.transposeTH(dao, T, H, hd);   // dao 轉置（[H][hd][T]）：dK／dV 第一階段 lane 沿 i 合併讀取
+    b.dispatchRaw(TS.WGSL_ATTN_BWD_KV_DI, [q.buf, v.buf, dao.buf, pm.buf, dio.buf, dk.buf, dv.buf, daoT.buf], uni, T * H);
     return { dq: dq, dk: dk, dv: dv };
   };
   // RMSNorm 反向：rows 列、寬度 width（qk-norm 時 rows＝T·頭數、width＝hd）

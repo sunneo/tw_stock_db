@@ -153,11 +153,12 @@ function fakeNavigator(opts) {
       const T = u32(e[5])[0], H = u32(e[5])[1], hd = u32(e[5])[2], n = T * H * hd;
       const r = TS.attnFwdRef(f32(e[0], n), f32(e[1], n), f32(e[2], n), T, H, hd);
       f32(e[3], n).set(r.ao); f32(e[4], H * T * T).set(r.pm);
-    } else if (k === 'attn_bwd_kv' || k === 'attn_bwd_q') {
+    } else if (k === 'attn_bwd_kv' || k === 'attn_bwd_kv_dit' || k === 'attn_bwd_q') {
+      // attn_bwd_kv_dit：同 kv，但 uniform 在綁定 8（dio 與 daoT 為讀取，參考實作內部重算 di，故忽略）
       // 綁定 kv：0 q、1 v、2 dao、3 pm、4 ao、5 dk(寫)、6 dv(寫)、7 uniform（與 WGSL 一致，沒有 k）；q：0 k、1 v、2 dao、3 pm、4 ao、5 dq(寫)、6 uniform
       const TS = require('./train_step_device.js');
-      const ui = k === 'attn_bwd_kv' ? 7 : 6, T = u32(e[ui])[0], H = u32(e[ui])[1], hd = u32(e[ui])[2], n = T * H * hd;
-      if (k === 'attn_bwd_kv') {
+      const ui = k === 'attn_bwd_kv_dit' ? 8 : (k === 'attn_bwd_kv' ? 7 : 6), T = u32(e[ui])[0], H = u32(e[ui])[1], hd = u32(e[ui])[2], n = T * H * hd;
+      if (k !== 'attn_bwd_q') {
         // dK、dV 不用 k（只有 dQ 用）；這裡把 q 放在 k 的位置，只取 dk、dv
         const r = TS.attnBwdRef(f32(e[2], n), f32(e[0], n), f32(e[0], n), f32(e[1], n), f32(e[3], H * T * T), T, H, hd);
         f32(e[5], n).set(r.dk); f32(e[6], n).set(r.dv);
