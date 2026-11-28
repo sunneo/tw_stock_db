@@ -27,6 +27,11 @@ sys.path.insert(0, HERE)
 import llm_full_cpu as C  # noqa: E402
 
 
+_NT = int(os.environ.get("FA_TORCH_THREADS", "0") or 0)
+if _NT > 0:
+    torch.set_num_threads(_NT)
+
+
 def write_reply(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()

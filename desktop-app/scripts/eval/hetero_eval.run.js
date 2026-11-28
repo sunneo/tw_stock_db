@@ -26,6 +26,8 @@ const PORT = +arg('port', '18941');
 const MINUTES = +arg('minutes', '20');
 const OUT = path.resolve(arg('out', 'E:/Temp/hetero-eval'));
 const STEPS = 12, WARM = 2, K = 4;
+const TORCH_THREADS = arg('torch-threads', '');
+if (TORCH_THREADS) process.env.FA_TORCH_THREADS = TORCH_THREADS;   // cpu 工作者的 torch 執行緒數（與 Electron 同機時減少互相搶核心）
 const { SIZES, roofline } = require(path.join(APP, 'scripts', 'bench', 'sizes.js'));
 const CPU = require(path.join(STUDIO, 'hetero_cpu_py.js'));
 
@@ -150,6 +152,7 @@ function __load(name) {
 }
 const BASE = 'http://127.0.0.1:${PORT}';
 const COMMIT = ${JSON.stringify(commit)};
+const TORCHT = ${JSON.stringify(TORCH_THREADS || 'default')};
 const SHAS = ${JSON.stringify({ 'gpu/nn_ops.js': sha(path.join(APP, 'renderer', 'src', 'gpu', 'nn_ops.js')), 'gpu/full_param_step_device.js': sha(path.join(APP, 'renderer', 'src', 'gpu', 'full_param_step_device.js')) })};
 const ROOF = ${JSON.stringify(Object.fromEntries(SIZES.map((z) => [z.name, roofline(z.cfg, { tflops: 0.3, gbs: 14 })])))};
 const FX = ${JSON.stringify(fx)};
@@ -196,7 +199,7 @@ const REF = await (await fetch(BASE + '/ref')).json();
 const g = await NN.getDevice(navigator);
 if (!g.dev) { log('no-device', { reason: g.reason || null }); await fetch(BASE + '/result', { method: 'POST', body: JSON.stringify({ error: 'no WebGPU device', reason: g.reason || null }) }); return; }
 let adapter = null; try { const ad = await navigator.gpu.requestAdapter(); adapter = ad ? { isFallbackAdapter: ad.isFallbackAdapter, info: ad.info ? { vendor: ad.info.vendor, architecture: ad.info.architecture, device: ad.info.device, description: ad.info.description } : null } : null; } catch (e) { adapter = { error: String(e) }; }
-const R = { commit: COMMIT, sha: SHAS, adapter, parity: {}, timing: {}, errors: [] };
+const R = { commit: COMMIT, sha: SHAS, torchThreads: TORCHT, adapter, parity: {}, timing: {}, errors: [] };
 
 // (1a) cudaweb 單一梯度 vs PyTorch fp64／f32（fixture，2 序列）
 const S0 = FS.makeResidentState(g.dev, FX.cfg, FX.init);
