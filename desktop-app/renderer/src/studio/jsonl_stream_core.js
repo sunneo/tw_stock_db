@@ -40,5 +40,11 @@ function sourceFromBytes(u8) {
   return { size: u8.length, read: async (off, len) => u8.subarray(off, off + len) };
 }
 
-return { streamLines, sourceFromBytes };
+// fap 文字來源：fapRead 回傳整檔字串，UTF-8 編碼後當作位元組來源（M1 的做法）。
+// 注意：這不是分段讀取；大檔需要範圍讀取的 IPC（目前主行程只有整檔與讀開頭），那是尚未做的決定，不在 M1 內。
+function sourceFromFapText(text) {
+  return sourceFromBytes(new TextEncoder().encode(String(text)));
+}
+
+return { streamLines, sourceFromBytes, sourceFromFapText };
 });

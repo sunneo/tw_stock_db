@@ -88,6 +88,18 @@ async function streamedRows(chunkSize) {
     assert.ok(threw);
   });
 
+  await check('fap 文字來源（fapRead 的整檔字串，UTF-8 編碼後分段）：19 列的詞元 id 與 HF 完全一致', async () => {
+    const text = fs.readFileSync(path.join(FIX, 'p2_m1_shard.jsonl'), 'utf8');
+    const src = JS.sourceFromFapText(text);
+    const rows = [];
+    for await (const rec of JS.streamLines(src, { chunkSize: 13 })) {
+      if (!rec.line.trim()) continue;
+      rows.push(LD.flattenRow(JSON.parse(rec.line)));
+    }
+    assert.strictEqual(rows.length, expected.length);
+    rows.forEach((t, k) => assert.deepStrictEqual(BPE.encode(tok, t), expected[k].ids, '第 ' + k + ' 列詞元 id 不同'));
+  });
+
   console.log(fail ? fail + ' 項失敗，' + pass + ' 項通過' : '全部通過（' + pass + ' 項）');
   process.exit(fail ? 1 : 0);
 })();
