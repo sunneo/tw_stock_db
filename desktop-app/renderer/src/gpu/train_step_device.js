@@ -510,5 +510,21 @@ const WGSL_ATTN_FWD_KT = (() => {
   return s;
 })();
 
+// 反向 dq（V 轉置版）：dP[i,j] = dao[i]·v[j] 的 v 改讀 vt[(h·hd+c)·T + j]（lane 沿 j → 合併）；
+// dq 的串列 j 迴圈（讀 K，lane 沿 c 已合併）改四路獨立累加。K 維持原佈局（lane 沿 c 本來就合併）。
+const WGSL_ATTN_BWD_Q_VT = (() => {
+  let s = WGSL_ATTN_BWD_Q;
+  const rep = (from, to) => { if (s.indexOf(from) < 0) throw new Error('attn_bwd_q_vt 替換失敗：' + from.slice(0, 60)); s = s.split(from).join(to); };
+  rep('// @kernel attn_bwd_q', '// @kernel attn_bwd_q_vt');
+  rep('dp = dp + gs[u2] * v[j * d + h * u.hd + u2];', 'dp = dp + gs[u2] * v[(h * u.hd + u2) * u.T + j];');
+  rep('for (var j: u32 = 0u; j <= i; j = j + 1u) { acc = acc + sds[j] * k[j * d + h * u.hd + t]; }',
+      'var a1: f32 = 0.0; var a2: f32 = 0.0; var a3: f32 = 0.0;\n' +
+      '    var jj: u32 = 0u;\n' +
+      '    loop { if (jj + 3u > i) { break; } acc = acc + sds[jj] * k[jj * d + h * u.hd + t]; a1 = a1 + sds[jj + 1u] * k[(jj + 1u) * d + h * u.hd + t]; a2 = a2 + sds[jj + 2u] * k[(jj + 2u) * d + h * u.hd + t]; a3 = a3 + sds[jj + 3u] * k[(jj + 3u) * d + h * u.hd + t]; jj = jj + 4u; }\n' +
+      '    loop { if (jj > i) { break; } acc = acc + sds[jj] * k[jj * d + h * u.hd + t]; jj = jj + 1u; }\n' +
+      '    acc = (acc + a1) + (a2 + a3);');
+  return s;
+})();
+
 module.exports = { trainStepDevice, WGSL_CAST16, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,
-  WGSL_TRANSPOSE_TH, WGSL_ATTN_FWD_KT, attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };
+  WGSL_TRANSPOSE_TH, WGSL_ATTN_FWD_KT, WGSL_ATTN_BWD_Q_VT, attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };

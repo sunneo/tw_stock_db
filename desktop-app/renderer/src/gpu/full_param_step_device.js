@@ -203,6 +203,14 @@ function extend(b) {
     b.dispatchRaw(TS.WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, T * H);   // 一個 (i,h) 一個工作群組
     return { dq: dq, dk: dk, dv: dv };
   };
+  // 反向（V 已有轉置佈局 vt）：dQ 改讀 vt（lane 沿 j 合併）；dK、dV 仍用原 v
+  r.attnBwdVt = (dao, q, k, v, vt, ao, pm, T, H, hd) => {
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
+    const dk = b.alloc(T * H * hd), dv = b.alloc(T * H * hd), dq = b.alloc(T * H * hd);
+    b.dispatchRaw(TS.WGSL_ATTN_BWD_KV, [q.buf, v.buf, dao.buf, pm.buf, ao.buf, dk.buf, dv.buf], uni, T * H);
+    b.dispatchRaw(TS.WGSL_ATTN_BWD_Q_VT, [k.buf, vt.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, T * H);
+    return { dq: dq, dk: dk, dv: dv };
+  };
   // RMSNorm 反向：rows 列、寬度 width（qk-norm 時 rows＝T·頭數、width＝hd）
   r.rmsnormBwd = (dy, x, g, rows, width, eps) => {
     const dx = b.alloc(rows * width);
@@ -344,6 +352,7 @@ async function fullParamStepDevice(o) {
       c.v = gqa ? B.matmul(v0, S.expand, T, kd, d) : v0;
       const kt = X.transposeTH(c.k, T, H, hd);
       const at = X.attnFwdKt(c.q, kt, c.v, T, H, hd); c.ao = at.ao; c.pm = at.pm;
+      c.vt = X.transposeTH(c.v, T, H, hd);   // V 轉置佈局：反向 dP 合併讀取用
       const o2 = B.matmul(c.ao, P('Wo'), T, d, d);
       c.h1 = B.axpy(h, o2, 1);
       c.n2 = B.rmsnorm(c.h1, P('n2'), T, d, EPS);
@@ -375,7 +384,7 @@ async function fullParamStepDevice(o) {
       const dh1 = B.axpy(X.rmsnormBwd(dn2, c.h1, P('n2'), T, d, EPS), dh, 1);
       accum(pre + 'Wo', B.matmul(c.ao, dh1, d, T, d, { transA: true }));
       const dao = B.matmul(dh1, P('Wo'), T, d, d, { transB: true });
-      const ab = X.attnBwd(dao, c.q, c.k, c.v, c.ao, c.pm, T, H, hd);
+      const ab = X.attnBwdVt(dao, c.q, c.k, c.v, c.vt, c.ao, c.pm, T, H, hd);
       // q：RoPE 反向（H 頭）→ qk-norm 反向（T·H 列）
       let dq = rp(ab.dq, -1, T, H, d);
       // k：先從 H 個頭加總回 KVH 個頭（Eᵀ），再 RoPE 反向（KVH 頭）→ qk-norm 反向（T·KVH 列）
