@@ -89,6 +89,16 @@
 6. **probe 全有或全無（工作項 7）**：未做。目前 `backend_cudaweb.js` 的 probe 還不列缺項。
 7. **工作項 8（model_types_core）**：未做，因為目前 P1 尚未有 cudaweb 可用的全參數路徑（前項未通過前不應列出 cudaweb）。
 
+
+**2026-11-28 第二輪進度（P1 剩餘項目）**：
+
+- (1) qk-norm 與分組查詢注意力：**已完成**。`full_param_train.js` 與 `full_param_ref_torch.py` 新增 `kvH`、`qkNorm`（variant `gqa_qkn`，kvH=2、H=4、qk-norm）；RoPE 改為 rotate-half（對齊 `llm_scratch.py` 的 `rot_half`；先前交錯成對是錯的，已修正）。JS 對 PyTorch fp64：步1梯度 ≤2.3e-15、20 步損失 ≤8.9e-16（dense 與 gqa_qkn 兩個 fixture）。
+- (3) cpu-py 對拍（S3）：**通過**。`full_param_cpu_py_check.py` 用 `llm_scratch.LM` 自己的模型跑 gqa_qkn 的同一批資料與初始權重，步1損失差 4.5e-9、梯度最大絕對誤差 8.4e-8（門檻 1e-5，f32 門檻）。診斷：`--rope64` 把 llm_scratch 的 RoPE 表改用 float64 重建後，差距降到 8.9e-16 與 6.7e-16。來源是 llm_scratch 的 RoPE 表在建構時用 float32，`.double()` 不會還原精度。這是 llm_scratch 既有的精度選擇，記錄在此，不改它。
+- (2) cudaweb 真 GPU 逐步對拍：**未完成，具體阻礙**。(a) `renderer/src/studio/studio_host.js:62` 註冊 cudaweb 時是 `createCudawebBackend({})`，沒有傳入 `getRuntime`，所以 probe 永遠回報不可用；要接上必須改 studio 的源模組，再用 `scripts/embed-code-ui.js` 重新嵌入 floating-assistant.js（依 feedback_embedded_source_modules）。(b) 評估檔要在渲染行程裡讀 fixture（1.4MB），目前沒有已確認的讀檔方式（待查 `fa` 是否提供讀檔）。(c) 真 GPU 的 `rt.matmul` 結果尚未在 Electron 裡驗過。這三件要先做完，才能跑門檻 1e-5 的逐步對拍。
+- (4) 屋頂線與耗時拆解：**未完成**。依賴 (2) 的 GPU 量測；目前只有 CPU 版的時間，不能當作 GPU 數字。
+- (5) 本機 Electron 真跑：**未完成**。依 `memory/reference_real_electron_eval_verification.md` 的做法：`scripts/eval/<名稱>.eval.js`、`FA_DEBUG_EVAL_FILE`、全新 `--user-data-dir`、寫入 `main-ext-rev.txt` 防止更新對話框、`FA_BROWSER_CONTROL_PORT` 換埠、`FA_DISABLE_MAIN_OVERLAY=1`。electron.exe 已在 `node_modules/electron/dist/electron.exe`。依賴 (2)(a)(b)。
+- (逐元素運算上 GPU)：**未完成**。RMSNorm、softmax、SiLU、RoPE、AdamW 仍在 CPU。現有 `nn_ops.js` 有它們的 GPU 版（`trainerOps`），接線與對拍要在 (2) 之後做。
+
 ---
 
 ## P2 資料入口與預訓練風格
