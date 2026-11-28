@@ -184,4 +184,103 @@ function mmVec4TWgsl(o) {
     '}'
   ]).join('\n');
 }
-module.exports = { mmGeomWgsl: mmGeomWgsl, mmGeomDims: mmGeomDims, mmVec4TWgsl: mmVec4TWgsl, mmVec4TOk: mmVec4TOk };
+// 管線版（P1 GPU 原則 3＋4）：16×16 執行緒、4×4 暫存器、BM=BN=64、BK=8；兩個共用記憶體緩衝，
+// 下一塊的全域載入先進暫存器，與目前這塊的乘加重疊，寫入另一個緩衝後只有一次屏障。
+// 錯開：As 列距 9（行寬 +1，讀取時同 warp 兩組列不同銀行）；Bs 依欄位置換存成 [kk][j][lid.x]，同 warp 的 16 條執行緒落在 16 個連續銀行（原本是 8 個銀行，2 路衝突）。
+// 共用記憶體：As 2×64×9、Bs 2×8×64，合計 8704 B。轉置旗標在編譯期寫入（同 mmVec4TWgsl）。
+function mmPipeWgsl(o) {
+  const TA = !!o.transA, TB = !!o.transB;
+  const marker = o.marker || (TA && TB ? 'matmul_pipe_tt' : (TA ? 'matmul_pipe_ta' : (TB ? 'matmul_pipe_tb' : 'matmul_pipe')));
+  const ldA = TA
+    ? '  return a[base + gk * p.M + gr];'
+    : '  return a[base + gr * p.K + gk];';
+  const ldB = TB
+    ? '  return b[base + gc * p.K + gk2];'
+    : '  return b[base + gk2 * p.N + gc];';
+  return '// @kernel ' + marker + '\n' + [
+    'struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }',
+    '@group(0) @binding(0) var<storage, read> a: array<f32>;',
+    '@group(0) @binding(1) var<storage, read> b: array<f32>;',
+    '@group(0) @binding(2) var<storage, read_write> y: array<f32>;',
+    '@group(0) @binding(3) var<uniform> p: P;',
+    'var<workgroup> As: array<f32, 1152>;',
+    'var<workgroup> Bs: array<f32, 1024>;',
+    // 第 idx 個 A 元素（列 idx/8、欄 idx%8）：全域位址
+    'fn ldA(base: u32, row0: u32, kb: u32, idx: u32) -> f32 {',
+    '  let gr = row0 + idx / 8u; let gk = kb + idx % 8u;',
+    '  if (gr >= p.M || gk >= p.K) { return 0.0; }',
+    ldA,
+    '}',
+    // 第 idx 個 B 元素（列 idx/64、欄 idx%64）
+    'fn ldB(base: u32, col0: u32, kb: u32, idx: u32) -> f32 {',
+    '  let gk2 = kb + idx / 64u; let gc = col0 + idx % 64u;',
+    '  if (gk2 >= p.K || gc >= p.N) { return 0.0; }',
+    ldB,
+    '}',
+    // Bs 的寫入位置：列 bk、欄 bc 放在 bk·64 + (bc%4)·16 + bc/4（讀取時同 warp 連續銀行）
+    'fn bsPos(buf: u32, idx: u32) -> u32 {',
+    '  let bk = idx / 64u; let bc = idx % 64u;',
+    '  return buf * 512u + bk * 64u + (bc % 4u) * 16u + bc / 4u;',
+    '}',
+    '@compute @workgroup_size(16, 16, 1)',
+    'fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {',
+    '  let n = wid.z;',
+    '  let row0 = wid.y * 64u;',
+    '  let col0 = wid.x * 64u;',
+    '  let ao = n * p.M * p.K;',
+    '  var bo = 0u;',
+    '  if (p.Bb != 1u) { bo = n * p.K * p.N; }',
+    '  let tid = lid.y * 16u + lid.x;',
+    '  var acc: array<f32, 16>;',
+    '  for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = 0.0; }',
+    '  let tiles = (p.K + 7u) / 8u;',
+    '  var ra: array<f32, 2>;',
+    '  var rb: array<f32, 2>;',
+    // 第 0 塊：直接載入到緩衝 0
+    '  for (var s: u32 = 0u; s < 2u; s = s + 1u) {',
+    '    let idx = tid + s * 256u;',
+    '    As[(idx / 8u) * 9u + idx % 8u] = ldA(ao, row0, 0u, idx);',
+    '    Bs[bsPos(0u, idx)] = ldB(bo, col0, 0u, idx);',
+    '  }',
+    '  workgroupBarrier();',
+    '  for (var t: u32 = 0u; t < tiles; t = t + 1u) {',
+    '    let cur = t & 1u;',
+    '    let nxt = 1u - cur;',
+    '    let hasNext = t + 1u < tiles;',
+    '    if (hasNext) {',
+    '      for (var s: u32 = 0u; s < 2u; s = s + 1u) {',
+    '        let idx = tid + s * 256u;',
+    '        ra[s] = ldA(ao, row0, (t + 1u) * 8u, idx);',
+    '        rb[s] = ldB(bo, col0, (t + 1u) * 8u, idx);',
+    '      }',
+    '    }',
+    '    for (var kk: u32 = 0u; kk < 8u; kk = kk + 1u) {',
+    '      var ca: array<f32, 4>;',
+    '      var cb: array<f32, 4>;',
+    '      for (var i: u32 = 0u; i < 4u; i = i + 1u) { ca[i] = As[cur * 576u + (lid.y * 4u + i) * 9u + kk]; }',
+    '      for (var j: u32 = 0u; j < 4u; j = j + 1u) { cb[j] = Bs[cur * 512u + kk * 64u + j * 16u + lid.x]; }',
+    '      for (var i: u32 = 0u; i < 4u; i = i + 1u) {',
+    '        for (var j: u32 = 0u; j < 4u; j = j + 1u) { acc[i * 4u + j] = acc[i * 4u + j] + ca[i] * cb[j]; }',
+    '      }',
+    '    }',
+    '    if (hasNext) {',
+    '      for (var s: u32 = 0u; s < 2u; s = s + 1u) {',
+    '        let idx = tid + s * 256u;',
+    '        As[nxt * 576u + (idx / 8u) * 9u + idx % 8u] = ra[s];',
+    '        Bs[bsPos(nxt, idx)] = rb[s];',
+    '      }',
+    '    }',
+    '    workgroupBarrier();',
+    '  }',
+    '  for (var i: u32 = 0u; i < 4u; i = i + 1u) {',
+    '    let gr = row0 + lid.y * 4u + i;',
+    '    if (gr >= p.M) { continue; }',
+    '    for (var j: u32 = 0u; j < 4u; j = j + 1u) {',
+    '      let gc = col0 + lid.x * 4u + j;',
+    '      if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[i * 4u + j]; }',
+    '    }',
+    '  }',
+    '}'
+  ].join('\n');
+}
+module.exports = { mmGeomWgsl: mmGeomWgsl, mmGeomDims: mmGeomDims, mmVec4TWgsl: mmVec4TWgsl, mmVec4TOk: mmVec4TOk, mmPipeWgsl: mmPipeWgsl };

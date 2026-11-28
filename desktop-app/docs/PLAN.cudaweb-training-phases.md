@@ -539,6 +539,58 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 - L 與 XL 的差距都在 GPU 通道：L 的 GPU 合計 133.5 ms、XL 1285 ms（見上一節）。attention 是主要部分。
 - cpu-py M 兩輪差 16 ms，中位數不穩；M 的勝負以第一輪與第二輪都勝來判斷（52.8 與 68.8 都高於 cudaweb 的 31）。
 
+### GPU 優化原則清單與逐核心審查（2026-11-28，使用者指示）
+
+五條原則（每條要有：這個核心有沒有、怎麼改、單核心微基準前後）：
+
+1. **資料佈局 AoS→SoA**：相鄰執行緒讀的要是相鄰位址；跨步存取（如 [T][H][hd] 中跨頭）改成 lane 維度連續的索引，或在 pipeline 邊界做一次轉置。
+2. **合併存取**：每個全域讀寫，相鄰 lane ↔ 相鄰位址（最好 vec4、16 位元組對齊）。
+3. **錯開同時存取**：共用記憶體行寬 +1 padding 或 swizzle，同一時刻同一 warp 的 lane 不打同一 bank；全域端錯開工作群組起始位移，避免同步打同一記憶體分區。
+4. **軟體管線／預取**：載入下一塊（暫存器或共用記憶體另一半）與目前這塊的乘加重疊；迴圈展開 2–4 次讓載入延遲被計算蓋住；寄存器分塊的累加器持續活躍。
+5. **其餘**：分支發散改無分支、整數除法移出內層、佔用率與暫存器壓力、每 lane 都有活做。
+
+**逐核心審查（讀碼結論；標「待測」者需微基準確認）**
+
+| 核心 | 原則 1 佈局 | 原則 2 合併 | 原則 3 衝突 | 原則 4 管線 | 原則 5 | 動作與優先序 |
+|---|---|---|---|---|---|---|
+| attn_fwd（HEAD） | q、ao 的 lane 沿 hd 連續 ✓；**k 在分數迴圈中 lane 沿 j 跨 d 步幅 ✗**（每 lane 讀不同列） | k 讀非合併（待測） | qs 無 padding（同 bank 待測） | 無（逐 j 串列 PV） | 整數除法 idx/H 每 lane 一次（可忽略） | **高優先**：K 分塊搬進共用記憶體（列距 +1）、分數與 PV 雙緩衝；消融（見下）尚未確認 |
+| attn_bwd_kv（v2） | q、dao 沿 hd 連續 ✓；pm 沿 j 連續 ✓ | 大致合併 | sp／sds 陣列無 padding（lane i 連續，ok） | 無 | 每 lane 分塊 nch＝64/hd 分支 | 中：列距 padding；預取下一個 i 塊 |
+| attn_bwd_q | k、v 沿 j 跨 d 步幅 ✗（同 attn_fwd） | 非合併（待測） | 待測 | 無 | — | 與 attn_fwd 同：K/V 分塊搬進共用記憶體 |
+| matmul（vec4 / 標量） | A、B 的 lane 沿 k 或 n 連續 ✓（vec4 版合併 ✓） | 標量轉置版 lane 跨步 ✗（已由 vec4T 修） | **Bs[kk·64+lid.x·4+i] 16 lane 落在 8 個 bank → 2 路衝突（推算，待測）** ；As 列距 64 → 同 bank 不同位址（待測） | **無**：載入→屏障→計算→屏障，沒有重疊 | 無分支 | **高優先**：Bs 列距 +1 或 swizzle；雙緩衝（或暫存器預取下一塊）；單核心微基準前後 |
+| rmsnorm、softmax、cross_entropy（列式） | 列連續 ✓ | 一列一群組 ✓ | 樹狀歸約（待測） | 無 | — | 低：已一列一群組 |
+| rope | 偶奇成對，lane 沿成對索引 ✓ | ✓ | — | — | 整數除法在每 lane（低） | 低 |
+| embedding gather／scatter | ids 讀 ✓；emb 列 lane 沿 j 連續 ✓ | ✓ | — | — | — | 已完成（a656de1fd） |
+| sumsq_slot、sumsq_total | 1 群組一個張量，lane 步進 ✓ | ✓ | 歸約 | 無 | 每張量一次派發（46 次） | **融合**：段表化成單次派發 |
+| adamw（+coef） | p、m、v 各自獨立緩衝（SoA ✓） | ✓ | — | 無 | 每張量一次派發（46 次） | **融合**：段表化成單次派發（與 sumsq 共用段表） |
+| 逐元素（axpy、mul、scal、silu、rms_bwd、mlp_bwd） | ✓ | ✓ | — | — | 每批次數多 | 融合：殘差加＋matmul 輸出、silu＋乘 |
+
+**消融微基準的狀態（須先釐清，不採信）**：去掉 pm 寫入、去掉分數迴圈、去掉 PV 迴圈三個變體都掉到約 0.1 ms（與空核心同量級）；完整核心 4.26 ms。三者不可能同時是全部成本，極可能是變體編譯或驗證失敗（靜默）。在確認前，不以此消融決定 attention 改寫的方向。
+
+**目前行動順序**：(a) 矩陣乘 Bs 列距 padding＋雙緩衝 → 單核心微基準 → 整步對拍 → A／B；(b) attention K/V 分塊進共用記憶體（與原則 1、3、4 相關）→ 單核心微基準；(c) 段表化 sumsq＋adamw（派發 −90）。
+
+### CUDA 優化概念 → WebGPU／WGSL 對照（2026-11-28，已在這台實測）
+
+探測（`scratchpad/probe/probe.eval.js`，真 Electron，持量測鎖）：adapter 特徵 `subgroups`、`timestamp-query`、`core-features-and-limits`；**沒有 `shader-f16`**。裝置請求：subgroups、timestamp-query 皆成功。實際編譯：`subgroupAdd`、`subgroupShuffleDown`、`subgroupBroadcastFirst`、`select`、`inverseSqrt`、`exp2`、`fma` 都通過；`enable f16` 失敗（"extension 'f16' is not allowed in the current environment"）。實測 subgroup 大小 **32**（Kepler warp）。預設裝置上限：工作群組共用記憶體 16 KB、每群組 256 執行緒（adapter 另有 32 KB／1024，需 requiredLimits 才會生效）。
+
+| CUDA 概念 | WGSL 對應 | 這台可用？（實測） | 預期用在哪些核心 |
+|---|---|---|---|
+| Warp 原語（__shfl、warp 歸約） | `subgroupAdd`、`subgroupShuffleDown`、`subgroupBroadcastFirst` | **可用**（subgroups 特徵＋編譯通過，warp 32） | rmsnorm、softmax、attention 列內歸約、sumsq、cross_entropy |
+| Tensor Cores／FP16 混合精度 | `enable f16`、`subgroup matrix`（未探測） | **不可用**（f16 擴充被拒） | 不做；群組節點的能力宣告要記錄 f16／subgroups 是否可用（保留 f16 路徑給其他機器） |
+| Shared memory 重用、tile | `var<workgroup>`（16 KB 預設上限） | 可用 | 矩陣乘（管線版 8.7 KB）、attention（分塊 K/V） |
+| Bank conflict、padding | 陣列列距 +1、欄位置換（如管線版 Bs 的 bsPos） | 可用（寫法問題，非特性） | 矩陣乘 As／Bs；attention 的 ks、ss |
+| 合併存取、vec4 對齊 | `array<vec4<f32>>`（4 位元組對齊 16） | 可用（vec4 核心已用） | 矩陣乘 vec4、轉置 vec4T、逐元素 |
+| Constant／texture 記憶體（唯讀小表） | `var<uniform>`（上限 64 KB）、`var<storage, read>` | uniform 上限 65536 位元組可用 | RoPE cos/sin、norm 增益、裁剪係數（已用 storage） |
+| Pinned memory＋非同步傳輸、stream | 無 stream；等效：單次 submit 多派發、不等待、writeBuffer 與計算重疊（已做分段 flush） | **限制**：WebGPU 無 stream、無 pinned；分段 submit 是唯一的重疊手段 | 整步（flush 每層）；XL 分段提交 |
+| Occupancy、block 大小 32 倍數 | 工作群組 128／256（32 倍數）；暫存器壓力由編譯器決定 | 可用（subgroup 32） | 所有核心（已是 64、128、256） |
+| Warp divergence → 無分支 | `select`、位元運算；盡量把邊界判斷移到迴圈外 | 可用 | attention 因果遮罩、邊界檢查 |
+| Grid-stride loop | `for (i = gid; i < n; i += stride)` | 可用 | 列數少或尾端不整齊的核心（L 只有 128 列） |
+| Intrinsics／fast math | `inverseSqrt`、`exp2`、`fma`、`select`（WGSL 無 fast-math 開關） | 可用（已編譯） | rmsnorm（inverseSqrt）、softmax（exp2＋預乘 log2e）、adamw |
+| 減少 __syncthreads | `workgroupBarrier`；以 subgroup 取代列內歸約屏障 | 可用 | 見「原則清單」的屏障計數（待統計） |
+
+**矩陣乘管線版（雙緩衝＋Bs 欄位置換，`mm_geom.mmPipeWgsl`）微基準結果（量測鎖內，前 10 秒處理器 avg 36.5%、max 74%）**：15 個形狀全部與產品核心逐位相同（relErr 0），但**比產品慢 1.7–2.5×**（加速比 0.38–0.59）。不採用，也不進產品路徑。推測原因：(a) 全域載入改用逐元素函式呼叫＋邊界檢查，沒有 vec4；(b) BK=8 讓屏障與迴圈開銷加倍；(c) 雙緩衝沒有抵銷這兩項。下一次若再試管線，須先用 vec4 載入、BK≥16，且先單獨驗證每一項。
+
+**下一步（依預期收益）**：(1) attention（管線化要用 vec4 與 K/V 分塊；先做消融確認瓶頸）；(2) softmax／rmsnorm 的列內歸約改 subgroup（省屏障，小核心但次數多）；(3) RoPE 與裁剪係數改 uniform（待實測是否有益）。
+
 ### 融合 1：AdamW＋裁剪係數（2026-11-28）
 
 - 改動：`full_param_step_device.js` 新增 `WGSL_ADAMW_COEF`（梯度先乘裁剪係數再進 AdamW，取代每個張量一次 `scale_buf`）；運算順序與舊路徑逐位相同（(0＋g)·c 再 ·scale）。
