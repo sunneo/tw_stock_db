@@ -75,7 +75,7 @@
         { id: 'full', label: '完整模型', available: false, formats: [], reason: '還沒有併回基底的匯出路徑接進工作室（合併匯出的腳本存在，但沒有驗證）。' } ],
       gap: '實測（300 步，約 4.4 分鐘）：合成的留出 12 題，顏色、形狀與兩者都對都是 12/12（100%）；4 步冒煙時是 0.58。限制：只有合成資料，題型很單純；只評量顏色與形狀；沒有人工評量。',
       can: ['從工作室按開始訓練 LoRA（處理器，約 1 秒／步）', '載入 LoRA 重跑留出題'], cannot: ['輸出完整模型', '在應用程式內換用這個 LoRA'] },
-    { id: 'llm_scratch', name: '建立語言模型（從零開始）', status: 'done', ext: 'llm_scratch',
+    { id: 'llm_scratch', name: '建立語言模型（從零開始）', status: 'done', ext: 'llm_scratch', cudawebKinds: { dense: 'dense-full-param', moe: 'moe-full-param', reasoning: 'reasoning-grpo' },
       summary: '從語料開始建一顆語言模型：清理語料 → 訓練分詞器（位元組級合併，繁體中文）→ 預訓練 → 指令微調（聊天樣板）→ 匯出 ONNX q8 → 重新載入核對。可選架構：密集、專家混合（每層多個專家）、推理（思考＋答案，再用可核對答案的算術題做強化學習）；可調層數、寬度與分組查詢注意力。模型是 Qwen3 同型，約 2 百萬到 2 千萬參數。',
       sources: ['你自己的文字檔或資料夾；留空＝內建小語料（只夠示範）', '指令微調資料（每行一筆對話的 .jsonl）；留空＝內建 34 筆範例（推理架構改用程式產生的算術題）'], backends: [{ id: 'cpu-py', label: '純處理器（Python，桌面版）' }],
       outputs: [
@@ -114,5 +114,15 @@
     if (t.status === 'half') return { level: 'partial', ok: false, message: '「' + t.name + '」目前是半成品，工作室還不能產生模型。目前能做到：' + t.can.join('；') + '。還不能做：' + t.cannot.join('；') + '。' + t.gap, can: t.can.slice(), cannot: t.cannot.slice() };
     return { level: 'blocked', ok: false, message: '「' + t.name + '」目前只有設計，還沒有訓練核心，不會產生任何檔案。' + t.gap, can: [], cannot: t.cannot.slice() };
   }
-  return { TYPES: TYPES, STATUS_LABEL: STATUS_LABEL, find: find, listFor: listFor, canStart: canStart, isVisible: isVisible };
+  // cudaweb 閘門（全有或全無）：某架構的運算覆蓋不完整 → 不列出 cudaweb，並寫缺項。覆蓋完整只代表「能列出」；
+  // 真的可不可用仍由後端 probe 決定（執行期沒打包進頁面時 probe 回報不可用）。covMod：{ coverageFor, reasonFor }（由呼叫端注入）。
+  function cudawebGate(typeId, arch, covMod) {
+    var t = find(typeId);
+    if (!t || !t.cudawebKinds || !t.cudawebKinds[arch]) return { listed: false, kind: null, missing: [], reason: '這個類型沒有 cudaweb 訓練路徑。' };
+    var kind = t.cudawebKinds[arch];
+    var c = covMod.coverageFor(kind);
+    if (c.complete) return { listed: true, kind: kind, missing: [], reason: '' };
+    return { listed: false, kind: kind, missing: c.missing.slice(), reason: covMod.reasonFor(kind) };
+  }
+  return { TYPES: TYPES, STATUS_LABEL: STATUS_LABEL, find: find, listFor: listFor, canStart: canStart, isVisible: isVisible, cudawebGate: cudawebGate };
 });
