@@ -426,16 +426,27 @@ struct P { rows: u32, cols: u32, pad0: u32, pad1: u32 }
 @group(0) @binding(0) var<storage, read> x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> y: array<f32>;
 @group(0) @binding(2) var<uniform> p: P;
+// 一個工作群組一列（P1c-3 修法）：64 執行緒跨步取最大值、共用記憶體歸約，再跨步算指數與和，相鄰執行緒讀相鄰元素（合併存取）。
+var<workgroup> sh: array<f32, 64>;
 // @kernel softmax
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let r = gid.x;
-  if (r >= p.rows) { return; }
-  var mx: f32 = x[r * p.cols];
-  for (var c: u32 = 1u; c < p.cols; c = c + 1u) { mx = max(mx, x[r * p.cols + c]); }
+fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let r = w.x; let t = l.x;
+  if (r >= p.rows) { return; }   // 工作群組內所有執行緒的 r 相同，提前返回一致（不會跳過屏障）
+  var mx: f32 = -3.0e38;
+  for (var c: u32 = t; c < p.cols; c = c + 64u) { mx = max(mx, x[r * p.cols + c]); }
+  sh[t] = mx;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) { if (t < st) { sh[t] = max(sh[t], sh[t + st]); } workgroupBarrier(); }
+  let rmax = sh[0];
+  workgroupBarrier();
   var s: f32 = 0.0;
-  for (var c: u32 = 0u; c < p.cols; c = c + 1u) { let e = exp(x[r * p.cols + c] - mx); y[r * p.cols + c] = e; s = s + e; }
-  for (var c: u32 = 0u; c < p.cols; c = c + 1u) { y[r * p.cols + c] = y[r * p.cols + c] / s; }
+  for (var c: u32 = t; c < p.cols; c = c + 64u) { let e = exp(x[r * p.cols + c] - rmax); y[r * p.cols + c] = e; s = s + e; }
+  sh[t] = s;
+  workgroupBarrier();
+  for (var st: u32 = 32u; st > 0u; st = st >> 1u) { if (t < st) { sh[t] = sh[t] + sh[t + st]; } workgroupBarrier(); }
+  let total = sh[0];
+  for (var c: u32 = t; c < p.cols; c = c + 64u) { y[r * p.cols + c] = y[r * p.cols + c] / total; }
 }
 `;
 
@@ -470,7 +481,7 @@ async function softmax(x, rows, cols, opts) {
       new Uint32Array(uni, 0, 2).set([rows, cols]);
       const outs = await runWgsl(dev, WGSL_SOFTMAX,
         [{ data: xf, out: false }, { data: new Float32Array(rows * cols), out: true }],
-        uni, Math.ceil(rows / 64));
+        uni, rows);   // 一列一個工作群組（見 WGSL_SOFTMAX）
       return outs[0];
     },
     (gl) => glRun(gl, FS_SOFTMAX, [xf], { i: { uRows: rows, uCols: cols } }, rows * cols, ['uX']),
@@ -1075,7 +1086,7 @@ function createBatch(dev) {
     softmax(x, rows, cols) {
       const y = storage(rows * cols);
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([rows, cols]);
-      dispatch(WGSL_SOFTMAX, [x.buf, y], uni, Math.ceil(rows / 64));
+      dispatch(WGSL_SOFTMAX, [x.buf, y], uni, rows);   // 一列一個工作群組（見 WGSL_SOFTMAX）
       return { buf: y, n: rows * cols };
     },
     // （批次內的 rmsnorm、softmax、silu、rope 都只走 T1；批次是 GPU 內連續運算，不經過 WebGL2）
