@@ -168,6 +168,15 @@ function mk(desktop, hostOps) {
   const w2 = mk(false); w2.h.webTrain = WT; w2.h.pickFile = async () => wpicked;
   r = await w2.req('GET', '/api/info'); check('info 帶 webTrain 旗標', r.j.webTrain === true && r.j.desktop === false, r.j.webTrain);
   r = await w2.req('GET', '/api/backends?kind=lora'); check('網頁版接上宿主：wasm-web 可用且排最前、webTrain 旗標', r.j.webTrain === true && r.j.backends[0].id === 'wasm-web' && r.j.backends[0].available && r.j.note === '', r.j.backends.map((b) => b.id + b.available));
+  // cudaweb：渲染行程的執行期狀態取代主行程的「沒有 GPU 上下文」說明
+  const cw1 = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cudaweb', available: false, reason: '此執行環境沒有 GPU 運算核心' }] }), studio_select: () => ({ ok: false, chosen: null, reason: 'x' }) });
+  cw1.h.cudawebEnvProbe = async () => ({ deviceReady: true, profile: 'test', webgl2: { available: true }, last: { layer: 'T1' } });
+  r = await cw1.req('GET', '/api/backends?kind=lora'); const cwE = r.j.backends.find((b) => b.id === 'cudaweb');
+  check('渲染行程有 WebGPU：cudaweb 可用、層級 T1、原因寫明', !!cwE && cwE.available === true && cwE.layer === 'T1' && /WebGPU（T1）/.test(cwE.reason) && cwE.source === 'renderer', cwE);
+  const cw2 = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cudaweb', available: false, reason: 'x' }] }), studio_select: () => ({ ok: false, chosen: null, reason: 'x' }) });
+  cw2.h.cudawebEnvProbe = async () => { throw new Error('取不到執行期'); };
+  r = await cw2.req('GET', '/api/backends?kind=lora'); const cwF = r.j.backends.find((b) => b.id === 'cudaweb');
+  check('執行期取不到：cudaweb 不可用且原因含具體錯誤', !!cwF && cwF.available === false && /取不到執行期/.test(cwF.reason), cwF);
   r = await w2.req('POST', '/api/train/start', { name: 'ck', backend: 'wasm-web', cfg: { steps: 10, fromAsset: 'lora/a' } }); check('網頁版開始訓練走 h.webTrain', r.j.ok && r.j.web && r.j.jobId === 'web1_x' && wlog[0][1].cfg.steps === 10, r.j);
   r = await w2.req('POST', '/api/train/start', { name: 'bad name/..', backend: 'wasm-web' }); check('名稱不合法被擋', r.s === 400);
   r = await w2.req('POST', '/api/train/start', { name: 'f', backend: 'wasm-web', cfg: { fail: 1 } }); check('宿主回失敗時 409 並帶原因', r.s === 409 && /沒有可用資料/.test(r.j.error), r.j);

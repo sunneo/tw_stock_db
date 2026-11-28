@@ -512,6 +512,20 @@
                     const r = await callHost('studio_probe', { kind }, 30000); if (r.ok === false) return bad(502, r.error);
                     // 桌面版也能用頁內 wasm-web：主行程的清單把它列為「由渲染行程執行」的不可用項，這裡用頁內宿主的探測結果取代
                     if (kind === 'lora' && h.webTrain && Array.isArray(r.backends)) { let p; try { p = await h.webTrain.probe(); } catch (e) { p = { available: false, reason: '探測失敗：' + String((e && e.message) || e) }; } const e = Object.assign({ id: 'wasm-web' }, p); const i = r.backends.findIndex((b) => b.id === 'wasm-web'); if (i >= 0) r.backends[i] = e; else r.backends.push(e); r.webTrain = !!p.available; }
+                    // cudaweb：主行程的 probe 沒有 GPU 上下文（會說明原因）；渲染行程的執行期才是實際狀態，由 h.cudawebEnvProbe() 取得 backendInfo 後取代。
+                    // 判斷與 backend_cudaweb.js 的 probe／layerText 相同（backend_cudaweb 不在渲染行程的 FaStudio 套件裡，所以這裡重寫這段純判斷）。
+                    if (kind === 'lora' && h.cudawebEnvProbe && Array.isArray(r.backends)) {
+                        let bi = null; let perr = null;
+                        try { bi = await h.cudawebEnvProbe(); } catch (e) { perr = String((e && e.message) || e); }
+                        const okCw = !!(bi && (bi.deviceReady || (bi.webgl2 && bi.webgl2.available)));
+                        const tier = bi && bi.deviceReady ? 'WebGPU（T1）' : 'WebGL2（T3）';
+                        const lastL = bi && bi.last ? bi.last.layer : null;
+                        const cwEntry = { id: 'cudaweb', available: okCw, reason: okCw
+                            ? '可用（能力檔 ' + ((bi && bi.profile) || '未知') + '，目前走 ' + tier + (lastL ? '，最後一次呼叫的層為 ' + lastL : '') + '）；訓練熱點（矩陣乘）已接入，LayerNorm、softmax、AdamW 仍在 CPU'
+                            : '沒有可用的 WebGPU 裝置或 WebGL2 上下文（' + (perr || (bi && (bi.probeReason || (bi.webgl2 && bi.webgl2.reason))) || '渲染行程沒有回報 GPU 運算核心') + '）',
+                            layer: okCw ? (bi.deviceReady ? 'T1' : 'T3') : null, source: 'renderer' };
+                        const ci = r.backends.findIndex((b) => b.id === 'cudaweb'); if (ci >= 0) r.backends[ci] = Object.assign({}, r.backends[ci], cwEntry); else r.backends.push(cwEntry);
+                    }
                     const sel = kind === 'lora' ? await callHost('studio_select', { kind }, 30000) : null;
                     return ok(Object.assign({ desktop: true, selection: sel && { chosen: sel.chosen, order: sel.order, needsRebench: sel.needsRebench, reason: sel.reason, source: sel.source } }, r));
                 }
