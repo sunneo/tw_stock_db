@@ -91,6 +91,34 @@ function fakeNavigator(opts) {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（p0 的位元是轉置旗標）；單一批次，與核心的索引一致
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
+    } else if (k === 'sumsq_multi') {
+      // full_param_fused.js 的 wgslSumsqMulti：綁定 0..K-1 為 g_j、K 為 parts、K+1 為 uniform（ns[0..K)、base 在字 16、cnt 在字 17）
+      // 每個工作群組一個張量，歸約順序與 WGSL（256 步進＋樹狀歸約）相同
+      const K = e.length - 2, uw = u32(e[K + 1]), base = uw[16], cnt = uw[17];
+      const parts = f32(e[K], base + cnt);
+      for (let slot = 0; slot < cnt; slot++) {
+        const n = uw[slot], inp = f32(e[slot], n), sh = new Array(256);
+        for (let lid = 0; lid < 256; lid++) { let acc = 0; for (let i = lid; i < n; i += 256) acc = Math.fround(acc + Math.fround(inp[i] * inp[i])); sh[lid] = acc; }
+        for (let st = 128; st > 0; st >>= 1) for (let lid = 0; lid < st; lid++) sh[lid] = Math.fround(sh[lid] + sh[lid + st]);
+        parts[base + slot] = sh[0];
+      }
+    } else if (k === 'adamw_multi') {
+      // full_param_fused.js 的 wgslAdamwMulti：綁定 4j..4j+3 為 p_j、g_j、m_j、v_j，4K 為 cf，4K+1 為 uniform
+      // （ns[0..K) 在字 0、pre[0..K] 在字 16、cnt 在字 32、fl 從位元組 144 起）。每個工作群組 64 個元素，依前綴表找張量；元素式與 adamwAccumF32 相同
+      const TF = require('./train_fused.js');
+      const K = (e.length - 2) / 4, cfv = f32(e[4 * K], 1)[0], uw = u32(e[4 * K + 1]), fl = Array.from(new Float32Array(e[4 * K + 1].data, 144, 10));
+      const cnt = uw[32];
+      for (let wg = 0; wg < op.x; wg++) {
+        let slot = 0; for (let j = 1; j < cnt; j++) if (wg >= uw[16 + j]) slot = j;
+        const base = uw[16 + slot], n = uw[slot];
+        const i0 = (wg - base) * 64, i1 = Math.min(n, i0 + 64);
+        if (i0 >= n) continue;
+        const P = f32(e[4 * slot], n), G = f32(e[4 * slot + 1], n), M = f32(e[4 * slot + 2], n), V = f32(e[4 * slot + 3], n);
+        const gs = new Float32Array(i1 - i0);
+        for (let q = 0; q < i1 - i0; q++) gs[q] = Math.fround(G[i0 + q] * cfv);
+        const r = TF.adamwAccumF32(P.slice(i0, i1), gs, 1, M.slice(i0, i1), V.slice(i0, i1), fl);
+        P.set(r.p, i0); M.set(r.m, i0); V.set(r.v, i0);
+      }
     } else if (k === 'sum') {
       const n = u32(e[2])[0], inp = f32(e[0], n), groups = op.x, out = f32(e[1], groups), stride = 256 * groups;
       for (let g = 0; g < groups; g++) {
