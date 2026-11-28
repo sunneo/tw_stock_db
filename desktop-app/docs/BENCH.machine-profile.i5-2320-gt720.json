@@ -1,0 +1,51 @@
+{
+ "schema": "fa.machine-profile/1",
+ "at": "2026-11-28T12:02:56.456Z",
+ "appVersion": "1.1.0",
+ "machine": {
+  "id": "i5-2320 + GT 720 (本機)",
+  "cpuModel": "Intel(R) Core(TM) i5-2320 CPU @ 3.00GHz",
+  "cores": 4,
+  "gpuName": null,
+  "browser": "electron"
+ },
+ "cpu": {
+  "cores": 4,
+  "threads": [
+   {
+    "n": 1,
+    "gflops": 5.772,
+    "ms": 372.047
+   },
+   {
+    "n": 2,
+    "gflops": 10.951,
+    "ms": 196.105
+   },
+   {
+    "n": 4,
+    "gflops": 19.72,
+    "ms": 108.897
+   }
+  ],
+  "best": {
+   "n": 4,
+   "gflops": 19.72
+  },
+  "memGBs": 11.462,
+  "source": "measured"
+ },
+ "gpu": {
+  "floorMs": 0.9,
+  "dispOverheadMs": 0.065,
+  "copyGBs": 16.236,
+  "matmulGflops": 104.585,
+  "maxBufferSize": 268435456,
+  "maxWorkgroupSize": 256,
+  "maxInvocations": 256,
+  "maxWorkgroupStorage": 16384,
+  "f16": false,
+  "source": "measured"
+ },
+ "cpuPy": null
+}

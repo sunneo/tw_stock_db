@@ -243,6 +243,37 @@ PyTorch 對拍（20 步，`gen_full_param_cudaweb_eval.js` 同時比 fp64 與 f3
 - 矩陣乘分塊與共享記憶體重用（目前核心約 40–75 GFLOPS）：待辦，未開始。
 - 注意力與逐元素核心的進一步拆解：待辦（消融顯示單項都小於 20 ms）。
 
+## P1c：機器剖析與異質分工（2026-11-28 使用者指示，插在 P1b 優化 2 之前）
+
+使用者原話：「在找出 cudaweb 慢的原因與優化方向之前，提供基礎的機器 profile 方式，或者做成可以 heterogeneous cpu+gpu 都一起投入分擔 workload」。
+優化 2 暫停；P1c 做完後回到優化 2，用剖析結果決定從哪裡下手。
+
+### P1c-1 機器剖析（狀態：核心與量測完成；工作室入口未做）
+
+- 純核心 `renderer/src/studio/machine_profile.js`：組能力檔、格式檢查、瓶頸判斷（計算／頻寬／派發／固定地板，取最大者）、表格列。缺量測寫 null，不推估。測試 `machine_profile_test.js`（假資料，14 項通過）。
+- CPU 量測 `scripts/bench/machine_profile_cpu.js`：1／2／4 工作者矩陣乘（1024³，持久池，取最佳三次）、記憶體複製頻寬。
+- WebGPU 量測 `scripts/eval/gen_machine_profile_gpu_eval.js`（產生真 Electron 評估檔）：裝置上限、shader-f16、固定地板、派發成本、複製頻寬、三個矩陣乘形狀。
+- 組裝 `scripts/bench/machine_profile.js` → 能力檔 `docs/BENCH.machine-profile.i5-2320-gt720.json`。
+- 真 Electron 實測（本機 i5-2320 + GT 720，residue=0）：
+
+| 項目 | 數值 |
+|---|---|
+| CPU 矩陣乘 1／2／4 執行緒 | 5.77／10.95／19.72 GFLOPS（最佳 4 執行緒） |
+| CPU 記憶體頻寬 | 11.46 GB/s |
+| cudaweb 矩陣乘 512×1024×1024／128×256×512／128×256×256 | 104.6／77.4／62.5 GFLOPS |
+| cudaweb 複製頻寬 | 16.24 GB/s |
+| cudaweb 每次派發成本 | 0.065 ms |
+| cudaweb 固定地板 | 0.90 ms |
+| 裝置上限 | 最大緩衝區 256 MB、每群組 256、每群組共用記憶體 16 KB、shader-f16 不支援 |
+
+- 用能力檔判斷 L 規模一步的瓶頸：派發 583 次 × 0.065 ms ≈ 37.9 ms，計算 ≈ 23 ms（以 512 形狀的速率估），頻寬 ≈ 4.3 ms，判為**派發瓶頸**。
+- **誠實註記**：這個模型只預測約 38 ms，實測 L 步為 338 ms（見優化 2 節）。剖析目前還**不能完整解釋**L 步的時間；差距來自小形狀矩陣乘的實際速率（約 40–75 GFLOPS，遠低於 512 形狀的量）與尚未歸因的部分。這正是下一步要用的線索。
+- 還沒做：（a）工作室入口（按鈕＋表格）；（b）cpu-py 實測未併入這次能力檔（既有 `bench_cpu_py_steps.js` 可用 `--cpu-py` 併入，未在這次跑）；（c）瓶頸判斷目前只用單一矩陣乘速率，之後應改用各規模實際形狀的速率。
+
+### P1c-2 異質分工（狀態：未開始）
+
+依使用者要求：cpu 與 cudaweb 以資料並行分擔同一訓練步，比例由能力檔決定、並線上自適應；梯度平均須與單一資源數值一致（對拍 PyTorch，門檻不緊於 f32 地板，同時比 f32 參考）；量 S/M/L 的單 cpu、單 cudaweb、合作三種時間，與屋頂線對照。既有 `cpu_share.js`（矩陣乘列切分）與 `hetero_split.js`（分攤公式）可沿用，設計見 `docs/DESIGN.cudaweb-hetero.md`。
+
 ## llm_full 狀態
 
 `llm_full`（小型語言模型，全參數訓練）維持 **half**。已完成：類型登錄、cudaweb 覆蓋閘門、cudaweb 與 cpu-py 路由、兩條路徑的真跑與續訓（cudaweb）。未完成：工作室畫面的每步損失與毫秒、cpu-py 續訓（檢查點目前只在主行程資料夾）、只計助理回答的損失遮罩。三項都是完成 `done` 前的條件。
