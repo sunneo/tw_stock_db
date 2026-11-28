@@ -33,7 +33,10 @@ while (queue.length) {
 
 // 2) 內嵌
 const fixtures = {};
-for (const f of ['full_param_parity_f64.json', 'full_param_parity_gqa_qkn_f64.json']) fixtures[f] = JSON.parse(fs.readFileSync(path.join(FIX, f), 'utf8'));
+// f64 參考（PyTorch fp64）與 f32 參考（PyTorch f32，同一組初始化與批次）都比。
+// 門檻說明：GPU 是 f32，對 f64 參考的誤差有 f32 的地板（約 1e-5 等級），所以 f64 比較的門檻不可能比 f32 地板更嚴；
+// f32 參考應該遠小於 f64 的誤差，這是另一個獨立的檢查。
+for (const f of ['full_param_parity_f64.json', 'full_param_parity_gqa_qkn_f64.json', 'full_param_parity_f32.json', 'full_param_parity_gqa_qkn_f32.json']) fixtures[f] = JSON.parse(fs.readFileSync(path.join(FIX, f), 'utf8'));
 
 const modBlock = [...mods.entries()].map(([r, src]) => JSON.stringify(r) + ': function (module, exports, require) {\n' + src + '\n}').join(',\n');
 
