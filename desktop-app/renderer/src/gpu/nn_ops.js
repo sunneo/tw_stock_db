@@ -1035,7 +1035,12 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }`;
 const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
 const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
-function createBatch(dev) {
+// o.timestamps（選用，預設關）：{ qs, resolveBuf, readBuf, max }＝WebGPU timestamp-query 的查詢集與緩衝區。
+// 開啟時每次派發的計算通道都寫入起訖時間戳，read() 時解析並讀回；結果放在 ts.labels（核心名）與 ts.ns（奈秒）。
+// 只用於剖析（逐核心歸因），不影響計算結果；不開就完全是原本的路徑。
+function createBatch(dev, o) {
+  const ts = o && o.timestamps ? o.timestamps : null;
+  if (ts) { ts.labels = ts.labels || []; ts.ns = null; }
   const enc = dev.createCommandEncoder();
   let submitted = false;
   const pool = GP.poolFor(dev);
@@ -1067,7 +1072,16 @@ function createBatch(dev) {
     const entries = bindBufs.map((b, i) => ({ binding: i, resource: { buffer: b } }));
     entries.push({ binding: bindBufs.length, resource: { buffer: ub } });
     const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
-    const pass = enc.beginComputePass();
+    let pass;
+    if (ts) {
+      const k = ts.labels.length;
+      if (k >= ts.max) throw new Error('時間戳查詢數不足（上限 ' + ts.max + '）');
+      const m = /@kernel (\w+)/.exec(code);
+      ts.labels.push(m ? m[1] : '?');
+      pass = enc.beginComputePass({ timestampWrites: { querySet: ts.qs, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } });
+    } else {
+      pass = enc.beginComputePass();
+    }
     pass.setPipeline(pipe); pass.setBindGroup(0, bg);
     if (Array.isArray(groups)) pass.dispatchWorkgroups(groups[0], groups[1], groups[2]); else pass.dispatchWorkgroups(groups);
     pass.end();
@@ -1169,8 +1183,20 @@ function createBatch(dev) {
         enc.copyBufferToBuffer(h.buf, 0, rb, 0, n * 4);
         return rb;
       });
+      const K = ts ? ts.labels.length : 0;
+      if (ts && K > 0) {
+        enc.resolveQuerySet(ts.qs, 0, 2 * K, ts.resolveBuf, 0);
+        enc.copyBufferToBuffer(ts.resolveBuf, 0, ts.readBuf, 0, 8 * 2 * K);
+      }
       dev.queue.submit([enc.finish()]);
       stats.submits++;
+      if (ts && K > 0) {
+        await ts.readBuf.mapAsync(1);
+        const t = new BigUint64Array(ts.readBuf.getMappedRange().slice(0, 8 * 2 * K));
+        ts.readBuf.unmap();
+        ts.ns = [];
+        for (let k = 0; k < K; k++) ts.ns.push(Number(t[2 * k + 1] - t[2 * k]));
+      }
       // 命令已排進佇列，中間緩衝區可以歸還（之後的重用排在這次提交之後）
       for (const t of temps) pool.release(t);
       temps.length = 0;
