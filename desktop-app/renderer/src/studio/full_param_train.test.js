@@ -9,7 +9,7 @@ const T = require('./full_param_train.js');
 let fail = 0;
 const ok = (c, n, extra) => { if (!c) fail++; console.log((c ? 'ok   ' : 'FAIL ') + n + (extra ? '  ' + extra : '')); };
 
-const fixPath = path.join(__dirname, 'fixtures', 'full_param_parity_f64.json');
+const fixPath = path.join(__dirname, 'fixtures', process.argv[2] || 'full_param_parity_f64.json');
 if (!fs.existsSync(fixPath)) { ok(false, '找不到 fixture ' + fixPath + '（先跑 full_param_ref_torch.py --out ... --dtype float64）'); process.exit(1); }
 const fx = JSON.parse(fs.readFileSync(fixPath, 'utf8'));
 
