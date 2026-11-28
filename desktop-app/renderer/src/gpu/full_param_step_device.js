@@ -1,18 +1,22 @@
 'use strict';
 // 全參數整步（密集 transformer）：所有線性層、嵌入、輸出頭、RMSNorm 增益都求權重梯度，全部留在 GPU。
 // 以 train_step_device.js 的 trainStepDevice 為底（不改它）。差別：
-//   · 基底權重可訓練（dW = Xᵀ·dY，用 matmul 的 transA 旗標；不再是 LoRA）；
+//   · 基底權重可訓練（dW = Xᵀ·dY，用 matmul 的 transA 旗標）；
 //   · 嵌入查表用 one-hot 矩陣乘（不經 JS 陣列）；嵌入梯度 = onehotᵀ·dh（＋輸出頭梯度）；
-//   · RMSNorm 增益梯度 = 列加總(dy ∘ x̂)，x̂ = rmsnorm(x, 1)（用矩陣乘加上一列 1，不新增核心）；
-//   · 梯度裁剪在 GPU 上做：總平方和 → 裁剪係數（一個新的純量核心）→ 梯度乘係數；
-//   · AdamW 沿用 train_fused.js 的 WGSL_ADAMW_ACCUM（已驗證的 decoupled weight decay）。
-// 狀態（參數、m、v）是常駐的 GPU 緩衝區（不在批次的暫存池裡），AdamW 原地更新；步末只讀回損失列與梯度平方和。
-// 限制（明寫）：dense（kvH＝H、無 qk-norm），f32；GQA 與 qk-norm 的 GPU 路徑尚未做（attn 核心假設 H 個 kv 頭）。
+//   · RMSNorm 增益梯度 = 列加總(dy ∘ x̂)，x̂ = rmsnorm(x, 1)；
+//   · 分組查詢（kvH < H）：k、v 用 0/1 擴張矩陣 E（kvH·hd × H·hd）擴成 H 個頭；反向用 Eᵀ 加總回 kvH 個頭（全是矩陣乘，沒有新核心）；
+//   · qk-norm：q、k 各自每頭 RMSNorm（寬度 hd，增益 qn／kn），在 RoPE 之前（與 llm_scratch 相同）；反向含增益梯度；
+//   · RoPE 用 0/1 排列矩陣轉成 rotate-half（精確）；
+//   · 梯度裁剪在 GPU 上做（總平方和 → 純量核心 clip_coef → 梯度乘係數）；
+//   · AdamW 沿用 train_fused.js 的 WGSL_ADAMW_ACCUM。
+// 狀態（參數、m、v）是常駐 GPU 緩衝區（不在批次暫存池裡），AdamW 原地更新；步末只讀回損失列與梯度平方和。
+// 限制（明寫）：f32。注意力核心仍假設 H 個頭（GQA 是用擴張矩陣實現，不是核心改寫）。
 const TS = require('./train_step_device.js');
 const TF = require('./train_fused.js');
 
 const USAGE_STORAGE = 0x80, USAGE_COPY_SRC = 0x4, USAGE_COPY_DST = 0x8;
 const f32 = Math.fround;
+const EPS = 1e-6;
 
 // 裁剪係數核心：coef = min(1, maxNorm / (√tot + 1e-6))；tot 是總平方和（單一元素緩衝）
 const WGSL_CLIP_COEF = `
@@ -44,10 +48,11 @@ function extend(b) {
     b.dispatchRaw(TS.WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, Math.ceil(T * H / 64));
     return { dq: dq, dk: dk, dv: dv };
   };
-  r.rmsnormBwd = (dy, x, g, T, d, eps) => {
-    const dx = b.alloc(T * d);
-    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, d]); new Float32Array(uni, 8, 1)[0] = eps;
-    b.dispatchRaw(TS.WGSL_RMS_BWD, [dy.buf, x.buf, g.buf, dx.buf], uni, Math.ceil(T / 64));
+  // RMSNorm 反向：rows 列、寬度 width（qk-norm 時 rows＝T·頭數、width＝hd）
+  r.rmsnormBwd = (dy, x, g, rows, width, eps) => {
+    const dx = b.alloc(rows * width);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([rows, width]); new Float32Array(uni, 8, 1)[0] = eps;
+    b.dispatchRaw(TS.WGSL_RMS_BWD, [dy.buf, x.buf, g.buf, dx.buf], uni, Math.ceil(rows / 64));
     return dx;
   };
   r.mlpBwd = (da, g, u, n) => {
@@ -70,14 +75,21 @@ function extend(b) {
   return Object.assign(r, { b: b });
 }
 
-// 常駐狀態：每個可訓練張量一個 GPU 緩衝區（參數、m、v）。名稱與 full_param_train.js 的 eachParam 相同。
+function dimsOf(cfg) {
+  const H = cfg.H, d = cfg.d, hd = d / H, KVH = cfg.kvH || H, kd = KVH * hd;
+  if (H % KVH !== 0) throw new Error('kvH 必須整除 H');
+  return { H: H, d: d, hd: hd, KVH: KVH, kd: kd, rep: H / KVH, gqa: KVH !== H, qkn: !!cfg.qkNorm, F: cfg.F, V: cfg.V, L: cfg.L };
+}
+
+// 常駐狀態的張量清單（名稱與 full_param_train.js 的 eachParam 相同）
 function paramList(cfg) {
-  const { V, d, L, F, H } = cfg; const hd = d / H;
-  const list = [['emb', V * d], ['nf', d]];
-  for (let l = 0; l < L; l++) {
-    list.push(['L' + l + '.n1', d], ['L' + l + '.n2', d], ['L' + l + '.Wq', d * d], ['L' + l + '.Wk', d * d], ['L' + l + '.Wv', d * d], ['L' + l + '.Wo', d * d], ['L' + l + '.Wg', d * F], ['L' + l + '.Wu', d * F], ['L' + l + '.Wd', F * d]);
+  const D = dimsOf(cfg);
+  const list = [['emb', D.V * D.d], ['nf', D.d]];
+  for (let l = 0; l < D.L; l++) {
+    const p = 'L' + l + '.';
+    list.push([p + 'n1', D.d], [p + 'n2', D.d], [p + 'Wq', D.d * D.d], [p + 'Wk', D.d * D.kd], [p + 'Wv', D.d * D.kd], [p + 'Wo', D.d * D.d], [p + 'Wg', D.d * D.F], [p + 'Wu', D.d * D.F], [p + 'Wd', D.F * D.d]);
+    if (D.qkn) list.push([p + 'qn', D.hd], [p + 'kn', D.hd]);
   }
-  void hd;
   return list;
 }
 function makeResidentState(device, cfg, init) {
@@ -86,26 +98,33 @@ function makeResidentState(device, cfg, init) {
     if (data) device.queue.writeBuffer(buf, 0, data instanceof Float32Array ? data : Float32Array.from(data));
     return { buf: buf, n: n };
   };
+  const D = dimsOf(cfg);
   const P = {}, M = {}, Vv = {};
   for (const [name, n] of paramList(cfg)) {
-    const src = init ? initFor(init, name) : null;
-    P[name] = mk(n, src);
+    P[name] = mk(n, init ? initFor(init, name) : null);
     M[name] = mk(n, null); Vv[name] = mk(n, null);
   }
-  // 常數一：長度足夠的 1，給列加總與廣播用（只讀）
-  const maxN = Math.max(...paramList(cfg).map((x) => x[1]), cfg.T * cfg.d, cfg.T * cfg.F, cfg.T * cfg.V);
+  const list = paramList(cfg);
+  const maxN = Math.max(...list.map((x) => x[1]), cfg.T * D.d, cfg.T * D.F, cfg.T * D.V, cfg.T * D.H * D.hd);
   const ones = mk(maxN, new Float32Array(maxN).fill(1));
-  // RoPE 排列矩陣（d×d，0/1）：把 rotate-half 的配對（i 與 i+hd/2）換成核心的交錯配對（2i、2i+1）。
-  // 乘以排列矩陣只搬資料、不做算術（0 與 1 的乘加是精確的），所以結果與 rotate-half 逐位元等價。
-  const perm = mk(cfg.d * cfg.d, permMatrix(cfg.d, cfg.H));
-  return { P: P, M: M, V: Vv, ones: ones, perm: perm, t: 0, cfg: cfg };
+  // RoPE 排列（寬度 d 用 H 頭；寬度 kd 用 KVH 頭）：把 rotate-half 配對換成核心的交錯配對（精確的 0/1 排列）
+  const permD = mk(D.d * D.d, permMatrix(D.d, D.H));
+  const permKd = mk(D.kd * D.kd, permMatrix(D.kd, D.KVH));
+  // GQA 擴張矩陣 E（kd×d）：E[g·hd+u][h·hd+u] = 1，g = floor(h / rep)
+  let expand = null;
+  if (D.gqa) {
+    const E = new Float32Array(D.kd * D.d);
+    for (let h = 0; h < D.H; h++) { const g = Math.floor(h / D.rep); for (let u = 0; u < D.hd; u++) E[(g * D.hd + u) * D.d + (h * D.hd + u)] = 1; }
+    expand = mk(D.kd * D.d, E);
+  }
+  return { P: P, M: M, V: Vv, ones: ones, permD: permD, permKd: permKd, expand: expand, t: 0, cfg: cfg, D: D };
 }
-// perm[src*d + j] = 1，其中 j 是交錯位置、src 是 rotate-half 來源位置（每個頭內）
-function permMatrix(d, H) {
-  const hd = d / H, half = hd / 2, Pm = new Float32Array(d * d);
-  for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) {
-    Pm[(h * hd + i) * d + (h * hd + 2 * i)] = 1;
-    Pm[(h * hd + i + half) * d + (h * hd + 2 * i + 1)] = 1;
+// perm[src·d + j] = 1，j 是交錯位置、src 是 rotate-half 來源位置（每個頭內）
+function permMatrix(width, Hn) {
+  const hd = width / Hn, half = hd / 2, Pm = new Float32Array(width * width);
+  for (let h = 0; h < Hn; h++) for (let i = 0; i < half; i++) {
+    Pm[(h * hd + i) * width + (h * hd + 2 * i)] = 1;
+    Pm[(h * hd + i + half) * width + (h * hd + 2 * i + 1)] = 1;
   }
   return Pm;
 }
@@ -116,22 +135,26 @@ function initFor(init, name) {
 }
 
 // 一步（K 條序列）。o: { nn, device, state, seqs, lr, wd, clip }
-// 回傳 { loss, gradNorm, submits, dispatches, ms }。參數與狀態在 GPU 內原地更新，不讀回。
+// 回傳 { loss, gradNorm, ms, stats }。參數與狀態在 GPU 內原地更新，步末只讀回損失列與梯度平方和。
 async function fullParamStepDevice(o) {
   const { nn, device, state: S, seqs, lr, wd = 0, clip = 1.0 } = o;
-  const cfg = S.cfg; const { V, d, L, H, F } = cfg; const hd = d / H; const K = seqs.length;
+  const D = S.D; const { V, d, L, H, F, hd, KVH, kd, gqa, qkn } = D; const K = seqs.length;
   const B = nn.createBatch(device), X = extend(B);
   const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
   const ONES = (n) => ({ buf: S.ones.buf, n: n });
-  const onesRow = (T) => ({ buf: S.ones.buf, n: T });
-  // 加權：column-sum(dy ∘ x̂)，x̂ = rmsnorm(x, 1)
-  const gainGrad = (dy, x, T) => {
-    const y1 = B.rmsnorm(x, { buf: S.ones.buf, n: d }, T, d, 1e-6);
-    return B.matmul(onesRow(T), B.mul(dy, y1), 1, T, d);
+  const onesRow = (rows) => ({ buf: S.ones.buf, n: rows });
+  // 增益梯度：列加總(dy ∘ x̂)，x̂ = rmsnorm(x, 1)；rows 列、寬度 width
+  const gainGrad = (dy, x, rows, width) => {
+    const y1 = B.rmsnorm(x, { buf: S.ones.buf, n: width }, rows, width, EPS);
+    return B.matmul(onesRow(rows), B.mul(dy, y1), 1, rows, width);
   };
   const gacc = {}; const accum = (name, h) => { gacc[name] = gacc[name] ? B.axpy(gacc[name], h, 1) : h; };
-  // rotate-half RoPE：排列 → 交錯 RoPE 核心（dir）→ 反排列（transB 即乘排列矩陣的轉置＝逆）
-  const rp = (x, dir, T) => { const xp = B.matmul(x, S.perm, T, d, d); const z = B.rope(xp, T, H, hd, dir); return B.matmul(z, S.perm, T, d, d, { transB: true }); };
+  // rotate-half RoPE：排列 → 交錯 RoPE 核心（Hn 頭、寬度 width、方向 dir）→ 反排列
+  const rp = (x, dir, T, Hn, width, perm) => {
+    const xp = B.matmul(x, perm, T, width, width);
+    const z = B.rope(xp, T, Hn, width / Hn, dir);
+    return B.matmul(z, perm, T, width, width, { transB: true });
+  };
   const lossRows = [];
   for (const tokens of seqs) {
     const T = tokens.length - 1, inp = tokens.slice(0, T), tgt = tokens.slice(1);
@@ -142,13 +165,23 @@ async function fullParamStepDevice(o) {
     const cache = [];
     for (let l = 0; l < L; l++) {
       const pre = 'L' + l + '.'; const P = (k) => S.P[pre + k], c = { hIn: h };
-      c.n1 = B.rmsnorm(h, P('n1'), T, d, 1e-6);
-      const q0 = B.matmul(c.n1, P('Wq'), T, d, d), k0 = B.matmul(c.n1, P('Wk'), T, d, d), v0 = B.matmul(c.n1, P('Wv'), T, d, d);
-      c.q = rp(q0, 1, T); c.k = rp(k0, 1, T); c.v = v0;
+      c.n1 = B.rmsnorm(h, P('n1'), T, d, EPS);
+      const q0 = B.matmul(c.n1, P('Wq'), T, d, d), k0 = B.matmul(c.n1, P('Wk'), T, d, kd), v0 = B.matmul(c.n1, P('Wv'), T, d, kd);
+      // qk-norm（每頭 RMSNorm，寬度 hd），在 RoPE 之前
+      let qx = q0, kx = k0;
+      if (qkn) {
+        c.qIn = q0; qx = B.rmsnorm(q0, P('qn'), T * H, hd, EPS); c.qN = qx;
+        c.kIn = k0; kx = B.rmsnorm(k0, P('kn'), T * KVH, hd, EPS); c.kN = kx;
+      }
+      c.q = rp(qx, 1, T, H, d, S.permD);
+      c.kR = rp(kx, 1, T, KVH, kd, S.permKd);
+      // 分組查詢：k、v 擴成 H 個頭（矩陣乘 with E）
+      c.k = gqa ? B.matmul(c.kR, S.expand, T, kd, d) : c.kR;
+      c.v = gqa ? B.matmul(v0, S.expand, T, kd, d) : v0;
       const at = X.attnFwd(c.q, c.k, c.v, T, H, hd); c.ao = at.ao; c.pm = at.pm;
       const o2 = B.matmul(c.ao, P('Wo'), T, d, d);
       c.h1 = B.axpy(h, o2, 1);
-      c.n2 = B.rmsnorm(c.h1, P('n2'), T, d, 1e-6);
+      c.n2 = B.rmsnorm(c.h1, P('n2'), T, d, EPS);
       c.g = B.matmul(c.n2, P('Wg'), T, d, F); c.u = B.matmul(c.n2, P('Wu'), T, d, F);
       c.a = B.mul(B.silu(c.g), c.u);
       const dn = B.matmul(c.a, P('Wd'), T, F, d);
@@ -157,13 +190,13 @@ async function fullParamStepDevice(o) {
     }
     // 頭：norm → logits（與嵌入共用）→ 交叉熵（dl 已含 1/T）
     const nfH = S.P['nf'], embH = S.P['emb'];
-    const nf = B.rmsnorm(h, nfH, T, d, 1e-6);
+    const nf = B.rmsnorm(h, nfH, T, d, EPS);
     const logits = B.matmul(nf, embH, T, d, V, { transB: true });
     const ce = B.crossEntropy(logits, B.uploadU32(Uint32Array.from(tgt)), T, V, 1 / T);
     lossRows.push({ rows: ce.rows, T: T });
-    accum('nf', gainGrad(B.matmul(ce.dl, embH, T, V, d), h, T));
+    accum('nf', gainGrad(B.matmul(ce.dl, embH, T, V, d), h, T, d));
     accum('emb', B.matmul(ce.dl, nf, V, T, d, { transA: true }));
-    let dh = X.rmsnormBwd(B.matmul(ce.dl, embH, T, V, d), h, nfH, T, d, 1e-6);
+    let dh = X.rmsnormBwd(B.matmul(ce.dl, embH, T, V, d), h, nfH, T, d, EPS);
     for (let l = L - 1; l >= 0; l--) {
       const pre = 'L' + l + '.'; const P = (k) => S.P[pre + k], c = cache[l];
       const da = B.matmul(dh, P('Wd'), T, d, F, { transB: true });
@@ -172,18 +205,29 @@ async function fullParamStepDevice(o) {
       accum(pre + 'Wg', B.matmul(c.n2, mg.dg, d, T, F, { transA: true }));
       accum(pre + 'Wu', B.matmul(c.n2, mg.du, d, T, F, { transA: true }));
       const dn2 = B.axpy(B.matmul(mg.dg, P('Wg'), T, F, d, { transB: true }), B.matmul(mg.du, P('Wu'), T, F, d, { transB: true }), 1);
-      accum(pre + 'n2', gainGrad(dn2, c.h1, T));
-      const dh1 = B.axpy(X.rmsnormBwd(dn2, c.h1, P('n2'), T, d, 1e-6), dh, 1);
+      accum(pre + 'n2', gainGrad(dn2, c.h1, T, d));
+      const dh1 = B.axpy(X.rmsnormBwd(dn2, c.h1, P('n2'), T, d, EPS), dh, 1);
       accum(pre + 'Wo', B.matmul(c.ao, dh1, d, T, d, { transA: true }));
       const dao = B.matmul(dh1, P('Wo'), T, d, d, { transB: true });
       const ab = X.attnBwd(dao, c.q, c.k, c.v, c.ao, c.pm, T, H, hd);
-      const dq0 = rp(ab.dq, -1, T), dk0 = rp(ab.dk, -1, T), dv0 = ab.dv;
-      accum(pre + 'Wq', B.matmul(c.n1, dq0, d, T, d, { transA: true }));
-      accum(pre + 'Wk', B.matmul(c.n1, dk0, d, T, d, { transA: true }));
-      accum(pre + 'Wv', B.matmul(c.n1, dv0, d, T, d, { transA: true }));
-      const dn1 = B.axpy(B.axpy(B.matmul(dq0, P('Wq'), T, d, d, { transB: true }), B.matmul(dk0, P('Wk'), T, d, d, { transB: true }), 1), B.matmul(dv0, P('Wv'), T, d, d, { transB: true }), 1);
-      accum(pre + 'n1', gainGrad(dn1, c.hIn, T));
-      dh = B.axpy(X.rmsnormBwd(dn1, c.hIn, P('n1'), T, d, 1e-6), dh1, 1);
+      // q：RoPE 反向（H 頭）→ qk-norm 反向（T·H 列）
+      let dq = rp(ab.dq, -1, T, H, d, S.permD);
+      // k：先從 H 個頭加總回 KVH 個頭（Eᵀ），再 RoPE 反向（KVH 頭）→ qk-norm 反向（T·KVH 列）
+      let dkR = gqa ? B.matmul(ab.dk, S.expand, T, d, kd, { transB: true }) : ab.dk;
+      let dk = rp(dkR, -1, T, KVH, kd, S.permKd);
+      let dvK = gqa ? B.matmul(ab.dv, S.expand, T, d, kd, { transB: true }) : ab.dv;
+      if (qkn) {
+        accum(pre + 'qn', gainGrad(dq, c.qIn, T * H, hd));
+        dq = X.rmsnormBwd(dq, c.qIn, P('qn'), T * H, hd, EPS);
+        accum(pre + 'kn', gainGrad(dk, c.kIn, T * KVH, hd));
+        dk = X.rmsnormBwd(dk, c.kIn, P('kn'), T * KVH, hd, EPS);
+      }
+      accum(pre + 'Wq', B.matmul(c.n1, dq, d, T, d, { transA: true }));
+      accum(pre + 'Wk', B.matmul(c.n1, dk, d, T, kd, { transA: true }));
+      accum(pre + 'Wv', B.matmul(c.n1, dvK, d, T, kd, { transA: true }));
+      const dn1 = B.axpy(B.axpy(B.matmul(dq, P('Wq'), T, d, d, { transB: true }), B.matmul(dk, P('Wk'), T, kd, d, { transB: true }), 1), B.matmul(dvK, P('Wv'), T, kd, d, { transB: true }), 1);
+      accum(pre + 'n1', gainGrad(dn1, c.hIn, T, d));
+      dh = B.axpy(X.rmsnormBwd(dn1, c.hIn, P('n1'), T, d, EPS), dh1, 1);
     }
     // 嵌入輸入梯度：onehotᵀ · dh
     accum('emb', B.matmul(ohH, dh, V, T, d, { transA: true }));
@@ -217,4 +261,4 @@ async function fullParamStepDevice(o) {
   return { loss: loss, gradNorm: Math.sqrt(outs[lossRows.length][0]), ms: ms, stats: B.stats || null };
 }
 
-module.exports = { fullParamStepDevice, makeResidentState, paramList, WGSL_CLIP_COEF, extend };
+module.exports = { fullParamStepDevice, makeResidentState, paramList, dimsOf, WGSL_CLIP_COEF, extend };

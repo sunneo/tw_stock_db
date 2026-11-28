@@ -29,7 +29,7 @@ while (queue.length) {
   while ((m = re.exec(srcText))) queue.push(path.resolve(path.dirname(abs), m[2]));
 }
 const fixtures = {};
-for (const f of ['full_param_parity_f64.json']) fixtures[f] = JSON.parse(fs.readFileSync(path.join(FIX, f), 'utf8'));
+for (const f of ['full_param_parity_f64.json', 'full_param_parity_gqa_qkn_f64.json']) fixtures[f] = JSON.parse(fs.readFileSync(path.join(FIX, f), 'utf8'));
 const modBlock = [...mods.entries()].map(([r, s]) => JSON.stringify(r) + ': function (module, exports, require) {\n' + s + '\n}').join(',\n');
 const body = `
 const __mods = {

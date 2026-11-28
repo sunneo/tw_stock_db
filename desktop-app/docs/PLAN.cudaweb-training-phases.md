@@ -387,3 +387,10 @@
 5. 之後：渲染頁打包（d）、選單閘門（e 的 model_types 部分）。
 
 本輪未開始實作（這是規劃，不是完成）。P1 狀態不變：未通過。
+
+
+**2026-11-28 第五輪結果（領導指示：步驟 A、步驟 B）**
+
+- 步驟 A（gqa_qkn GPU 路徑，Electron 真機，`155d5678c` 之後的提交）：GQA 用 0/1 擴張矩陣（矩陣乘），qk-norm 用 RMSNorm（寬度 hd），反向含 qn／kn 增益梯度。結果：gqa_qkn 損失差 3.2e-7、梯度範數差 2.6e-6；dense 回歸：損失差 6.4e-7、梯度範數差 7.3e-6。兩者都 20 步、每步 1 次提交、2 次讀回，穩態約 30 ms/步；gqa_qkn 每步 321 次派發（dense 265）。門檻 1e-5 通過。
+- 步驟 B（RoPE 查證，真值 PyTorch，`docs/REPORT.rope-convention.md`）：GPU 的交錯 RoPE 核心對交錯慣例誤差 ~1e-7、對 rotate-half 誤差 ~1–2；基礎模型（llm_scratch、Qwen、推論）是 rotate-half。影響：cudaweb LoRA 訓練（GPU 與 JS）訓出的 LoRA 與推論基礎模型的位置編碼不一致，已存在的 cudaweb LoRA 檢查點應視為無效。修不修由領導與使用者決定。
+- 梯度範數餘裕（27%）原因：不是程式錯誤，是 f32 地板；PyTorch f32 對 f64 本身的梯度範數差就是 1.0e-5。收緊需要 Kahan 或 f64 累加（會改核心，未做）。
