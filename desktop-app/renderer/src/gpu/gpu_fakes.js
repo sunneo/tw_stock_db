@@ -87,7 +87,7 @@ function fakeNavigator(opts) {
     if (k === 'vector_add') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
-    } else if (k === 'matmul' || k === 'matmul_vec4' || k === 'matmul_r8') {
+    } else if (k === 'matmul' || k === 'matmul_vec4' || k === 'matmul_r8' || k === 'matmul_vec4_ta' || k === 'matmul_vec4_tb' || k === 'matmul_vec4_tt') {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（p0 的位元是轉置旗標）；單一批次，與核心的索引一致
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
@@ -275,6 +275,19 @@ function fakeNavigator(opts) {
       // 綁定 0 g(讀)、1 c(讀，單一元素)、2 o(寫)、3 uniform（n 為 u32）：o[i] = g[i]·c[0]
       const n = u32(e[3])[0]; const g = f32(e[0], n), c = f32(e[1], 1)[0], o = f32(e[2], n);
       for (let i = 0; i < n; i++) o[i] = Math.fround(g[i] * c);
+    } else if (k === 'emb_gather') {
+      // 綁定 0 emb(讀)、1 ids(讀,u32)、2 o(寫)、3 uniform（T、d、V）：o[t,j] = emb[ids[t], j]
+      const pu = u32(e[3]); const T = pu[0], d = pu[1], V = pu[2];
+      const emb = f32(e[0], V * d), ids = u32(e[1]), o = f32(e[2], T * d);
+      for (let t = 0; t < T; t++) for (let j = 0; j < d; j++) o[t * d + j] = emb[ids[t] * d + j];
+    } else if (k === 'emb_scatter') {
+      // 綁定 0 dh(讀)、1 off(讀,u32)、2 pos(讀,u32)、3 g(寫)、4 uniform（T、d、V）：g[v,j] = Σ dh[pos[q],j]，q 在 off[v]..off[v+1]
+      const pu = u32(e[4]); const T = pu[0], d = pu[1], V = pu[2];
+      const dh = f32(e[0], T * d), off = u32(e[1]), pos = u32(e[2]), g = f32(e[3], V * d);
+      for (let v = 0; v < V; v++) for (let j = 0; j < d; j++) {
+        let s = 0; for (let q = off[v]; q < off[v + 1]; q++) s += dh[pos[q] * d + j];
+        g[v * d + j] = Math.fround(s);
+      }
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }

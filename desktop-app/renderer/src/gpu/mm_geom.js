@@ -84,4 +84,104 @@ function mmGeomWgsl(o) {
     '}'
   ].join('\n');
 }
-module.exports = { mmGeomWgsl: mmGeomWgsl, mmGeomDims: mmGeomDims };
+// 轉置 vec4 版（P1 調校）：與產品 vec4 核心同幾何（16×16 執行緒、4×4 暫存器、BK=16、BM=BN=64），
+// 但轉置的那一邊也用 vec4 載入：Aᵀ（A 以 K×M 儲存）沿 m 方向取 4 個連續元素；Bᵀ（B 以 N×K 儲存）沿 k 方向取 4 個。
+// 條件（呼叫端用 mmVec4TOk 檢查）：M、K、N 都是 4 的倍數。旗標在編譯期寫進程式碼，所以每種轉置組合各一支核心。
+function mmVec4TOk(M, K, N) { return M > 0 && K > 0 && N > 0 && M % 4 === 0 && K % 4 === 0 && N % 4 === 0; }
+function mmVec4TWgsl(o) {
+  const TA = !!o.transA, TB = !!o.transB;
+  if (!TA && !TB) throw new Error('mm_geom：mmVec4TWgsl 需要至少一個轉置旗標');
+  const marker = o.marker || (TA && TB ? 'matmul_vec4_tt' : (TA ? 'matmul_vec4_ta' : 'matmul_vec4_tb'));
+  const aLoad = TA ? [
+    '    let kk = tid / 16u;',
+    '    let ms = (tid % 16u) * 4u;',
+    '    let gk = k0 + kk;',
+    '    let gm = row0 + ms;',
+    '    var av: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+    '    if (gk < p.K && gm < p.M) { av = a4[ao4 + (gk * p.M + gm) / 4u]; }',
+    '    As[ms * 16u + kk] = av.x;',
+    '    As[(ms + 1u) * 16u + kk] = av.y;',
+    '    As[(ms + 2u) * 16u + kk] = av.z;',
+    '    As[(ms + 3u) * 16u + kk] = av.w;',
+  ] : [
+    '    let ar = tid / 4u;',
+    '    let ak = (tid % 4u) * 4u;',
+    '    let gr = row0 + ar;',
+    '    let gk = k0 + ak;',
+    '    var av: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+    '    if (gr < p.M && gk < p.K) { av = a4[ao4 + (gr * p.K + gk) / 4u]; }',
+    '    As[ar * 16u + ak] = av.x;',
+    '    As[ar * 16u + ak + 1u] = av.y;',
+    '    As[ar * 16u + ak + 2u] = av.z;',
+    '    As[ar * 16u + ak + 3u] = av.w;',
+  ];
+  const bLoad = TB ? [
+    '    let bc = tid / 4u;',
+    '    let sk = (tid % 4u) * 4u;',
+    '    let gc = col0 + bc;',
+    '    let gk2 = k0 + sk;',
+    '    var bv: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+    '    if (gc < p.N && gk2 < p.K) { bv = b4[bo4 + (gc * p.K + gk2) / 4u]; }',
+    '    Bs[sk * 64u + bc] = bv.x;',
+    '    Bs[(sk + 1u) * 64u + bc] = bv.y;',
+    '    Bs[(sk + 2u) * 64u + bc] = bv.z;',
+    '    Bs[(sk + 3u) * 64u + bc] = bv.w;',
+  ] : [
+    '    let bk = tid / 16u;',
+    '    let bc = (tid % 16u) * 4u;',
+    '    let gk2 = k0 + bk;',
+    '    let gc = col0 + bc;',
+    '    var bv: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+    '    if (gk2 < p.K && gc < p.N) { bv = b4[bo4 + (gk2 * p.N + gc) / 4u]; }',
+    '    Bs[bk * 64u + bc] = bv.x;',
+    '    Bs[bk * 64u + bc + 1u] = bv.y;',
+    '    Bs[bk * 64u + bc + 2u] = bv.z;',
+    '    Bs[bk * 64u + bc + 3u] = bv.w;',
+  ];
+  return '// @kernel ' + marker + '\n' + [
+    'struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }',
+    '@group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;',
+    '@group(0) @binding(1) var<storage, read> b4: array<vec4<f32>>;',
+    '@group(0) @binding(2) var<storage, read_write> y: array<f32>;',
+    '@group(0) @binding(3) var<uniform> p: P;',
+    'var<workgroup> As: array<f32, 1024>;',
+    'var<workgroup> Bs: array<f32, 1024>;',
+    '@compute @workgroup_size(16, 16, 1)',
+    'fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {',
+    '  let n = wid.z;',
+    '  let row0 = wid.y * 64u;',
+    '  let col0 = wid.x * 64u;',
+    '  let ao4 = (n * p.M * p.K) / 4u;',
+    '  var bo4 = 0u;',
+    '  if (p.Bb != 1u) { bo4 = (n * p.K * p.N) / 4u; }',
+    '  let tid = lid.y * 16u + lid.x;',
+    '  var acc: array<f32, 16>;',
+    '  for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = 0.0; }',
+    '  let tiles = (p.K + 15u) / 16u;',
+    '  for (var t: u32 = 0u; t < tiles; t = t + 1u) {',
+    '    let k0 = t * 16u;',
+  ].concat(aLoad, bLoad, [
+    '    workgroupBarrier();',
+    '    for (var kk: u32 = 0u; kk < 16u; kk = kk + 1u) {',
+    '      var ra: array<f32, 4>;',
+    '      var rb: array<f32, 4>;',
+    '      for (var i: u32 = 0u; i < 4u; i = i + 1u) { ra[i] = As[(lid.y * 4u + i) * 16u + kk]; }',
+    '      for (var j: u32 = 0u; j < 4u; j = j + 1u) { rb[j] = Bs[kk * 64u + lid.x * 4u + j]; }',
+    '      for (var i: u32 = 0u; i < 4u; i = i + 1u) {',
+    '        for (var j: u32 = 0u; j < 4u; j = j + 1u) { acc[i * 4u + j] = acc[i * 4u + j] + ra[i] * rb[j]; }',
+    '      }',
+    '    }',
+    '    workgroupBarrier();',
+    '  }',
+    '  for (var i: u32 = 0u; i < 4u; i = i + 1u) {',
+    '    let gr = row0 + lid.y * 4u + i;',
+    '    if (gr >= p.M) { continue; }',
+    '    for (var j: u32 = 0u; j < 4u; j = j + 1u) {',
+    '      let gc = col0 + lid.x * 4u + j;',
+    '      if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[i * 4u + j]; }',
+    '    }',
+    '  }',
+    '}'
+  ]).join('\n');
+}
+module.exports = { mmGeomWgsl: mmGeomWgsl, mmGeomDims: mmGeomDims, mmVec4TWgsl: mmVec4TWgsl, mmVec4TOk: mmVec4TOk };

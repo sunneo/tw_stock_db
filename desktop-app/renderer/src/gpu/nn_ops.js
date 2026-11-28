@@ -5,6 +5,7 @@
 'use strict';
 const core = require('./gpu_core.js');
 const GP = require('./gpu_pool.js');
+const MMG = require('./mm_geom.js');
 
 const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
 // WebGL2 常數（用數字，因為假 WebGL2 上下文沒有這些符號）
@@ -1035,6 +1036,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
 }`;
 const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
 const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
+// 轉置 vec4（P1 調校）：轉置的那一邊也用 vec4 載入；每種旗標組合各一支核心（旗標在編譯期寫進程式碼）。
+// 只在 M、K、N 都是 4 的倍數時使用（MMG.mmVec4TOk）；否則退回標量平鋪核心。
+const MM_VEC4T_CODE = { 1: MMG.mmVec4TWgsl({ transA: true }), 2: MMG.mmVec4TWgsl({ transB: true }), 3: MMG.mmVec4TWgsl({ transA: true, transB: true }) };
 // o.timestamps（選用，預設關）：{ qs, resolveBuf, readBuf, max }＝WebGPU timestamp-query 的查詢集與緩衝區。
 // 開啟時每次派發的計算通道都寫入起訖時間戳，read() 時解析並讀回；結果放在 ts.labels（核心名）與 ts.ns（奈秒）。
 // 只用於剖析（逐核心歸因），不影響計算結果；不開就完全是原本的路徑。
@@ -1126,8 +1130,10 @@ function createBatch(dev, o) {
       if (f16 && !(A.f16 && B.f16)) throw new Error('matmul f16：輸入必須用 uploadF16 上傳');
       if (!f16 && (A.f16 || B.f16)) throw new Error('matmul：f16 句柄必須帶 fl.f16');
       const v4 = !f16 && core.mmTileVec4Ok(M, K, N, flags);
+      const v4t = !f16 && flags !== 0 && MMG.mmVec4TOk(M, K, N);
       const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, flags, 1));
-      dispatch(f16 ? MM_F16_CODE : (v4 ? MM_VEC4_CODE : MM_TILED_CODE), [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
+      const code = f16 ? MM_F16_CODE : (v4 ? MM_VEC4_CODE : (v4t ? MM_VEC4T_CODE[flags] : MM_TILED_CODE));
+      dispatch(code, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
       return { buf: y, n: M * N };
     },
     // 逐元素（同一命令編碼器內，不回讀）：axpy＝x + s·y、mul＝x·y、scal＝s·x
