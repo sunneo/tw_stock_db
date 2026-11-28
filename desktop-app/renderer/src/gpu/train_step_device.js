@@ -542,6 +542,25 @@ const WGSL_ATTN_BWD_KV_DI = (() => {
   rep('        let go = dao[i * d + h * u.hd + u2];', '        let go = daoT[(h * u.hd + u2) * u.T + i];');
   rep('@group(0) @binding(7) var<uniform> u: P;', '@group(0) @binding(7) var<storage, read> daoT: array<f32>;\n@group(0) @binding(8) var<uniform> u: P;');
   rep('// @kernel attn_bwd_kv\n', '// @kernel attn_bwd_kv_dit\n');
+  // 第二階段四路展開：每次迭代同時發出四組獨立的 dao／q 讀取再累加（原本是串列相依鏈，延遲受限）
+  rep('  for (var i: u32 = c; i < u.T; i = i + nch) {\n    dvv = dvv + sp[i] * dao[i * d + h * u.hd + tt];\n    dkv = dkv + sds[i] * q[i * d + h * u.hd + tt];\n  }',
+      '  var i2: u32 = c;\n' +
+      '  loop {\n' +
+      '    if (i2 + 3u * nch >= u.T) { break; }\n' +
+      '    let a0 = dao[i2 * d + h * u.hd + tt]; let a1 = dao[(i2 + nch) * d + h * u.hd + tt];\n' +
+      '    let a2 = dao[(i2 + 2u * nch) * d + h * u.hd + tt]; let a3 = dao[(i2 + 3u * nch) * d + h * u.hd + tt];\n' +
+      '    let b0 = q[i2 * d + h * u.hd + tt]; let b1 = q[(i2 + nch) * d + h * u.hd + tt];\n' +
+      '    let b2 = q[(i2 + 2u * nch) * d + h * u.hd + tt]; let b3 = q[(i2 + 3u * nch) * d + h * u.hd + tt];\n' +
+      '    dvv = dvv + sp[i2] * a0 + sp[i2 + nch] * a1 + sp[i2 + 2u * nch] * a2 + sp[i2 + 3u * nch] * a3;\n' +
+      '    dkv = dkv + sds[i2] * b0 + sds[i2 + nch] * b1 + sds[i2 + 2u * nch] * b2 + sds[i2 + 3u * nch] * b3;\n' +
+      '    i2 = i2 + 4u * nch;\n' +
+      '  }\n' +
+      '  loop {\n' +
+      '    if (i2 >= u.T) { break; }\n' +
+      '    dvv = dvv + sp[i2] * dao[i2 * d + h * u.hd + tt];\n' +
+      '    dkv = dkv + sds[i2] * q[i2 * d + h * u.hd + tt];\n' +
+      '    i2 = i2 + nch;\n' +
+      '  }');
   return s;
 })();
 
