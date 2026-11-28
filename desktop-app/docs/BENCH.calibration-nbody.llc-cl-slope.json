@@ -1,0 +1,1 @@
+{"sw":"swiftshader","has_cpu":true,"has_cl":true,"cl":{"cycle_secs_30":0.852,"cycle_secs_150":1.261,"ms_per_frame_slope":12.78,"exit_150":0,"backend_150":"[OpenCL 後端：WebGPU（KIR），GPU 派送 400 次]","tail_150":"3072 1.261000\nframes=40 bodies=3072 cx=258.1 cy=94.9 cz=270.7\n[OpenCL 後端：WebGPU（KIR），GPU 派送 400 次]"}}
